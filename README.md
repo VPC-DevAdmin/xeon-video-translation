@@ -25,9 +25,10 @@ Milestones implemented:
 
 - **M1** — Repo skeleton, Docker Compose, FastAPI backend, Next.js frontend, ffmpeg audio extraction.
 - **M2** — Whisper transcription (`faster-whisper`, int8 CPU build) + NLLB-200 translation.
-- **M3** — Voice cloning with XTTS-v2; produces `translated_audio.wav` in the speaker's own voice (end-to-end via `scripts/smoke_test.sh`).
+- **M3** — Voice cloning with XTTS-v2; produces `translated_audio.wav` in the speaker's own voice.
+- **M4** — Selectable lipsync backend (`none` / `wav2lip` / `musetalk`‑stub / `latentsync`‑stub), final mux + watermark, per-stage ETA + live progress over SSE. End-to-end producing a watermarked `final.mp4`.
 
-Still to come: lip sync (LatentSync), final mux + watermark.
+Still to come: MuseTalk and LatentSync proper integrations (separate PRs); conference-polish milestone (M5).
 
 ---
 
@@ -100,12 +101,15 @@ For the full design see [docs/architecture.md](docs/architecture.md).
 
 This fork targets booth/laptop demos on Xeon machines without GPUs. Trade-offs:
 
-| Stage         | CPU choice                          | Approx. realtime factor on 16-core Xeon |
+| Stage         | CPU choice                          | Approx. speed on 16-core Xeon           |
 | ------------- | ----------------------------------- | --------------------------------------- |
 | Transcription | `faster-whisper base`, int8         | ~5–8× realtime                          |
 | Translation   | NLLB-200 distilled-600M             | ~2–3 sec per segment                    |
 | TTS           | XTTS-v2 (Coqui)                     | ~0.3–0.7× realtime                      |
-| Lipsync (fut) | LatentSync — likely too slow on CPU | TBD                                     |
+| Lipsync       | `none` (default) / `wav2lip`        | 0s · ~15× source duration               |
+| Mux+wm        | ffmpeg drawtext                     | <1 s                                    |
+
+See [docs/lipsync.md](docs/lipsync.md) for why MuseTalk and LatentSync are stubbed — TL;DR: measured-to-projected CPU latency is impractical.
 
 See [docs/limitations.md](docs/limitations.md) for honest expectations.
 

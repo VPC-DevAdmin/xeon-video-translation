@@ -27,8 +27,8 @@
 │  Stage 2  transcribe   faster-whisper int8  │
 │  Stage 3  translate    NLLB-200 / Ollama    │
 │  Stage 4  tts          XTTS-v2 (CPU)        │
-│  Stage 5  lipsync      LatentSync  (M4)     │
-│  Stage 6  mux          ffmpeg+wm   (M4)     │
+│  Stage 5  lipsync      none | wav2lip | …   │
+│  Stage 6  mux          ffmpeg + drawtext    │
 └─────────────────────────────────────────────┘
 ```
 

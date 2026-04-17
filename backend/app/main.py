@@ -40,7 +40,7 @@ async def root() -> dict:
         "name": "polyglot-demo",
         "version": app.version,
         "docs": "/docs",
-        "milestones_implemented": ["M1", "M2", "M3"],
+        "milestones_implemented": ["M1", "M2", "M3", "M4"],
     }
 
 

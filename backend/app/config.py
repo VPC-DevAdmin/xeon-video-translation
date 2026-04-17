@@ -38,6 +38,21 @@ class Settings(BaseSettings):
     backend_port: int = 8000
     cors_origins: str = "http://localhost:3030,http://localhost:3000"
 
+    # Lipsync
+    # Backends:
+    #   none        — skip lipsync; mux dubs the new audio over the original video
+    #   wav2lip     — Wav2Lip (2020); ~30-60s for a 3s clip on a 16-core Xeon
+    #   musetalk    — stubbed in this PR (see docs/lipsync.md)
+    #   latentsync  — stubbed in this PR (see docs/lipsync.md)
+    lipsync_backend: Literal["none", "wav2lip", "musetalk", "latentsync"] = "none"
+    # HuggingFace mirror of the Wav2Lip checkpoint (CC-BY-NC 4.0 weights).
+    # Override if the default 404s; see docs/lipsync.md for alternatives.
+    wav2lip_checkpoint_url: str = (
+        "https://huggingface.co/camenduru/Wav2Lip/resolve/main/wav2lip_gan.pth"
+    )
+    # Watermark text drawn on the output video. Respect responsible-use guidance.
+    watermark_text: str = "AI-translated"
+
     # Feature flags
     enable_watermark: bool = True
     enable_c2pa: bool = False

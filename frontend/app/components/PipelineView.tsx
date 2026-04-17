@@ -15,8 +15,8 @@ const STAGES: StageMeta[] = [
   { key: "transcribe", title: "Transcribe", blurb: "faster-whisper (CPU int8)" },
   { key: "translate", title: "Translate", blurb: "NLLB-200 distilled-600M" },
   { key: "tts", title: "Voice clone", blurb: "XTTS-v2 (CPU)" },
-  { key: "lipsync", title: "Lip sync", blurb: "LatentSync (M4)", badge: "soon" },
-  { key: "mux", title: "Mux & watermark", blurb: "ffmpeg + overlay (M4)", badge: "soon" },
+  { key: "lipsync", title: "Lip sync", blurb: "selectable backend" },
+  { key: "mux", title: "Mux & watermark", blurb: "ffmpeg + overlay" },
 ];
 
 const STATUS_LABEL: Record<StageStatus, string> = {
@@ -68,7 +68,9 @@ export function PipelineView({ job }: { job: JobRecord | null }) {
               )}
             </div>
 
-            {stage?.duration_ms != null && (
+            <ProgressAndEta stage={stage} />
+
+            {stage?.duration_ms != null && stage?.status === "done" && (
               <div className="text-xs text-ink-400 mt-2">
                 {(stage.duration_ms / 1000).toFixed(2)}s
               </div>
@@ -90,6 +92,50 @@ export function PipelineView({ job }: { job: JobRecord | null }) {
       })}
     </div>
   );
+}
+
+function ProgressAndEta({
+  stage,
+}: {
+  stage: JobRecord["stages"][number] | undefined;
+}) {
+  if (!stage) return null;
+  if (stage.status !== "running") return null;
+
+  const pct =
+    stage.progress != null
+      ? Math.round(stage.progress * 100)
+      : null;
+  const eta =
+    stage.eta_seconds != null
+      ? `~${formatDuration(stage.eta_seconds)}`
+      : null;
+
+  return (
+    <div className="mt-3">
+      <div className="h-1.5 w-full rounded bg-ink-700 overflow-hidden">
+        {pct != null ? (
+          <div
+            className="h-full bg-accent transition-all"
+            style={{ width: `${pct}%` }}
+          />
+        ) : (
+          <div className="h-full bg-accent/60 animate-pulse w-1/3" />
+        )}
+      </div>
+      <div className="text-[11px] text-ink-400 mt-1 flex justify-between">
+        <span>{pct != null ? `${pct}%` : "working…"}</span>
+        {eta && <span>{eta}</span>}
+      </div>
+    </div>
+  );
+}
+
+function formatDuration(seconds: number): string {
+  if (seconds < 60) return `${Math.ceil(seconds)}s`;
+  const m = Math.floor(seconds / 60);
+  const s = Math.ceil(seconds - m * 60);
+  return `${m}m ${s}s`;
 }
 
 function StageOutput({
@@ -148,6 +194,15 @@ function StageOutput({
           className="w-full mt-2"
           src={artifactUrl(jobId, output.path)}
         />
+      </div>
+    );
+  }
+
+  if (name === "lipsync") {
+    return (
+      <div className="text-[11px] text-ink-400 mt-2">
+        backend: {output.backend}
+        {output.passthrough && " · passthrough (no mouth retouch)"}
       </div>
     );
   }

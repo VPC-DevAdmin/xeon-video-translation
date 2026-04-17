@@ -3,17 +3,21 @@
 import { useEffect, useRef, useState } from "react";
 import { Uploader } from "./components/Uploader";
 import { LanguagePicker } from "./components/LanguagePicker";
+import { LipsyncPicker } from "./components/LipsyncPicker";
 import { PipelineView } from "./components/PipelineView";
+import { ResultPlayer } from "./components/ResultPlayer";
 import {
   createJob,
   getJob,
   openJobEventStream,
   type JobRecord,
+  type LipsyncBackend,
 } from "./lib/api";
 
 export default function HomePage() {
   const [file, setFile] = useState<File | null>(null);
   const [target, setTarget] = useState("es");
+  const [lipsync, setLipsync] = useState<LipsyncBackend>("none");
   const [job, setJob] = useState<JobRecord | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -31,20 +35,32 @@ export default function HomePage() {
     setError(null);
     setJob(null);
     try {
-      const created = await createJob(file, target);
+      const created = await createJob(file, target, { lipsync_backend: lipsync });
       // Hydrate initial JobRecord, then subscribe to events.
       const initial = await getJob(created.job_id);
       setJob(initial);
 
       esRef.current?.close();
-      esRef.current = openJobEventStream(created.job_id, async (eventName) => {
-        // Re-fetch the canonical job record on every event. Simple and robust;
-        // the payload we get from SSE is enough to drive UI but we don't want
-        // to maintain two reducers.
+      esRef.current = openJobEventStream(created.job_id, async (eventName, data) => {
+        // For high-frequency stage_progress events, patch the stage in-place
+        // rather than re-fetching the whole job record.
+        if (eventName === "stage_progress") {
+          setJob((prev) => {
+            if (!prev) return prev;
+            return {
+              ...prev,
+              stages: prev.stages.map((s) =>
+                s.name === data.stage ? { ...s, progress: data.percent } : s
+              ),
+            };
+          });
+          return;
+        }
         if (
           eventName === "stage_completed" ||
           eventName === "stage_started" ||
           eventName === "stage_skipped" ||
+          eventName === "pipeline_etas" ||
           eventName === "job_completed" ||
           eventName === "error"
         ) {
@@ -74,10 +90,11 @@ export default function HomePage() {
         </p>
       </header>
 
-      <section className="grid md:grid-cols-[1fr_240px] gap-6 items-start mb-6">
+      <section className="grid md:grid-cols-[1fr_280px] gap-6 items-start mb-6">
         <Uploader file={file} onFile={setFile} />
         <div className="flex flex-col gap-4">
           <LanguagePicker value={target} onChange={setTarget} />
+          <LipsyncPicker value={lipsync} onChange={setLipsync} />
           <button
             onClick={onTranslate}
             disabled={!canSubmit}
@@ -108,7 +125,9 @@ export default function HomePage() {
         <PipelineView job={job} />
       </section>
 
-      <footer className="border-t border-ink-700 pt-4 text-xs text-ink-400">
+      <ResultPlayer job={job} />
+
+      <footer className="border-t border-ink-700 pt-4 mt-8 text-xs text-ink-400">
         Outputs are AI-generated and watermarked. See <code>docs/ethics.md</code>.
       </footer>
     </main>

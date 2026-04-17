@@ -19,18 +19,31 @@ router = APIRouter(prefix="/jobs", tags=["jobs"])
 _ALLOWED_EXTENSIONS = {".mp4", ".mov", ".webm", ".mkv", ".m4v"}
 
 
+_ALLOWED_LIPSYNC = {"none", "wav2lip", "musetalk", "latentsync"}
+
+
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def create_job(
     background: BackgroundTasks,
     video: UploadFile = File(...),
     target_language: str = Form(...),
     source_language: str | None = Form(None),
+    lipsync_backend: str | None = Form(None),
 ) -> dict:
     """Accept a video upload, persist it, and kick off the pipeline."""
     filename = video.filename or "input"
     ext = Path(filename).suffix.lower()
     if ext not in _ALLOWED_EXTENSIONS:
         raise HTTPException(400, f"unsupported file extension: {ext!r}")
+
+    lipsync_backend_norm: str | None = None
+    if lipsync_backend:
+        lipsync_backend_norm = lipsync_backend.lower().strip()
+        if lipsync_backend_norm not in _ALLOWED_LIPSYNC:
+            raise HTTPException(
+                400, f"unsupported lipsync_backend: {lipsync_backend!r}. "
+                     f"Allowed: {sorted(_ALLOWED_LIPSYNC)}"
+            )
 
     job_id = storage.new_job_id()
     job_directory = storage.job_dir(job_id)
@@ -59,6 +72,7 @@ async def create_job(
         job_id=job_id,
         target_language=target_language.lower(),
         source_language=source_language.lower() if source_language else None,
+        lipsync_backend=lipsync_backend_norm,
         input_filename=filename,
     )
     register_job(state)
@@ -90,7 +104,6 @@ async def get_job_status(job_id: str) -> dict:
         raise HTTPException(404, "job not found")
     payload = state.to_dict()
     if state.status == "completed":
-        # Final artifact will land here once stage 6 ships; for now expose what we have.
         for name in ("final.mp4", "translated_audio.wav", "translation.json"):
             p = storage.job_artifact_path(job_id, name)
             if p.exists():
