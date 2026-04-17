@@ -16,12 +16,16 @@ export type StageStatus =
   | "failed"
   | "skipped";
 
+export type LipsyncBackend = "none" | "wav2lip" | "musetalk" | "latentsync";
+
 export interface StageRecord {
   name: StageName;
   status: StageStatus;
   duration_ms: number | null;
   output: any;
   error: string | null;
+  progress: number | null;
+  eta_seconds: number | null;
 }
 
 export interface JobRecord {
@@ -30,6 +34,8 @@ export interface JobRecord {
   current_stage: StageName | null;
   target_language: string;
   source_language: string | null;
+  lipsync_backend: LipsyncBackend | null;
+  source_duration_seconds: number | null;
   input_filename: string;
   created_at: string;
   completed_at: string | null;
@@ -41,12 +47,13 @@ export interface JobRecord {
 export async function createJob(
   video: File,
   target_language: string,
-  source_language?: string
+  opts: { source_language?: string; lipsync_backend?: LipsyncBackend } = {}
 ): Promise<{ job_id: string; status: string; created_at: string }> {
   const fd = new FormData();
   fd.append("video", video);
   fd.append("target_language", target_language);
-  if (source_language) fd.append("source_language", source_language);
+  if (opts.source_language) fd.append("source_language", opts.source_language);
+  if (opts.lipsync_backend) fd.append("lipsync_backend", opts.lipsync_backend);
 
   const res = await fetch(`${API_BASE_URL}/jobs`, { method: "POST", body: fd });
   if (!res.ok) {
@@ -85,6 +92,7 @@ export function openJobEventStream(
     "stage_progress",
     "stage_completed",
     "stage_skipped",
+    "pipeline_etas",
     "job_completed",
     "error",
     "ping",

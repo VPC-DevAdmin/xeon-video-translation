@@ -51,5 +51,32 @@ os.environ["TTS_HOME"] = str(cache / "coqui-tts")
 from TTS.api import TTS
 TTS("tts_models/multilingual/multi-dataset/xtts_v2", progress_bar=False)
 
+# Wav2Lip checkpoint (~400 MB). Skip if LIPSYNC_BACKEND=none.
+backend = os.environ.get("LIPSYNC_BACKEND", "none")
+if backend == "wav2lip":
+    import urllib.request
+    w2l_dir = cache / "wav2lip"
+    w2l_dir.mkdir(parents=True, exist_ok=True)
+    ckpt = w2l_dir / "wav2lip_gan.pth"
+    if not ckpt.exists():
+        url = os.environ.get(
+            "WAV2LIP_CHECKPOINT_URL",
+            "https://huggingface.co/camenduru/Wav2Lip/resolve/main/wav2lip_gan.pth",
+        )
+        print(f"Downloading Wav2Lip checkpoint from {url} …")
+        tmp = ckpt.with_suffix(".part")
+        with urllib.request.urlopen(url, timeout=600) as resp, tmp.open("wb") as f:
+            while True:
+                chunk = resp.read(1 << 20)
+                if not chunk:
+                    break
+                f.write(chunk)
+        tmp.rename(ckpt)
+    else:
+        print("Wav2Lip checkpoint already present.")
+else:
+    print(f"Skipping Wav2Lip download (LIPSYNC_BACKEND={backend}). "
+          "Set LIPSYNC_BACKEND=wav2lip to pre-fetch.")
+
 print("Done.")
 PY

@@ -28,6 +28,12 @@ dependencies = [
   # License: CPML — see docs/models.md. Demo use only.
   "coqui-tts>=0.24",
 
+  # Stage 5 (lipsync) + Stage 6 (mux). opencv-headless avoids pulling X11;
+  # librosa/scipy are needed for Wav2Lip's mel spectrogram preprocessing.
+  "opencv-python-headless>=4.9",
+  "librosa>=0.10",
+  "scipy>=1.11",
+
   # torch is intentionally NOT pinned here so users can install the CPU wheel
   # via the PyTorch CPU index. The Dockerfile installs it explicitly.
 ]

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# End-to-end smoke test for stages 1–4 (M1 + M2 + M3).
+# End-to-end smoke test for stages 1–6 (M1 + M2 + M3 + M4).
 # Uploads a fixture clip, polls the job until done, prints the transcript,
-# translation, and a downloadable URL for the cloned-voice translated audio.
+# translation, and a downloadable URL for the final watermarked MP4.
 #
 # Requires: curl, jq, a running backend at $API_BASE, and a clip at the fixture path.
 set -euo pipefail
@@ -9,6 +9,7 @@ set -euo pipefail
 API_BASE="${API_BASE:-http://localhost:8088}"
 FIXTURE="${FIXTURE:-backend/tests/fixtures/sample_5s.mp4}"
 TARGET="${TARGET:-es}"
+LIPSYNC="${LIPSYNC:-none}"   # none | wav2lip | musetalk | latentsync
 
 if ! command -v jq >/dev/null 2>&1; then
   echo "jq is required (brew install jq / apt-get install jq)" >&2
@@ -27,10 +28,11 @@ EOF
   exit 1
 fi
 
-echo "==> POST $API_BASE/jobs (target=$TARGET)"
+echo "==> POST $API_BASE/jobs (target=$TARGET lipsync=$LIPSYNC)"
 JOB_JSON="$(curl -sS -X POST "$API_BASE/jobs" \
   -F "video=@$FIXTURE" \
-  -F "target_language=$TARGET")"
+  -F "target_language=$TARGET" \
+  -F "lipsync_backend=$LIPSYNC")"
 JOB_ID="$(echo "$JOB_JSON" | jq -r '.job_id')"
 echo "    job_id=$JOB_ID"
 
@@ -58,6 +60,12 @@ TTS_STATUS="$(echo "$STATUS_JSON" | jq -r '.stages[] | select(.name=="tts") | .s
 if [ "$TTS_STATUS" = "done" ]; then
   echo "==> Cloned voice ($TARGET):"
   echo "    $API_BASE/jobs/$JOB_ID/artifacts/translated_audio.wav"
+  echo
+fi
+MUX_STATUS="$(echo "$STATUS_JSON" | jq -r '.stages[] | select(.name=="mux") | .status')"
+if [ "$MUX_STATUS" = "done" ]; then
+  echo "==> Final video (watermarked):"
+  echo "    $API_BASE/jobs/$JOB_ID/artifacts/final.mp4"
   echo
 fi
 echo "==> Per-stage timing:"
