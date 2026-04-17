@@ -23,6 +23,9 @@ services:
       - jobs:/jobs
       # Bind-mount source for live reload during development.
       - ./backend/app:/app/app
+      # Expose helper scripts inside the container so `docker compose exec`
+      # can run them without docker-cp dance (e.g. download_models.sh).
+      - ./scripts:/app/scripts:ro
     ports:
       # Host port is configurable via BACKEND_PORT (default 8088) to avoid
       # clashing with other local apps that use 8000. Container stays on 8000.
