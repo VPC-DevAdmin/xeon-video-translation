@@ -21,7 +21,7 @@ COPY pyproject.toml ./
 RUN pip install --upgrade pip setuptools wheel \
     && pip install \
        --extra-index-url https://download.pytorch.org/whl/cpu \
-       "torch>=2.2,<2.6" \
+       "torch>=2.6" \
     && pip install -e .
 
 COPY app ./app
