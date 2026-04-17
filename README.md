@@ -56,6 +56,8 @@ Run `make help` for the full menu. Most common targets:
 | `make models-all` | All of the above |
 | `make run-none` / `run-wav2lip` / `run-musetalk` | Smoke test with the named backend |
 | `make list` | Recent jobs on the backend |
+| `make progress` | One-shot status on the latest job (use `JOB=prefix` for specific) |
+| `make watch` | Poll the latest job until it finishes (good for `run-musetalk`) |
 | `make fetch` | Download latest job to `artifacts/jobs/<short>/` |
 | `make fetch JOB=b0965` | Specific job by id prefix |
 | `make inputs` | List fixtures under `artifacts/inputs/` |
@@ -117,29 +119,6 @@ npm run dev
 
 You will need `ffmpeg` available on `PATH`.
 
-<<<<<<< chore/makefile-and-artifacts-layout
-=======
-### Smoke test
-
-Drop a short single-speaker clip at `backend/tests/fixtures/sample_5s.mp4`, then:
-
-```bash
-./scripts/smoke_test.sh
-```
-
-This uploads the clip, polls until done, and prints the transcript and translation.
-
-### Fetching job artifacts
-
-```bash
-./scripts/fetch.sh              # download everything from the latest job
-./scripts/fetch.sh --list       # show recent jobs (id prefix, status, lang, backend, filename)
-./scripts/fetch.sh <prefix>     # download a specific job by id prefix (≥ 4 chars usually unique)
-```
-
-Writes into `./artifacts/<short_id>/` with whatever the job produced — `input.*`, `audio.wav`, `transcript.json`, `translation.json`, `translated_audio.wav`, `lipsynced.mp4`, `final.mp4`.
-
->>>>>>> main
 ---
 
 ## Architecture (M1 + M2)

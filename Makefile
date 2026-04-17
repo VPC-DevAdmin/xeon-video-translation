@@ -100,13 +100,21 @@ run-musetalk: LIPSYNC=musetalk
 run-musetalk: run  ## Shortcut: run with LIPSYNC=musetalk (slow, ~20 min/clip)
 
 # --- Artifacts ----------------------------------------------------------------
-.PHONY: list fetch inputs clean-jobs
+.PHONY: list fetch progress progress-report watch inputs clean-jobs
 
 list:  ## List recent jobs on the backend
 	@API_BASE=$(API_BASE) ./scripts/fetch.sh --list
 
 fetch:  ## Download latest job artifacts (override with JOB=prefix)
 	@API_BASE=$(API_BASE) OUT_ROOT=$(OUT_ROOT) ./scripts/fetch.sh $(JOB)
+
+progress:  ## One-shot status report on latest (or JOB=prefix) job
+	@API_BASE=$(API_BASE) ./scripts/progress.sh $(JOB)
+
+progress-report: progress  ## Alias for progress
+
+watch:  ## Poll a running job until it finishes (INTERVAL=secs to tune)
+	@API_BASE=$(API_BASE) INTERVAL=$(or $(INTERVAL),5) ./scripts/progress.sh --watch $(JOB)
 
 inputs:  ## List available input fixtures under artifacts/inputs/
 	@if [ -d artifacts/inputs ] && [ "$$(ls -A artifacts/inputs 2>/dev/null | grep -v '^\.gitkeep$$')" ]; then \
