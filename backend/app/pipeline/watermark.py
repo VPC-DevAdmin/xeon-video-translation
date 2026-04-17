@@ -11,6 +11,7 @@ via `ENABLE_WATERMARK=false` for internal pipeline testing.
 
 from __future__ import annotations
 
+import logging
 import shlex
 import subprocess
 from dataclasses import dataclass
@@ -18,6 +19,8 @@ from pathlib import Path
 from typing import Any
 
 from ..config import settings
+
+log = logging.getLogger(__name__)
 
 
 class MuxError(RuntimeError):
@@ -59,6 +62,20 @@ def _drawtext_filter(text: str) -> str:
     )
 
 
+def _probe_duration(path: Path) -> float | None:
+    try:
+        out = subprocess.check_output(
+            ["ffprobe", "-v", "error",
+             "-show_entries", "format=duration",
+             "-of", "default=nw=1:nk=1", str(path)],
+            timeout=30,
+        )
+        return float(out.decode().strip())
+    except Exception as e:
+        log.warning("ffprobe failed on %s: %s", path, e)
+        return None
+
+
 def mux_and_watermark(
     video_path: Path,
     audio_path: Path,
@@ -69,6 +86,12 @@ def mux_and_watermark(
 
     `video_path` should already carry whatever lipsync produced (or be the
     original upload when lipsync is skipped). Audio is replaced wholesale.
+
+    If the audio is longer than the video, the last video frame is frozen
+    (via ffmpeg `tpad`) to pad up to the audio length — important because
+    XTTS output commonly runs longer than the source clip for languages
+    with different syllable density. Previously we truncated with
+    `-shortest` and cut speech mid-word.
     """
     if not video_path.exists():
         raise MuxError(f"video input missing: {video_path}")
@@ -80,6 +103,23 @@ def mux_and_watermark(
 
     comment = "AI-generated: polyglot-demo open-source video translation"
 
+    video_dur = _probe_duration(video_path)
+    audio_dur = _probe_duration(audio_path)
+    pad_seconds = 0.0
+    if video_dur is not None and audio_dur is not None and audio_dur > video_dur:
+        pad_seconds = audio_dur - video_dur
+
+    video_filters: list[str] = []
+    if pad_seconds > 0.0:
+        # Clone the final frame. Without this, libx264 would end the video
+        # stream at the original last frame and the remaining audio plays
+        # over nothing.
+        video_filters.append(
+            f"tpad=stop_mode=clone:stop_duration={pad_seconds:.3f}"
+        )
+    if wm:
+        video_filters.append(_drawtext_filter(settings.watermark_text))
+
     cmd: list[str] = [
         "ffmpeg", "-y",
         "-i", str(video_path),
@@ -87,8 +127,8 @@ def mux_and_watermark(
         "-map", "0:v:0",
         "-map", "1:a:0",
     ]
-    if wm:
-        cmd.extend(["-vf", _drawtext_filter(settings.watermark_text)])
+    if video_filters:
+        cmd.extend(["-vf", ",".join(video_filters)])
         cmd.extend(["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"])
     else:
         # No filter → we can stream-copy the video track.
@@ -97,9 +137,15 @@ def mux_and_watermark(
         "-c:a", "aac", "-b:a", "128k",
         "-metadata", f"comment={comment}",
         "-movflags", "+faststart",
-        "-shortest",
+        # No `-shortest` — we want to keep the full audio. Video is already
+        # padded via tpad when needed.
         str(output_path),
     ])
+
+    log.info(
+        "mux: video=%.2fs audio=%.2fs pad=%.2fs wm=%s",
+        video_dur or -1, audio_dur or -1, pad_seconds, wm,
+    )
 
     proc = subprocess.run(cmd, capture_output=True, timeout=600)
     if proc.returncode != 0:
