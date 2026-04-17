@@ -18,13 +18,17 @@ Simplifications in v1 (documented limitations):
 from __future__ import annotations
 
 import json
+import logging
 import os
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
 from typing import Any
 
 from ..config import settings
+
+log = logging.getLogger(__name__)
 
 
 # BCP-47 -> XTTS-v2 language codes. XTTS supports these; our NLLB language
@@ -126,9 +130,118 @@ def synthesize(
     if not output_path.exists() or output_path.stat().st_size == 0:
         raise TTSError("XTTS produced no output")
 
+    # XTTS wraps its speech in ~200ms clicks/breaths and trailing silence that
+    # can stretch the file to 2–3× the actual spoken duration. Without this
+    # post-step, the downstream mux either truncates mid-word (`-shortest`) or
+    # forces the video to freeze-frame through multiple seconds of dead air.
+    try:
+        _trim_to_speech(output_path)
+    except Exception as e:
+        # Best-effort: if trimming fails, keep the original audio so we don't
+        # drop the stage over a cosmetic issue.
+        log.warning("silence trim failed (%s); keeping untrimmed XTTS output", e)
+
     return TTSResult(
         backend="xtts_v2",
         language=tgt,
         reference_audio=reference_audio.name,
         output_path=output_path.name,
     )
+
+
+# --------------------------------------------------------------------------- #
+# Silence trimming
+# --------------------------------------------------------------------------- #
+
+_SILENCE_THRESHOLD_DB = -25.0   # XTTS background-noise floor sits around -30 dBFS
+_MIN_SILENCE_SECONDS = 0.10     # how long a quiet stretch needs to be to count
+_HEADROOM_SECONDS = 0.05        # pad on either side of the kept span
+_MIN_SPEECH_SECONDS = 0.30      # below this, assume detection failed and skip
+
+
+def _trim_to_speech(audio_path: Path) -> None:
+    """Trim `audio_path` in place to the longest non-silent span.
+
+    XTTS tends to emit a short click at the start, a long pause, the actual
+    speech, more silence, and a trailing blip. `silenceremove` can't handle
+    that shape because the click is above any reasonable threshold.
+
+    Instead: find silence boundaries via ffmpeg `silencedetect`, derive the
+    non-silent spans, pick the longest one (the real speech), and copy that
+    range into the original path via `ffmpeg -af atrim=...`.
+    """
+    spans = _non_silent_spans(audio_path)
+    speech = [(s, e) for s, e in spans if (e - s) >= _MIN_SPEECH_SECONDS]
+    if not speech:
+        log.info("no speech span detected; leaving %s untouched", audio_path.name)
+        return
+
+    start, end = max(speech, key=lambda se: se[1] - se[0])
+    total = _probe_duration(audio_path)
+    start = max(0.0, start - _HEADROOM_SECONDS)
+    end = min(total, end + _HEADROOM_SECONDS)
+
+    tmp = audio_path.with_suffix(audio_path.suffix + ".trim")
+    cmd = [
+        "ffmpeg", "-v", "error", "-y",
+        "-i", str(audio_path),
+        "-af", f"atrim=start={start:.3f}:end={end:.3f},asetpts=PTS-STARTPTS",
+        str(tmp),
+    ]
+    proc = subprocess.run(cmd, capture_output=True, timeout=60)
+    if proc.returncode != 0:
+        raise RuntimeError(f"ffmpeg atrim failed: {proc.stderr.decode(errors='replace')}")
+    tmp.replace(audio_path)
+    log.info(
+        "trimmed %s: %.2fs -> %.2fs (kept %.2f-%.2f)",
+        audio_path.name, total, end - start, start, end,
+    )
+
+
+def _probe_duration(path: Path) -> float:
+    out = subprocess.check_output(
+        ["ffprobe", "-v", "error",
+         "-show_entries", "format=duration",
+         "-of", "default=nw=1:nk=1", str(path)],
+        timeout=30,
+    )
+    return float(out.decode().strip())
+
+
+def _non_silent_spans(path: Path) -> list[tuple[float, float]]:
+    """Return [(start, end), ...] of non-silent spans inside `path`."""
+    duration = _probe_duration(path)
+    proc = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-i", str(path),
+         "-af", f"silencedetect=noise={_SILENCE_THRESHOLD_DB}dB:duration={_MIN_SILENCE_SECONDS}",
+         "-f", "null", "-"],
+        capture_output=True, text=True, timeout=60,
+    )
+    silences: list[tuple[float, float]] = []
+    start: float | None = None
+    for line in proc.stderr.splitlines():
+        if "silence_start:" in line:
+            start = float(line.split("silence_start:")[1].strip())
+        elif "silence_end:" in line and start is not None:
+            end_token = line.split("silence_end:")[1].split("|")[0].strip()
+            silences.append((start, float(end_token)))
+            start = None
+
+    # Merge silences < 150ms apart so brief speech bumps don't create
+    # noise-sized "speech" spans between two real pauses.
+    merged: list[tuple[float, float]] = []
+    for s, e in silences:
+        if merged and s - merged[-1][1] < 0.15:
+            merged[-1] = (merged[-1][0], e)
+        else:
+            merged.append((s, e))
+
+    spans: list[tuple[float, float]] = []
+    cursor = 0.0
+    for s, e in merged:
+        if s > cursor:
+            spans.append((cursor, s))
+        cursor = e
+    if cursor < duration:
+        spans.append((cursor, duration))
+    return spans

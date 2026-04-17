@@ -39,6 +39,20 @@ log = logging.getLogger(__name__)
 ProgressCallback = Callable[[float], None]
 
 
+def _probe_duration(path: Path) -> float | None:
+    try:
+        out = subprocess.check_output(
+            ["ffprobe", "-v", "error",
+             "-show_entries", "format=duration",
+             "-of", "default=nw=1:nk=1", str(path)],
+            timeout=30,
+        )
+        return float(out.decode().strip())
+    except Exception as e:
+        log.warning("ffprobe failed on %s: %s", path, e)
+        return None
+
+
 # --------------------------------------------------------------------------- #
 # Paths — relative to the service's shared /models volume.
 # --------------------------------------------------------------------------- #
@@ -317,16 +331,34 @@ def run(
     finally:
         writer.release()
 
-    # Mux new audio onto the silent MP4.
-    cmd = [
+    # Mux new audio onto the silent MP4. If audio is longer than the
+    # lipsynced video (common — XTTS output often runs past the source clip),
+    # freeze the last frame rather than truncating speech with `-shortest`.
+    audio_dur = _probe_duration(audio_path)
+    video_dur = _probe_duration(tmp_video)
+    pad_seconds = 0.0
+    if audio_dur is not None and video_dur is not None and audio_dur > video_dur:
+        pad_seconds = audio_dur - video_dur
+
+    cmd: list[str] = [
         "ffmpeg", "-y",
         "-i", str(tmp_video),
         "-i", str(audio_path),
+    ]
+    if pad_seconds > 0.0:
+        cmd.extend([
+            "-vf", f"tpad=stop_mode=clone:stop_duration={pad_seconds:.3f}",
+        ])
+    cmd.extend([
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
         "-c:a", "aac",
-        "-shortest",
+        # Deliberately no `-shortest`: we padded video above when needed.
         str(output_path),
-    ]
+    ])
+    log.info(
+        "musetalk mux: video=%.2fs audio=%.2fs pad=%.2fs",
+        video_dur or -1.0, audio_dur or -1.0, pad_seconds,
+    )
     proc = subprocess.run(cmd, capture_output=True, timeout=1800)
     tmp_video.unlink(missing_ok=True)
     if proc.returncode != 0:
