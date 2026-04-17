@@ -75,7 +75,7 @@ if backend == "wav2lip":
     if not ckpt.exists():
         url = os.environ.get(
             "WAV2LIP_CHECKPOINT_URL",
-            "https://huggingface.co/camenduru/Wav2Lip/resolve/main/wav2lip_gan.pth",
+            "https://github.com/justinjohn0306/Wav2Lip/releases/download/models/wav2lip_gan.pth",
         )
         print(f"Downloading Wav2Lip checkpoint from {url} …")
         tmp = ckpt.with_suffix(".part")

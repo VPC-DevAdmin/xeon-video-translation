@@ -31,9 +31,19 @@ Vendored from [Rudrabha/Wav2Lip](https://github.com/Rudrabha/Wav2Lip) (IIIT
 Hyderabad, 2020). Architecture is a GAN with a face encoder, audio encoder,
 and face decoder. We run it on CPU with float32 weights.
 
-**First run** downloads `wav2lip_gan.pth` (~400 MB) into
-`$MODEL_CACHE_DIR/wav2lip/wav2lip_gan.pth`. The default URL is a HuggingFace
-mirror; override with `WAV2LIP_CHECKPOINT_URL` if that 404s.
+**First run** downloads `wav2lip_gan.pth` (~415 MB) into
+`$MODEL_CACHE_DIR/wav2lip/wav2lip_gan.pth`. The default URL points at a
+GitHub release asset (immutable). Override with `WAV2LIP_CHECKPOINT_URL` if
+it ever breaks:
+
+```
+# Default (GitHub release, justinjohn0306/Wav2Lip)
+WAV2LIP_CHECKPOINT_URL=https://github.com/justinjohn0306/Wav2Lip/releases/download/models/wav2lip_gan.pth
+
+# Alternate HuggingFace mirrors (all 435,801,865 bytes, identical content)
+WAV2LIP_CHECKPOINT_URL=https://huggingface.co/numz/wav2lip_studio/resolve/main/Wav2lip/wav2lip_gan.pth
+WAV2LIP_CHECKPOINT_URL=https://huggingface.co/Nekochu/Wav2Lip/resolve/main/wav2lip_gan.pth
+```
 
 ### Measured limitations on CPU
 

@@ -45,10 +45,11 @@ class Settings(BaseSettings):
     #   musetalk    — stubbed in this PR (see docs/lipsync.md)
     #   latentsync  — stubbed in this PR (see docs/lipsync.md)
     lipsync_backend: Literal["none", "wav2lip", "musetalk", "latentsync"] = "none"
-    # HuggingFace mirror of the Wav2Lip checkpoint (CC-BY-NC 4.0 weights).
-    # Override if the default 404s; see docs/lipsync.md for alternatives.
+    # GitHub release mirror of the Wav2Lip checkpoint (CC-BY-NC 4.0 weights).
+    # Release assets are immutable, so this URL is stable. If it ever 404s,
+    # see docs/lipsync.md for alternate HuggingFace mirrors.
     wav2lip_checkpoint_url: str = (
-        "https://huggingface.co/camenduru/Wav2Lip/resolve/main/wav2lip_gan.pth"
+        "https://github.com/justinjohn0306/Wav2Lip/releases/download/models/wav2lip_gan.pth"
     )
     # Watermark text drawn on the output video. Respect responsible-use guidance.
     watermark_text: str = "AI-translated"
