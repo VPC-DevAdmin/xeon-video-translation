@@ -53,6 +53,35 @@ def _probe_duration(path: Path) -> float | None:
         return None
 
 
+def _fill_boxes(
+    boxes: list[tuple[int, int, int, int] | None],
+) -> list[tuple[int, int, int, int] | None]:
+    """Fill `None` bboxes with the nearest valid one in time.
+
+    Forward-fills first (gaps use the last valid detection we saw), then
+    backward-fills leading gaps (frames before the first detection get the
+    earliest detection). A clip with zero detections stays all-None — the
+    caller is expected to have raised before getting here.
+    """
+    out: list[tuple[int, int, int, int] | None] = list(boxes)
+
+    last: tuple[int, int, int, int] | None = None
+    for i, b in enumerate(out):
+        if b is not None:
+            last = b
+        elif last is not None:
+            out[i] = last
+
+    first: tuple[int, int, int, int] | None = None
+    for i in range(len(out) - 1, -1, -1):
+        if out[i] is not None:
+            first = out[i]
+        elif first is not None:
+            out[i] = first
+
+    return out
+
+
 # --------------------------------------------------------------------------- #
 # Paths — relative to the service's shared /models volume.
 # --------------------------------------------------------------------------- #
@@ -229,25 +258,34 @@ def run(
     # --- 3. Face detection + landmarks ------------------------------------
     log.info("Detecting faces in %d frames", len(frames))
     detections = detect_batch(state.aligner, frames)
-    missing_count = sum(1 for d in detections if d.face_box is None)
+    raw_boxes = [d.face_box for d in detections]
+    missing_count = sum(1 for b in raw_boxes if b is None)
     if missing_count == len(frames):
         raise RuntimeError(
             "no face detected in any frame. Is the subject front-facing?"
         )
     if missing_count:
-        log.warning("Face missing in %d/%d frames — will leave those untouched",
-                    missing_count, len(frames))
+        # Fill the gaps with the nearest valid bbox (forward first, then
+        # backward for leading gaps) so every frame gets inference. Without
+        # this, frames where face-alignment dropped a detection render as
+        # the original-frame passthrough — which flips visibly back and forth
+        # with MuseTalk-regenerated frames (original beard vs smoothed jaw).
+        log.info(
+            "Face detection gaps: %d/%d frames — carrying nearest bbox forward",
+            missing_count, len(frames),
+        )
+    face_boxes_filled = _fill_boxes(raw_boxes)
 
     # --- 4. Per-frame VAE latents -----------------------------------------
     log.info("Encoding face crops via VAE")
     input_latents: list[torch.Tensor | None] = []
     face_boxes: list[tuple[int, int, int, int] | None] = []
-    for frame, det in zip(frames, detections):
-        if det.face_box is None:
+    for frame, box in zip(frames, face_boxes_filled):
+        if box is None:
             input_latents.append(None)
             face_boxes.append(None)
             continue
-        x1, y1, x2, y2 = det.face_box
+        x1, y1, x2, y2 = box
         # V1.5 adds a bottom margin so the chin is fully included.
         y2 = min(y2 + extra_margin, frame.shape[0])
         crop = frame[y1:y2, x1:x2]
@@ -315,7 +353,13 @@ def run(
             face=face_resized,
             face_box=(x1, y1, x2, y2),
             fp=state.face_parsing,
-            mode="raw",
+            # `jaw` mode asks BiSeNet to protect the chin/cheek region when
+            # compositing, so the original skin (beard, stubble, pore detail)
+            # survives outside the mouth. `raw` mode, previously used, replaced
+            # the whole lower face with VAE-regenerated pixels, which loses
+            # stubble — a visible problem against any frames the detector
+            # skipped.
+            mode="jaw",
         )
         output_frames.append(blended)
 
