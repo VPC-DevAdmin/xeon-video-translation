@@ -19,7 +19,12 @@ dependencies = [
   "faster-whisper>=1.0.3",
 
   # NLLB translation. transformers wants torch; we install the CPU wheel.
-  "transformers>=4.40",
+  # Upper bound is coqui-tts's compat window — `isin_mps_friendly` was added
+  # in 4.44 (TTS imports it) and later renamed/relocated in 4.50, so a bare
+  # `>=4.40` lets pip land on something that either lacks the symbol or
+  # breaks the import path. Narrow the range to what coqui-tts 0.24 was
+  # tested against.
+  "transformers>=4.44,<4.47",
   "sentencepiece>=0.2",
   "numpy<2",
 
