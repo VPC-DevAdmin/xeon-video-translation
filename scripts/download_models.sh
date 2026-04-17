@@ -20,7 +20,21 @@ echo "==> Models will be cached under: $MODEL_CACHE_DIR"
 echo "==> Whisper: $WHISPER_MODEL (CPU int8)"
 echo "==> NLLB:    $NLLB_MODEL"
 
-python - <<PY
+# Prefer `python` (backend container ships it as the default interpreter) but
+# fall back to `python3` for host-side venv usage where `python` is absent.
+if command -v python >/dev/null 2>&1; then
+  PYTHON=python
+elif command -v python3 >/dev/null 2>&1; then
+  PYTHON=python3
+else
+  echo "error: neither 'python' nor 'python3' found on PATH. " \
+       "Run this inside the backend container:" >&2
+  echo "  docker compose exec -e LIPSYNC_BACKEND=\$LIPSYNC_BACKEND " \
+       "backend bash /app/scripts/download_models.sh" >&2
+  exit 1
+fi
+
+"$PYTHON" - <<PY
 import os
 from pathlib import Path
 

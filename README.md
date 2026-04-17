@@ -52,6 +52,14 @@ Both ports are configurable via `.env` to avoid clashes with other local apps:
 
 First run downloads model weights into the `models` volume — expect a few minutes for Whisper `base` + NLLB-600M (~3 GB total).
 
+To pre-fetch weights (including the optional ~400 MB Wav2Lip checkpoint) inside the running backend container:
+
+```bash
+docker compose exec backend bash /app/scripts/download_models.sh
+# Or, to also grab the Wav2Lip checkpoint:
+docker compose exec -e LIPSYNC_BACKEND=wav2lip backend bash /app/scripts/download_models.sh
+```
+
 ### Option B — Local dev (Python + Node directly)
 
 ```bash
