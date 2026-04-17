@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# End-to-end smoke test for stages 1–3 (M1 + M2).
-# Uploads a fixture clip, polls the job until done, prints the transcript and translation.
+# End-to-end smoke test for stages 1–4 (M1 + M2 + M3).
+# Uploads a fixture clip, polls the job until done, prints the transcript,
+# translation, and a downloadable URL for the cloned-voice translated audio.
 #
 # Requires: curl, jq, a running backend at $API_BASE, and a clip at the fixture path.
 set -euo pipefail
 
-API_BASE="${API_BASE:-http://localhost:8000}"
+API_BASE="${API_BASE:-http://localhost:8088}"
 FIXTURE="${FIXTURE:-backend/tests/fixtures/sample_5s.mp4}"
 TARGET="${TARGET:-es}"
 
@@ -53,5 +54,11 @@ echo
 echo "==> Translation ($TARGET):"
 curl -sS "$API_BASE/jobs/$JOB_ID/artifacts/translation.json" | jq -r '.text'
 echo
+TTS_STATUS="$(echo "$STATUS_JSON" | jq -r '.stages[] | select(.name=="tts") | .status')"
+if [ "$TTS_STATUS" = "done" ]; then
+  echo "==> Cloned voice ($TARGET):"
+  echo "    $API_BASE/jobs/$JOB_ID/artifacts/translated_audio.wav"
+  echo
+fi
 echo "==> Per-stage timing:"
 echo "$STATUS_JSON" | jq -r '.stages[] | "  \(.name): \(.status) (\(.duration_ms // "—") ms)"'

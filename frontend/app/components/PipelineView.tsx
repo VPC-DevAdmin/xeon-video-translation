@@ -1,5 +1,6 @@
 "use client";
 
+import { artifactUrl } from "../lib/api";
 import type { JobRecord, StageName, StageStatus } from "../lib/api";
 
 interface StageMeta {
@@ -13,7 +14,7 @@ const STAGES: StageMeta[] = [
   { key: "audio", title: "Audio extract", blurb: "ffmpeg → 16 kHz mono WAV" },
   { key: "transcribe", title: "Transcribe", blurb: "faster-whisper (CPU int8)" },
   { key: "translate", title: "Translate", blurb: "NLLB-200 distilled-600M" },
-  { key: "tts", title: "Voice clone", blurb: "XTTS-v2 (M3)", badge: "soon" },
+  { key: "tts", title: "Voice clone", blurb: "XTTS-v2 (CPU)" },
   { key: "lipsync", title: "Lip sync", blurb: "LatentSync (M4)", badge: "soon" },
   { key: "mux", title: "Mux & watermark", blurb: "ffmpeg + overlay (M4)", badge: "soon" },
 ];
@@ -79,7 +80,11 @@ export function PipelineView({ job }: { job: JobRecord | null }) {
               </pre>
             )}
 
-            <StageOutput name={meta.key} output={stage?.output} />
+            <StageOutput
+              name={meta.key}
+              output={stage?.output}
+              jobId={job?.job_id}
+            />
           </div>
         );
       })}
@@ -90,9 +95,11 @@ export function PipelineView({ job }: { job: JobRecord | null }) {
 function StageOutput({
   name,
   output,
+  jobId,
 }: {
   name: StageName;
   output: any;
+  jobId: string | undefined;
 }) {
   if (!output) return null;
 
@@ -126,6 +133,21 @@ function StageOutput({
         <div className="text-sm text-ink-200 mt-1 leading-snug max-h-40 overflow-auto">
           {output.text}
         </div>
+      </div>
+    );
+  }
+
+  if (name === "tts" && jobId && output.path) {
+    return (
+      <div className="mt-2">
+        <div className="text-[11px] text-ink-400 uppercase tracking-wide">
+          {output.backend} · voice cloned from original
+        </div>
+        <audio
+          controls
+          className="w-full mt-2"
+          src={artifactUrl(jobId, output.path)}
+        />
       </div>
     );
   }

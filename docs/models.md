@@ -35,14 +35,36 @@ you see numerical artifacts on a particular clip.
   too slow for the live demo. Try a 1B–3B model if you really want LLM-style
   translations on CPU.
 
-## Stages 4–6 (not yet wired up)
+## Stage 4 — Voice cloning / TTS
 
-- **TTS / voice clone**: XTTS-v2 is GPU-leaning. CPU works but is ~0.5–1×
-  realtime. [`piper`](https://github.com/rhasspy/piper) is a much faster
-  CPU-only fallback if voice cloning isn't required for the demo.
+**XTTS-v2** via `coqui-tts` (`tts_models/multilingual/multi-dataset/xtts_v2`).
+
+- ~1.8 GB on disk. First `TTS(...)` call downloads into `MODEL_CACHE_DIR/coqui-tts/`.
+- ~0.3–0.7× realtime on a 16-core Xeon — a 3-second translation takes
+  5–10 seconds to synthesize.
+- Needs ≥ 3 seconds of reference audio. We feed the whole Stage 1 WAV.
+- Supported languages (subset of NLLB's list): en, es, fr, de, it, pt, pl,
+  tr, ru, nl, cs, ar, zh-cn, hu, ko, ja, hi.
+- **License**: the XTTS-v2 weights are released under [CPML](https://coqui.ai/cpml),
+  which restricts commercial use. This demo sets `COQUI_TOS_AGREED=1` on first
+  load so the library doesn't prompt interactively; do not ship outputs
+  commercially without reviewing the license.
+
+### Simplifications in the current integration
+
+- **Whole-audio reference** rather than picking the longest clean segment
+  from Whisper's VAD output. Works well when the source is single-speaker
+  and well-miked.
+- **One-shot generation** on the full translated text. No per-segment
+  timing alignment, so the synthesized duration will usually not match the
+  original. Sufficient for short clips; visible in longer ones.
+- **No loudness normalization** / de-essing. Output is whatever XTTS produced.
+
+## Stages 5–6 (not yet wired up)
+
 - **Lip sync**: LatentSync needs a GPU realistically. On CPU, the demo will
-  likely skip Stage 5 and just produce a video with the new audio dubbed over
-  the original mouth.
+  likely skip Stage 5 and just produce a video with the new audio dubbed
+  over the original mouth.
 - **Mux + watermark**: ffmpeg, no model.
 
 ## Where models live
@@ -50,7 +72,8 @@ you see numerical artifacts on a particular clip.
 ```
 $MODEL_CACHE_DIR/
 ├── faster-whisper/        # CTranslate2 weights, by model name
-└── huggingface/           # HF transformers cache (NLLB lives here)
+├── huggingface/           # HF transformers cache (NLLB lives here)
+└── coqui-tts/             # XTTS-v2 weights (via TTS_HOME)
 ```
 
 In Docker, `MODEL_CACHE_DIR=/models` and a named volume persists across

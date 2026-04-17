@@ -45,5 +45,11 @@ from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 AutoTokenizer.from_pretrained(nllb, cache_dir=str(hf_dir))
 AutoModelForSeq2SeqLM.from_pretrained(nllb, cache_dir=str(hf_dir))
 
+print("Downloading Coqui XTTS-v2 (~1.8 GB)…")
+os.environ["COQUI_TOS_AGREED"] = "1"
+os.environ["TTS_HOME"] = str(cache / "coqui-tts")
+from TTS.api import TTS
+TTS("tts_models/multilingual/multi-dataset/xtts_v2", progress_bar=False)
+
 print("Done.")
 PY

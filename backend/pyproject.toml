@@ -23,6 +23,11 @@ dependencies = [
   "sentencepiece>=0.2",
   "numpy<2",
 
+  # TTS / voice cloning (Stage 4). `coqui-tts` is the maintained fork of
+  # Coqui's original TTS library. Pulls in XTTS-v2 on first use (~1.8 GB).
+  # License: CPML — see docs/models.md. Demo use only.
+  "coqui-tts>=0.24",
+
   # torch is intentionally NOT pinned here so users can install the CPU wheel
   # via the PyTorch CPU index. The Dockerfile installs it explicitly.
 ]
