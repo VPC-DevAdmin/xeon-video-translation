@@ -90,13 +90,25 @@ def _raise_from_http_error(e: urllib.error.HTTPError, LipsyncError: type) -> Non
         detail = e.reason
 
     if e.code == 501:
-        # PR 1a / 1b return this — the scaffold is up but inference isn't wired.
+        # PR 1a / 1b legacy — should not appear after PR 1c.
         msg = detail.get("message", str(detail)) if isinstance(detail, dict) else str(detail)
         raise LipsyncError(
-            f"MuseTalk service is not yet able to run inference: {msg}. "
-            f"See docs/lipsync.md for the PR roadmap. Fall back to "
-            f"LIPSYNC_BACKEND=wav2lip or none for now."
+            f"MuseTalk service not implemented: {msg}. See docs/lipsync.md."
         )
+    if e.code == 503:
+        # Missing weights.
+        fix = detail.get("fix") if isinstance(detail, dict) else None
+        raise LipsyncError(
+            f"MuseTalk weights missing: {detail}. "
+            f"{f'Fix: {fix}' if fix else 'See docs/lipsync.md.'}"
+        )
+    if e.code == 422:
+        # Input-level problem (no face detected, corrupt video, …).
+        err = detail.get("error", detail) if isinstance(detail, dict) else detail
+        raise LipsyncError(f"MuseTalk couldn't process the clip: {err}")
     if e.code == 400:
         raise LipsyncError(f"MuseTalk rejected request: {detail}")
+    if e.code == 500:
+        err = detail.get("error", detail) if isinstance(detail, dict) else detail
+        raise LipsyncError(f"MuseTalk crashed: {err}. See service logs.")
     raise LipsyncError(f"MuseTalk failed (HTTP {e.code}): {detail}")
