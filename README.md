@@ -37,9 +37,12 @@ Still to come: voice cloning (XTTS-v2), lip sync (LatentSync), final mux + water
 ```bash
 cp .env.example .env
 docker compose up --build
-# Frontend: http://localhost:3000
+# Frontend: http://localhost:3030     (override with FRONTEND_PORT in .env)
 # Backend:  http://localhost:8000/docs
 ```
+
+If port 3030 also conflicts, set `FRONTEND_PORT=<something-else>` in `.env` and
+update `CORS_ORIGINS` to match.
 
 First run downloads model weights into the `models` volume — expect a few minutes for Whisper `base` + NLLB-600M (~3 GB total).
 
