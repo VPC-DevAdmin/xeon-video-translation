@@ -24,9 +24,10 @@ If you find yourself wanting to disable the watermark for any non-internal-testi
 Milestones implemented:
 
 - **M1** — Repo skeleton, Docker Compose, FastAPI backend, Next.js frontend, ffmpeg audio extraction.
-- **M2** — Whisper transcription (`faster-whisper`, int8 CPU build) + NLLB-200 translation, end-to-end via `scripts/smoke_test.sh`.
+- **M2** — Whisper transcription (`faster-whisper`, int8 CPU build) + NLLB-200 translation.
+- **M3** — Voice cloning with XTTS-v2; produces `translated_audio.wav` in the speaker's own voice (end-to-end via `scripts/smoke_test.sh`).
 
-Still to come: voice cloning (XTTS-v2), lip sync (LatentSync), final mux + watermark.
+Still to come: lip sync (LatentSync), final mux + watermark.
 
 ---
 
@@ -103,7 +104,7 @@ This fork targets booth/laptop demos on Xeon machines without GPUs. Trade-offs:
 | ------------- | ----------------------------------- | --------------------------------------- |
 | Transcription | `faster-whisper base`, int8         | ~5–8× realtime                          |
 | Translation   | NLLB-200 distilled-600M             | ~2–3 sec per segment                    |
-| TTS (future)  | XTTS-v2 or piper                    | ~0.5–1× realtime                        |
+| TTS           | XTTS-v2 (Coqui)                     | ~0.3–0.7× realtime                      |
 | Lipsync (fut) | LatentSync — likely too slow on CPU | TBD                                     |
 
 See [docs/limitations.md](docs/limitations.md) for honest expectations.

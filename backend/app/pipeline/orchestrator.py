@@ -1,7 +1,7 @@
 """Pipeline orchestrator.
 
-Runs stages 1–3 (M1+M2). Emits events to a per-job asyncio.Queue that the SSE
-endpoint consumes. Stages 4–6 are stubbed for future milestones.
+Runs stages 1–4 (M1+M2+M3). Emits events to a per-job asyncio.Queue that the
+SSE endpoint consumes. Stages 5–6 are stubbed for future milestones.
 
 Stages run synchronously inside a worker thread; the orchestrator exposes an
 async wrapper so the FastAPI event loop is never blocked.
@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import storage
-from . import audio, transcribe, translate
+from . import audio, transcribe, translate, tts
 
 log = logging.getLogger(__name__)
 
@@ -172,9 +172,10 @@ async def run_pipeline(
             await _run_stage_audio(state, queue, input_path)
             await _run_stage_transcribe(state, queue)
             await _run_stage_translate(state, queue)
+            await _run_stage_tts(state, queue)
 
-            # Stages 4–6 not implemented in M1+M2 — mark and move on.
-            for name in ("tts", "lipsync", "mux"):
+            # Stages 5–6 not implemented yet — mark and move on.
+            for name in ("lipsync", "mux"):
                 _stage(state, name).status = StageStatus.SKIPPED
                 await _emit(queue, "stage_skipped", {"stage": name})
 
@@ -285,6 +286,53 @@ async def _run_stage_transcribe(
         await _emit(queue, "stage_completed", {"stage": name, "output": stage.output,
                                                 "duration_ms": stage.duration_ms,
                                                 "transcript": result})
+    except Exception as e:
+        stage.status = StageStatus.FAILED
+        stage.error = f"{type(e).__name__}: {e}"
+        stage.duration_ms = int((time.perf_counter() - started) * 1000)
+        _persist(state)
+        raise
+
+
+async def _run_stage_tts(
+    state: JobState, queue: asyncio.Queue[dict[str, Any]]
+) -> None:
+    name = "tts"
+    stage = _stage(state, name)
+    state.current_stage = name
+    stage.status = StageStatus.RUNNING
+    _persist(state)
+    await _emit(queue, "stage_started", {"stage": name})
+
+    translation_path = storage.job_artifact_path(state.job_id, "translation.json")
+    reference_audio = storage.job_artifact_path(state.job_id, "audio.wav")
+    out_path = storage.job_artifact_path(state.job_id, "translated_audio.wav")
+    started = time.perf_counter()
+
+    import json
+    translation = json.loads(translation_path.read_text())
+
+    def _do() -> dict[str, Any]:
+        return tts.synthesize(
+            translation=translation,
+            reference_audio=reference_audio,
+            output_path=out_path,
+        ).to_dict()
+
+    try:
+        result = await asyncio.to_thread(_do)
+        stage.duration_ms = int((time.perf_counter() - started) * 1000)
+        stage.output = {
+            "backend": result["backend"],
+            "language": result["language"],
+            "path": out_path.name,
+        }
+        stage.status = StageStatus.DONE
+        _persist(state)
+        await _emit(queue, "stage_completed", {
+            "stage": name, "output": stage.output,
+            "duration_ms": stage.duration_ms,
+        })
     except Exception as e:
         stage.status = StageStatus.FAILED
         stage.error = f"{type(e).__name__}: {e}"
