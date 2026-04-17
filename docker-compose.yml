@@ -24,7 +24,9 @@ services:
       # Bind-mount source for live reload during development.
       - ./backend/app:/app/app
     ports:
-      - "8000:8000"
+      # Host port is configurable via BACKEND_PORT (default 8088) to avoid
+      # clashing with other local apps that use 8000. Container stays on 8000.
+      - "${BACKEND_PORT:-8088}:8000"
     # Xeon machines often have many cores; cap so we don't starve the host.
     deploy:
       resources:
@@ -36,11 +38,15 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        # Baked into the client bundle at build time — must match the host-side
+        # backend port since the browser runs outside Docker.
+        NEXT_PUBLIC_API_BASE_URL: "http://localhost:${BACKEND_PORT:-8088}"
     image: polyglot-demo/frontend:dev
     container_name: polyglot-frontend
     restart: unless-stopped
     environment:
-      NEXT_PUBLIC_API_BASE_URL: http://localhost:8000
+      NEXT_PUBLIC_API_BASE_URL: "http://localhost:${BACKEND_PORT:-8088}"
     ports:
       # Host port is configurable via FRONTEND_PORT (default 3030) to avoid
       # clashing with other local apps that use 3000. Container stays on 3000.
