@@ -1,7 +1,12 @@
 # MuseTalk lipsync microservice — CPU-only, dep-isolated.
 #
-# PR 1a ships only the FastAPI scaffold. PR 1b will add torch/diffusers/etc.
-# Keeping this layered deliberately so each PR's rebuild cost is bounded.
+# Layered deliberately:
+#   1. apt deps (ffmpeg, build tools for a couple of source wheels)
+#   2. torch CPU wheels (heaviest single layer — cached across PRs)
+#   3. project deps from pyproject.toml
+#   4. application code (cheapest to rebuild)
+#
+# PR 1b adds the ML stack + preprocessing code. PR 1c flips inference on.
 FROM python:3.11-slim AS base
 
 ENV PYTHONUNBUFFERED=1 \
@@ -9,20 +14,30 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1
 
-# ffmpeg will be needed for PR 1c (muxing the inference output). Install now
-# so the 1c rebuild is cheap.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ffmpeg \
       ca-certificates \
+      git \
+      build-essential \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-COPY pyproject.toml ./
+# torch/torchaudio/torchcodec on the same 2.6 line as the main backend. The
+# Intel OpenMP that ships with these wheels is what actually does the heavy
+# lifting on Xeon; nothing more clever is needed for this milestone.
 RUN pip install --upgrade pip setuptools wheel \
-    && pip install -e .
+    && pip install \
+       --extra-index-url https://download.pytorch.org/whl/cpu \
+       "torch>=2.6,<2.7" \
+       "torchaudio>=2.6,<2.7" \
+    && pip install "torchcodec>=0.3,<0.4"
+
+COPY pyproject.toml ./
+RUN pip install -e .
 
 COPY app ./app
+COPY scripts ./scripts
 
 EXPOSE 8000
 
