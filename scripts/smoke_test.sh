@@ -5,7 +5,7 @@
 # Requires: curl, jq, a running backend at $API_BASE, and a clip at the fixture path.
 set -euo pipefail
 
-API_BASE="${API_BASE:-http://localhost:8000}"
+API_BASE="${API_BASE:-http://localhost:8088}"
 FIXTURE="${FIXTURE:-backend/tests/fixtures/sample_5s.mp4}"
 TARGET="${TARGET:-es}"
 
