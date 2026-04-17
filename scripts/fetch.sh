@@ -8,11 +8,19 @@
 #
 # Env:
 #   API_BASE   backend URL (default: http://localhost:8088)
+<<<<<<< chore/makefile-and-artifacts-layout
+#   OUT_ROOT   where to write (default: ./artifacts/jobs)
+set -euo pipefail
+
+API_BASE="${API_BASE:-http://localhost:8088}"
+OUT_ROOT="${OUT_ROOT:-./artifacts/jobs}"
+=======
 #   OUT_ROOT   where to write (default: ./artifacts)
 set -euo pipefail
 
 API_BASE="${API_BASE:-http://localhost:8088}"
 OUT_ROOT="${OUT_ROOT:-./artifacts}"
+>>>>>>> main
 
 if ! command -v jq >/dev/null 2>&1; then
   echo "jq is required (brew install jq / apt-get install jq)" >&2
