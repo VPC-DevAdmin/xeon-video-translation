@@ -97,6 +97,39 @@ async def _kickoff(state: JobState, input_path: Path) -> None:
         logging.getLogger(__name__).exception("pipeline kickoff failed")
 
 
+@router.get("")
+async def list_jobs(limit: int = 20) -> dict:
+    """List recent jobs, newest first.
+
+    Reads meta.json from each directory under JOB_ARTIFACTS_DIR. Good enough
+    for a single-machine demo; we're not pretending this scales.
+    """
+    limit = max(1, min(200, int(limit)))
+    jobs: list[dict] = []
+    d = settings.job_artifacts_dir
+    if d.exists():
+        dirs = sorted(d.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)
+        for job_dir in dirs:
+            if not job_dir.is_dir():
+                continue
+            meta = storage.read_meta(job_dir.name)
+            if not meta:
+                continue
+            jobs.append({
+                "job_id": job_dir.name,
+                "status": meta.get("status"),
+                "current_stage": meta.get("current_stage"),
+                "created_at": meta.get("created_at"),
+                "completed_at": meta.get("completed_at"),
+                "input_filename": meta.get("input_filename"),
+                "target_language": meta.get("target_language"),
+                "lipsync_backend": meta.get("lipsync_backend"),
+            })
+            if len(jobs) >= limit:
+                break
+    return {"jobs": jobs}
+
+
 @router.get("/{job_id}")
 async def get_job_status(job_id: str) -> dict:
     state = get_job(job_id)
@@ -110,6 +143,24 @@ async def get_job_status(job_id: str) -> dict:
                 payload["result_url"] = f"/jobs/{job_id}/artifacts/{name}"
                 break
     return payload
+
+
+@router.get("/{job_id}/artifacts")
+async def list_artifacts(job_id: str) -> dict:
+    """List all files written to this job's directory."""
+    d = storage.job_dir(job_id)
+    if not d.exists():
+        raise HTTPException(404, "job not found")
+    artifacts = []
+    for p in sorted(d.iterdir()):
+        if not p.is_file():
+            continue
+        artifacts.append({
+            "name": p.name,
+            "size_bytes": p.stat().st_size,
+            "url": f"/jobs/{job_id}/artifacts/{p.name}",
+        })
+    return {"job_id": job_id, "artifacts": artifacts}
 
 
 @router.get("/{job_id}/artifacts/{name}")
