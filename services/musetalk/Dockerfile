@@ -31,6 +31,7 @@ RUN pip install --upgrade pip setuptools wheel \
        --extra-index-url https://download.pytorch.org/whl/cpu \
        "torch>=2.6,<2.7" \
        "torchaudio>=2.6,<2.7" \
+       "torchvision>=0.21,<0.22" \
     && pip install "torchcodec>=0.3,<0.4"
 
 COPY pyproject.toml ./
