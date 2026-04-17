@@ -74,6 +74,24 @@ container (`lipsync-musetalk`) with its own Python env. The backend calls it
 over HTTP and passes **file paths** through the shared `/jobs` volume — no
 bytes cross the wire.
 
+### Known quality issues on the current build
+
+- **Mouth softness** is MuseTalk's inherent 256×256 VAE ceiling. Not fixable
+  without retrained weights at higher resolution; no public release exists.
+- **Face detection gaps**: earlier builds passed through the original frame
+  when face-alignment returned no detection on a given frame. Against a
+  MuseTalk-regenerated neighbor (smoothed jaw / no stubble), that caused
+  visible flicker. Now: the nearest valid bbox is forward-filled through
+  gaps so every frame gets inference — no passthrough.
+- **Stubble/detail preservation** uses BiSeNet's `jaw` mask instead of
+  regenerating the whole lower face (`raw` mode). The model's predicted
+  pixels are blended into the mouth region only; cheeks/chin keep their
+  original skin detail.
+- **Quality ceiling**: even with those fixes, MuseTalk's output is "mouth
+  is regenerated, fuzzy but continuous" rather than "indistinguishable from
+  source". For demo, it's a reasonable tradeoff; for production, see the
+  roadmap note above — a higher-res successor model is the real answer.
+
 ### Roadmap
 
 | Phase | What ships | Behavior when you pick `musetalk` |
