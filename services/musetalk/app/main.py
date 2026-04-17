@@ -24,8 +24,8 @@ from pydantic import BaseModel, Field
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s :: %(message)s")
 log = logging.getLogger(__name__)
 
-VERSION = "0.2.0"
-INFERENCE_IMPLEMENTED = False  # flipped to True by PR 1c
+VERSION = "0.3.0"
+INFERENCE_IMPLEMENTED = True  # PR 1c: first runnable pass — expect iteration
 
 MODEL_CACHE_DIR = Path(os.environ.get("MODEL_CACHE_DIR", "/models"))
 WEIGHTS_ROOT = MODEL_CACHE_DIR / "musetalk"
@@ -34,8 +34,13 @@ WEIGHTS_ROOT = MODEL_CACHE_DIR / "musetalk"
 app = FastAPI(
     title="polyglot-demo lipsync (MuseTalk)",
     version=VERSION,
-    description="CPU MuseTalk lipsync service. PR 1b: deps + weights ready; inference pending.",
+    description="CPU MuseTalk lipsync service. PR 1c: first runnable inference.",
 )
+
+
+@app.on_event("startup")
+def _log_startup() -> None:
+    log.info("lipsync-musetalk %s starting — inference_implemented=%s", VERSION, INFERENCE_IMPLEMENTED)
 
 
 # --------------------------------------------------------------------------- #
@@ -172,6 +177,8 @@ def weights() -> dict:
 
 @app.post("/lipsync", response_model=LipsyncResponse)
 def lipsync(req: LipsyncRequest) -> LipsyncResponse:
+    import time
+
     video = Path(req.video_path)
     audio = Path(req.audio_path)
 
@@ -184,20 +191,45 @@ def lipsync(req: LipsyncRequest) -> LipsyncResponse:
     if not audio.exists():
         raise HTTPException(status_code=400, detail=f"audio_path not visible: {audio!s}.")
 
-    if not INFERENCE_IMPLEMENTED:
-        log.info("lipsync requested for %s + %s — returning 501 (PR 1b; weights ready, inference pending)",
-                 video.name, audio.name)
+    # Import here so the service stays responsive to /health even if torch
+    # imports fail on boot.
+    from .musetalk.inference import WeightPaths, run
+
+    weights = WeightPaths.from_cache(Path(os.environ.get("MODEL_CACHE_DIR", "/models")))
+    missing = weights.missing()
+    if missing:
         raise HTTPException(
-            status_code=501,
+            status_code=503,
             detail={
-                "phase": "not-implemented",
-                "message": (
-                    "MuseTalk inference is not yet wired up. Deps and weights "
-                    "are in place as of PR 1b; the UNet/VAE forward pass lands "
-                    "in PR 1c."
-                ),
-                "see_also": "docs/lipsync.md",
+                "phase": "weights-missing",
+                "missing": [str(p) for p in missing],
+                "fix": "docker compose exec lipsync-musetalk bash /app/scripts/download_models.sh",
             },
         )
 
-    raise HTTPException(status_code=500, detail="unreachable in PR 1b")
+    started = time.perf_counter()
+    try:
+        result = run(
+            video_path=video,
+            audio_path=audio,
+            output_path=Path(req.output_path),
+            weight_paths=weights,
+        )
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=503, detail={"phase": "weights-missing", "error": str(e)})
+    except RuntimeError as e:
+        raise HTTPException(status_code=422, detail={"phase": "input-rejected", "error": str(e)})
+    except Exception as e:
+        log.exception("MuseTalk inference failed")
+        raise HTTPException(
+            status_code=500,
+            detail={"phase": "inference-error", "error": f"{type(e).__name__}: {e}"},
+        )
+    duration_ms = int((time.perf_counter() - started) * 1000)
+    log.info("lipsync done in %d ms — %d frames", duration_ms, result.frames_processed)
+    return LipsyncResponse(
+        status="ok",
+        output_path=result.output_path,
+        frames_processed=result.frames_processed,
+        duration_ms=duration_ms,
+    )

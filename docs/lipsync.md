@@ -79,8 +79,8 @@ bytes cross the wire.
 | Phase | What ships | Behavior when you pick `musetalk` |
 |-------|------------|-----------------------------------|
 | **PR 1a** | FastAPI scaffold, Compose wiring, HTTP client | Fails fast with a clean `LipsyncError` pointing here |
-| **PR 1b** (current) | torch/diffusers/transformers pinned to MuseTalk's expected versions; face-alignment (replaces mmpose); `scripts/download_models.sh` fetches ~1.4 GB of weights; `/ready` + `/weights` introspection endpoints | Same 501 but the container has all deps loaded and weights on disk |
-| **PR 1c** | Vendor MuseTalk inference code, port preprocessing off mmpose to face-alignment, wire UNet forward + VAE decode + blending | Real lipsync output |
+| **PR 1b** | torch/diffusers/transformers pinned; face-alignment (replaces mmpose); weight downloads; `/ready` + `/weights` introspection | Same 501 but the container has everything on disk |
+| **PR 1c** (current) | Vendor MuseTalk V1.5 model code, AudioProcessor (HF Whisper with `output_hidden_states=True`), face-alignment preprocessing, UNet+VAE forward, BiSeNet-aware blending | **First runnable pass.** Expect initial bugs; iterate. |
 
 ### Pre-fetch weights
 
