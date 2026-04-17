@@ -25,6 +25,12 @@ out/
 backend/jobs/
 backend/models/
 
+# Fetched job outputs. artifacts/inputs/ and artifacts/review/ are tracked
+# (they contain user-provided source clips and committed samples); only
+# generated job output trees are ignored.
+/artifacts/jobs/*
+!/artifacts/jobs/.gitkeep
+
 # OS
 .DS_Store
 Thumbs.db

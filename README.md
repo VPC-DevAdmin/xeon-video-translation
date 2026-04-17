@@ -34,33 +34,72 @@ Still to come: MuseTalk and LatentSync proper integrations (separate PRs); confe
 
 ## Quick start
 
-### Option A — Docker Compose (recommended)
-
 ```bash
-cp .env.example .env
-docker compose up --build
-# Frontend: http://localhost:3030     (override with FRONTEND_PORT in .env)
-# Backend:  http://localhost:8088/docs (override with BACKEND_PORT in .env)
+cp .env.example .env             # port config + optional CLI defaults
+make up                           # build & start backend + frontend + lipsync-musetalk
+make models                       # Whisper + NLLB + XTTS  (~3 GB, one-time)
+# Drop a clip in artifacts/inputs/, then:
+make run-none                     # fast dub-over path; sanity check
 ```
 
-Both ports are configurable via `.env` to avoid clashes with other local apps:
+Run `make help` for the full menu. Most common targets:
+
+| Target | What it does |
+|---|---|
+| `make up` / `make down` | Start / stop all containers |
+| `make restart` | Restart backend + lipsync-musetalk (picks up bind-mounted code) |
+| `make health` | `/health` on backend + lipsync-musetalk |
+| `make logs` / `make logs-musetalk` | Tail service logs |
+| `make models` | Pre-fetch Whisper + NLLB + XTTS |
+| `make models-wav2lip` | Adds the Wav2Lip checkpoint |
+| `make models-musetalk` | MuseTalk weights (~1.4 GB) |
+| `make models-all` | All of the above |
+| `make run-none` / `run-wav2lip` / `run-musetalk` | Smoke test with the named backend |
+| `make list` | Recent jobs on the backend |
+| `make fetch` | Download latest job to `artifacts/jobs/<short>/` |
+| `make fetch JOB=b0965` | Specific job by id prefix |
+| `make inputs` | List fixtures under `artifacts/inputs/` |
+
+### Config via `.env`
+
+The Makefile reads a `.env` at the repo root. Set your defaults once to skip CLI flags:
+
+```bash
+# uncomment the relevant lines in .env
+FIXTURE=artifacts/inputs/my_clip.mov
+TARGET=ja
+LIPSYNC=musetalk
+```
+
+Per-invocation overrides still work: `make run TARGET=fr LIPSYNC=wav2lip`.
+
+### Ports
+
+Both default to non-common ports to avoid clashing with other local apps:
 
 - `FRONTEND_PORT` — default `3030`. If you change it, also update `CORS_ORIGINS`.
-- `BACKEND_PORT` — default `8088`. The frontend image bakes this URL into its
-  client bundle, so **changing `BACKEND_PORT` requires a rebuild**
-  (`docker compose up --build`).
+- `BACKEND_PORT` — default `8088`. The frontend image bakes this URL in at build time, so **changing it requires `make rebuild`**.
 
-First run downloads model weights into the `models` volume — expect a few minutes for Whisper `base` + NLLB-600M (~3 GB total).
+After `make up`: frontend at `http://localhost:3030`, backend docs at `http://localhost:8088/docs`.
 
-To pre-fetch weights (including the optional ~400 MB Wav2Lip checkpoint) inside the running backend container:
+### Artifacts layout
 
-```bash
-docker compose exec backend bash /app/scripts/download_models.sh
-# Or, to also grab the Wav2Lip checkpoint:
-docker compose exec -e LIPSYNC_BACKEND=wav2lip backend bash /app/scripts/download_models.sh
+```
+artifacts/
+├── inputs/     your source clips (tracked in git; drop files here)
+├── jobs/       fetched pipeline outputs (gitignored)
+│   └── <short_id>/
+│       ├── input.*
+│       ├── audio.wav
+│       ├── transcript.json
+│       ├── translation.json
+│       ├── translated_audio.wav
+│       ├── lipsynced.mp4
+│       └── final.mp4
+└── review/     occasional committed samples for design review
 ```
 
-### Option B — Local dev (Python + Node directly)
+### Local dev without Docker
 
 ```bash
 # Backend
@@ -77,26 +116,6 @@ npm run dev
 ```
 
 You will need `ffmpeg` available on `PATH`.
-
-### Smoke test
-
-Drop a short single-speaker clip at `backend/tests/fixtures/sample_5s.mp4`, then:
-
-```bash
-./scripts/smoke_test.sh
-```
-
-This uploads the clip, polls until done, and prints the transcript and translation.
-
-### Fetching job artifacts
-
-```bash
-./scripts/fetch.sh              # download everything from the latest job
-./scripts/fetch.sh --list       # show recent jobs (id prefix, status, lang, backend, filename)
-./scripts/fetch.sh <prefix>     # download a specific job by id prefix (≥ 4 chars usually unique)
-```
-
-Writes into `./artifacts/<short_id>/` with whatever the job produced — `input.*`, `audio.wav`, `transcript.json`, `translation.json`, `translated_audio.wav`, `lipsynced.mp4`, `final.mp4`.
 
 ---
 

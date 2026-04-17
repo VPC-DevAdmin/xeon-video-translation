@@ -7,7 +7,7 @@
 set -euo pipefail
 
 API_BASE="${API_BASE:-http://localhost:8088}"
-FIXTURE="${FIXTURE:-backend/tests/fixtures/sample_5s.mp4}"
+FIXTURE="${FIXTURE:-artifacts/inputs/IMG_7228.MOV}"
 TARGET="${TARGET:-es}"
 LIPSYNC="${LIPSYNC:-none}"   # none | wav2lip | musetalk | latentsync
 
@@ -19,11 +19,13 @@ fi
 if [ ! -f "$FIXTURE" ]; then
   cat >&2 <<EOF
 Missing fixture: $FIXTURE
-Drop a short single-speaker clip there, e.g.:
+Drop a short single-speaker clip under artifacts/inputs/, e.g.:
 
-  ffmpeg -i your_clip.mov -t 5 -ac 1 backend/tests/fixtures/sample_5s.mp4
+  cp your_clip.mov artifacts/inputs/
 
-Or override with FIXTURE=/path/to/clip.mp4 $0
+Or override the path:
+  FIXTURE=/path/to/clip.mp4 $0
+  make run FIXTURE=/path/to/clip.mp4
 EOF
   exit 1
 fi
