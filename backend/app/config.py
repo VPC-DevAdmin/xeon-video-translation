@@ -51,6 +51,12 @@ class Settings(BaseSettings):
     wav2lip_checkpoint_url: str = (
         "https://github.com/justinjohn0306/Wav2Lip/releases/download/models/wav2lip_gan.pth"
     )
+    # MuseTalk lipsync microservice. Must be reachable from inside the backend
+    # container — the docker-compose service name is the default.
+    musetalk_service_url: str = "http://lipsync-musetalk:8000"
+    # How long to wait for MuseTalk to finish a single request. Generous:
+    # CPU inference for a 30s clip can run into tens of minutes.
+    musetalk_timeout_seconds: int = 1800
     # Watermark text drawn on the output video. Respect responsible-use guidance.
     watermark_text: str = "AI-translated"
 
