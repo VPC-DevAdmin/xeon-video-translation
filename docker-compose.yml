@@ -1,0 +1,51 @@
+# CPU-only stack for polyglot-demo. No GPU runtime needed.
+# All ML inference runs on the host's Xeon CPU via int8 quantized models.
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: polyglot-demo/backend:dev
+    container_name: polyglot-backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # Inside the container, mount points are absolute.
+      MODEL_CACHE_DIR: /models
+      JOB_ARTIFACTS_DIR: /jobs
+      HF_HOME: /models/huggingface
+      # Avoid CUDA probing on a CPU-only image.
+      CUDA_VISIBLE_DEVICES: ""
+    volumes:
+      - models:/models
+      - jobs:/jobs
+      # Bind-mount source for live reload during development.
+      - ./backend/app:/app/app
+    ports:
+      - "8000:8000"
+    # Xeon machines often have many cores; cap so we don't starve the host.
+    deploy:
+      resources:
+        limits:
+          cpus: "8.0"
+          memory: 12g
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: polyglot-demo/frontend:dev
+    container_name: polyglot-frontend
+    restart: unless-stopped
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: http://localhost:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+
+volumes:
+  models:
+  jobs:

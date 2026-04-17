@@ -1,0 +1,20 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html, body {
+  background: #0a0a0b;
+  color: #d8d8de;
+}
+
+/* Subtle pipeline card hover */
+.stage-card {
+  transition: border-color 150ms ease, transform 150ms ease;
+}
+.stage-card:hover {
+  border-color: rgba(124, 92, 255, 0.5);
+}
