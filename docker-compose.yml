@@ -18,6 +18,8 @@ services:
       HF_HOME: /models/huggingface
       # Avoid CUDA probing on a CPU-only image.
       CUDA_VISIBLE_DEVICES: ""
+      # Points at the MuseTalk lipsync microservice. Resolved via Docker DNS.
+      MUSETALK_SERVICE_URL: http://lipsync-musetalk:8000
     volumes:
       - models:/models
       - jobs:/jobs
@@ -36,6 +38,40 @@ services:
         limits:
           cpus: "8.0"
           memory: 12g
+
+  # MuseTalk lipsync microservice. Kept as a separate service (with its own
+  # Python env) because MuseTalk's pinned deps — notably transformers 4.39 —
+  # conflict with the main backend's coqui-tts pins.
+  #
+  # PR 1a: HTTP scaffold only; /lipsync returns 501. PR 1b/1c add real
+  # inference. The shared `jobs` + `models` volumes let both services pass
+  # file paths (not bytes) back and forth.
+  lipsync-musetalk:
+    build:
+      context: ./services/musetalk
+      dockerfile: Dockerfile
+    image: polyglot-demo/lipsync-musetalk:dev
+    container_name: polyglot-lipsync-musetalk
+    restart: unless-stopped
+    environment:
+      MODEL_CACHE_DIR: /models
+      JOB_ARTIFACTS_DIR: /jobs
+      HF_HOME: /models/huggingface
+      CUDA_VISIBLE_DEVICES: ""
+    volumes:
+      - models:/models
+      - jobs:/jobs
+      - ./services/musetalk/app:/app/app
+    ports:
+      # Host-exposed for debugging. Backend talks to the service over Docker DNS.
+      - "${MUSETALK_PORT:-8089}:8000"
+    deploy:
+      resources:
+        limits:
+          # MuseTalk inference is memory-hungry once loaded (~4-6 GB plus
+          # Whisper encoder). Give it more than the backend gets.
+          cpus: "8.0"
+          memory: 16g
 
   frontend:
     build:

@@ -66,21 +66,44 @@ WAV2LIP_CHECKPOINT_URL=https://huggingface.co/Nekochu/Wav2Lip/resolve/main/wav2l
 - Silent audio → raises (mel spectrogram gets NaNs).
 - Video has no frames / is corrupt.
 
-## `musetalk` — stubbed
+## `musetalk` — microservice, staged rollout
 
-Would be the right quality/speed tradeoff if it weren't for installation
-weight. Pulling in MuseTalk involves:
-- Whisper encoder (we already have it)
-- Face parsing via BiSeNet
-- VAE + diffusion UNet (~2 GB of weights)
-- Its own audio-visual alignment code
+MuseTalk upstream pins `transformers==4.39.2` which conflicts with the main
+backend's `>=4.44` (coqui-tts). To keep both alive we run MuseTalk in its own
+container (`lipsync-musetalk`) with its own Python env. The backend calls it
+over HTTP and passes **file paths** through the shared `/jobs` volume — no
+bytes cross the wire.
 
-Selecting `musetalk` today raises:
+### Roadmap
+
+| Phase | What ships | Behavior when you pick `musetalk` |
+|-------|------------|-----------------------------------|
+| **PR 1a** (current) | FastAPI scaffold, Compose wiring, HTTP client | Fails fast with a clean `LipsyncError` pointing here |
+| **PR 1b** | torch/diffusers/face-alignment installed, weight downloads, preprocessing ported off `mmpose` | `/lipsync` still returns 501 but the container has everything loaded |
+| **PR 1c** | UNet forward + VAE decode + face-region blending | Real lipsync output |
+
+### Why a separate service?
+
+- **Dependency isolation.** MuseTalk + coqui-tts can't share a Python env.
+- **Rebuild blast radius.** Inference changes in the lipsync service don't
+  invalidate the backend image's layers (and vice-versa).
+- **Future-proof.** Swapping in a GPU variant later is trivial — just change
+  the compose service definition.
+
+### HTTP contract
+
 ```
-LipsyncError: MuseTalk is not yet wired up in this build.
+POST /lipsync
+{
+  "video_path":  "/jobs/<job_id>/input.mp4",
+  "audio_path":  "/jobs/<job_id>/translated_audio.wav",
+  "output_path": "/jobs/<job_id>/lipsynced.mp4"
+}
 ```
 
-Roadmap: dedicated follow-up PR. Open an issue if you want to prioritize it.
+Both services mount `/jobs` and `/models`. Backend reaches the service via
+Docker DNS at `http://lipsync-musetalk:8000`; the host can hit it for
+debugging at `localhost:${MUSETALK_PORT:-8089}`.
 
 ## `latentsync` — stubbed
 

@@ -91,10 +91,8 @@ def run(
         return wav2lip_run(video_in, audio_in, output_path, progress=progress)
 
     if backend == "musetalk":
-        raise LipsyncError(
-            "MuseTalk is not yet wired up in this build. "
-            "See docs/lipsync.md for integration notes."
-        )
+        from ._lipsync.musetalk_client import run as musetalk_run
+        return musetalk_run(video_in, audio_in, output_path, progress=progress)
 
     if backend == "latentsync":
         raise LipsyncError(

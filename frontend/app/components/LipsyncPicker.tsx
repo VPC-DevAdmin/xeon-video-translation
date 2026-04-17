@@ -9,7 +9,7 @@ const OPTIONS: {
 }[] = [
   { code: "none", label: "None (dub over)", blurb: "Instant, no lipsync. Mouth stays in source language." },
   { code: "wav2lip", label: "Wav2Lip", blurb: "2020. ~30–60s for a 3s clip on Xeon. Mediocre quality." },
-  { code: "musetalk", label: "MuseTalk", blurb: "Not yet wired up — see docs/lipsync.md." },
+  { code: "musetalk", label: "MuseTalk", blurb: "Service is up but inference lands in PR 1c. Picking this today fails fast with a clear message." },
   { code: "latentsync", label: "LatentSync", blurb: "Not yet wired up. Effectively unusable on CPU." },
 ];
 

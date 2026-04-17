@@ -1,0 +1,27 @@
+[project]
+name = "polyglot-demo-lipsync-musetalk"
+version = "0.1.0"
+description = "MuseTalk lipsync microservice (CPU-only, dep-isolated from the main backend)"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+
+# NOTE: this service is intentionally dep-isolated from the main backend.
+# MuseTalk upstream pins `transformers==4.39.2`, which conflicts with the
+# main backend's `>=4.44` constraint (coqui-tts requirement). Keeping the
+# two in separate Python envs lets each live with its own pins.
+#
+# PR 1a ships with only the HTTP scaffold — MuseTalk's actual ML deps land
+# in PR 1b alongside weight downloads and preprocessing.
+dependencies = [
+  "fastapi>=0.110",
+  "uvicorn[standard]>=0.27",
+  "pydantic>=2.6",
+]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]
