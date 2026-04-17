@@ -18,11 +18,15 @@ WORKDIR /app
 
 # Install deps first for layer caching.
 COPY pyproject.toml ./
+# torch/torchaudio/torchcodec have coupled major.minor versions. Keeping all
+# three pinned to the torch 2.6 line: torchcodec 0.3 is the matching build.
+# See https://github.com/pytorch/torchcodec#compatibility
 RUN pip install --upgrade pip setuptools wheel \
     && pip install \
        --extra-index-url https://download.pytorch.org/whl/cpu \
-       "torch>=2.6" \
-       "torchaudio>=2.6" \
+       "torch>=2.6,<2.7" \
+       "torchaudio>=2.6,<2.7" \
+    && pip install "torchcodec>=0.3,<0.4" \
     && pip install -e .
 
 COPY app ./app
