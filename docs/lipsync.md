@@ -78,9 +78,37 @@ bytes cross the wire.
 
 | Phase | What ships | Behavior when you pick `musetalk` |
 |-------|------------|-----------------------------------|
-| **PR 1a** (current) | FastAPI scaffold, Compose wiring, HTTP client | Fails fast with a clean `LipsyncError` pointing here |
-| **PR 1b** | torch/diffusers/face-alignment installed, weight downloads, preprocessing ported off `mmpose` | `/lipsync` still returns 501 but the container has everything loaded |
-| **PR 1c** | UNet forward + VAE decode + face-region blending | Real lipsync output |
+| **PR 1a** | FastAPI scaffold, Compose wiring, HTTP client | Fails fast with a clean `LipsyncError` pointing here |
+| **PR 1b** (current) | torch/diffusers/transformers pinned to MuseTalk's expected versions; face-alignment (replaces mmpose); `scripts/download_models.sh` fetches ~1.4 GB of weights; `/ready` + `/weights` introspection endpoints | Same 501 but the container has all deps loaded and weights on disk |
+| **PR 1c** | Vendor MuseTalk inference code, port preprocessing off mmpose to face-alignment, wire UNet forward + VAE decode + blending | Real lipsync output |
+
+### Pre-fetch weights
+
+```bash
+docker compose exec lipsync-musetalk bash /app/scripts/download_models.sh
+```
+
+Downloads ~1.4 GB into the shared `/models/musetalk/` volume:
+
+| Weight | Source | Size | License |
+|---|---|---|---|
+| MuseTalk V1.5 UNet | `TMElyralab/MuseTalk` (HF) | ~900 MB | CC-BY-NC 4.0 |
+| SD 1.5 VAE (ft-MSE) | `stabilityai/sd-vae-ft-mse` (HF) | ~330 MB | CreativeML Open RAIL-M |
+| Whisper tiny | `openai/whisper-tiny` (HF) | ~75 MB | MIT |
+| BiSeNet face parser | `zllrunning/face-parsing.PyTorch` (Google Drive) | ~52 MB | MIT |
+| ResNet18 backbone | `pytorch.org` | ~46 MB | BSD |
+
+If the Google Drive fetch fails, download `79999_iter.pth` manually from
+https://drive.google.com/file/d/154JgKpzCPW82qINcVieuPH3fZ2e0P812/view and
+drop it in `/models/musetalk/face-parse-bisent/`.
+
+### Introspection
+
+```bash
+curl http://localhost:8089/health      # top-level: is the service up + weights on disk?
+curl http://localhost:8089/ready       # are all Python ML deps importable?
+curl http://localhost:8089/weights     # per-file presence and size check
+```
 
 ### Why a separate service?
 

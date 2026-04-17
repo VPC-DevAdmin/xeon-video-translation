@@ -10,12 +10,38 @@ license = { text = "Apache-2.0" }
 # main backend's `>=4.44` constraint (coqui-tts requirement). Keeping the
 # two in separate Python envs lets each live with its own pins.
 #
-# PR 1a ships with only the HTTP scaffold — MuseTalk's actual ML deps land
-# in PR 1b alongside weight downloads and preprocessing.
+# Torch stack follows the 2.6 line (same as the main backend) so face-alignment
+# and diffusers wheels resolve cleanly. `torch` itself is installed from the
+# PyTorch CPU index in the Dockerfile, not here.
 dependencies = [
   "fastapi>=0.110",
   "uvicorn[standard]>=0.27",
   "pydantic>=2.6",
+
+  # MuseTalk upstream pins. We match them exactly for the model code path;
+  # touching these without re-reading the MuseTalk source is asking for
+  # silent numerical drift.
+  "diffusers==0.30.2",
+  "transformers==4.39.2",
+  "accelerate==0.28.0",
+  "einops==0.8.1",
+  "omegaconf>=2.3",
+  "huggingface_hub>=0.23,<0.31",
+
+  # Audio + video + preprocessing. We replace MuseTalk's mmpose/DWPose
+  # dependency with face-alignment — same 68-point landmarks, no mmcv
+  # compile-from-source pain on CPU.
+  "librosa>=0.10",
+  "soundfile>=0.12",
+  "scipy>=1.11",
+  "numpy<2",
+  "opencv-python-headless>=4.9",
+  "face-alignment>=1.4",
+  "imageio[ffmpeg]>=2.33",
+
+  # Google Drive fetch for the BiSeNet face-parse weights. The weights don't
+  # have an official HF mirror, unfortunately; see docs/lipsync.md.
+  "gdown>=5.1",
 ]
 
 [build-system]
