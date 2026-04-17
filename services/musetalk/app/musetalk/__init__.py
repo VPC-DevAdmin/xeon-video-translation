@@ -13,3 +13,7 @@ The bulk of this package is copied from https://github.com/TMElyralab/MuseTalk
 Weights are under separate licenses (CC-BY-NC 4.0 on the MuseTalk UNet) —
 see docs/lipsync.md and docs/ethics.md.
 """
+
+# Side-effect import: patches torch.load to tolerate legacy `.pth` files.
+# Must run before any model loading inside this package.
+from . import _compat  # noqa: F401

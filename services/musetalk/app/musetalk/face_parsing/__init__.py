@@ -65,7 +65,7 @@ class FaceParsing:
 
     def _model_init(self, model_path: str, resnet_path: str) -> BiSeNet:
         net = BiSeNet(resnet_path=resnet_path)
-        net.load_state_dict(torch.load(model_path, map_location=self.device))
+        net.load_state_dict(torch.load(model_path, map_location=self.device, weights_only=False))
         net.to(self.device)
         net.eval()
         return net
