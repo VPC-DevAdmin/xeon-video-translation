@@ -8,8 +8,11 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1
 
 # ffmpeg is a hard runtime dependency for Stage 1 and Stage 6.
+# rubberband-cli powers formant-preserving time-stretch in Stage 4 when
+# the TTS output overshoots the source video duration (see tts.py).
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ffmpeg \
+      rubberband-cli \
       curl \
       ca-certificates \
     && rm -rf /var/lib/apt/lists/*

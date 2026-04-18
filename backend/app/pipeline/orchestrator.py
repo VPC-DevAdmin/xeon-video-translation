@@ -397,18 +397,23 @@ async def _run_stage_tts(
     stage = await _start_stage(state, queue, name)
 
     translation_path = storage.job_artifact_path(state.job_id, "translation.json")
+    transcript_path = storage.job_artifact_path(state.job_id, "transcript.json")
     reference_audio = storage.job_artifact_path(state.job_id, "audio.wav")
     out_path = storage.job_artifact_path(state.job_id, "translated_audio.wav")
     started = time.perf_counter()
 
     import json
     translation = json.loads(translation_path.read_text())
+    transcript = json.loads(transcript_path.read_text()) if transcript_path.exists() else {}
+    first_speech = transcript.get("first_speech_seconds")
 
     def _do() -> dict[str, Any]:
         return tts.synthesize(
             translation=translation,
             reference_audio=reference_audio,
             output_path=out_path,
+            first_speech_seconds=first_speech,
+            source_duration_seconds=state.source_duration_seconds,
         ).to_dict()
 
     try:
