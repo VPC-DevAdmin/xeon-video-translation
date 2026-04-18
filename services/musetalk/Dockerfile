@@ -23,6 +23,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       # libiomp5 comes from the `intel-openmp` pip package; we just need
       # google-perftools on the system for the LD_PRELOAD below.
       libgoogle-perftools4 \
+      # Linux 5.8+ refuses to load shared objects that declare an executable
+      # stack (PT_GNU_STACK with RWE). Intel Extension for PyTorch 2.6 ships
+      # libintel-ext-pt-cpu.so with that flag set; without clearing it, every
+      # `import intel_extension_for_pytorch` aborts with
+      #   ImportError: cannot enable executable stack as shared object requires
+      # We patch the flag off with patchelf post-install (see below).
+      patchelf \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -44,6 +51,15 @@ RUN pip install --upgrade pip wheel \
 
 COPY pyproject.toml ./
 RUN pip install -e .
+
+# Clear the executable-stack marker from IPEX's native libs. Targeted only
+# at intel_extension_for_pytorch (and intel-openmp in case it ever ships
+# the same flag); patchelf failures are tolerated so a future clean wheel
+# won't break the build.
+RUN find /usr/local/lib/python3.11/site-packages/intel_extension_for_pytorch \
+         /usr/local/lib/python3.11/site-packages/intel_openmp \
+         -name "*.so*" 2>/dev/null \
+    | xargs -r -n1 -I{} sh -c 'patchelf --clear-execstack "{}" 2>/dev/null || true'
 
 COPY app ./app
 COPY scripts ./scripts
