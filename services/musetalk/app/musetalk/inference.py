@@ -43,6 +43,40 @@ log = logging.getLogger(__name__)
 ProgressCallback = Callable[[float], None]
 
 
+# --------------------------------------------------------------------------- #
+# Env-driven blend knobs. Resolved once at import so logs and requests are
+# consistent within a service lifetime.
+# --------------------------------------------------------------------------- #
+
+
+def _read_blend_mode() -> str:
+    mode = os.environ.get("MUSETALK_BLEND_MODE", "mouth").strip().lower()
+    if mode not in ("raw", "jaw", "mouth", "neck"):
+        log.warning("unknown MUSETALK_BLEND_MODE=%r; falling back to mouth", mode)
+        mode = "mouth"
+    return mode
+
+
+def _read_blend_feather() -> float:
+    raw = os.environ.get("MUSETALK_BLEND_FEATHER", "0.08")
+    try:
+        value = float(raw)
+    except ValueError:
+        log.warning("bad MUSETALK_BLEND_FEATHER=%r; falling back to 0.08", raw)
+        return 0.08
+    # Guard against absurd values that would produce invalid kernel sizes.
+    if not 0.02 <= value <= 0.30:
+        log.warning(
+            "MUSETALK_BLEND_FEATHER=%r out of bounds [0.02, 0.30]; clamping", raw
+        )
+        value = max(0.02, min(0.30, value))
+    return value
+
+
+_blend_mode = _read_blend_mode()
+_blend_feather = _read_blend_feather()
+
+
 def _probe_duration(path: Path) -> float | None:
     try:
         out = subprocess.check_output(
@@ -548,13 +582,13 @@ def run(
             face=face_resized,
             face_box=(x1, y1, x2, y2),
             fp=state.face_parsing,
-            # `jaw` mode asks BiSeNet to protect the chin/cheek region when
-            # compositing, so the original skin (beard, stubble, pore detail)
-            # survives outside the mouth. `raw` mode, previously used, replaced
-            # the whole lower face with VAE-regenerated pixels, which loses
-            # stubble — a visible problem against any frames the detector
-            # skipped.
-            mode="jaw",
+            # Blend mode / feather are env-tunable. Defaults bias toward
+            # stubble preservation on bearded subjects (mouth-only mask
+            # with a generously feathered boundary).
+            #   MUSETALK_BLEND_MODE  = raw | jaw | mouth  (default: mouth)
+            #   MUSETALK_BLEND_FEATHER = kernel ratio, e.g. "0.08"  (default: 0.08)
+            mode=_blend_mode,
+            feather_ratio=_blend_feather,
         )
         output_frames.append(blended)
 

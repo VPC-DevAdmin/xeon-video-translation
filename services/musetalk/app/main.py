@@ -24,7 +24,7 @@ from pydantic import BaseModel, Field
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s :: %(message)s")
 log = logging.getLogger(__name__)
 
-VERSION = "0.5.0"
+VERSION = "0.6.0"
 INFERENCE_IMPLEMENTED = True
 
 MODEL_CACHE_DIR = Path(os.environ.get("MODEL_CACHE_DIR", "/models"))
@@ -153,7 +153,9 @@ def health() -> dict:
         "weights_ready": all_weights_present,
         "ipex_dtype": os.environ.get("MUSETALK_IPEX_DTYPE", "fp32"),
         "ld_preload": os.environ.get("LD_PRELOAD", ""),
-        "milestone": "SCRFD + IPEX-optimized Whisper/VAE/UNet",
+        "blend_mode": os.environ.get("MUSETALK_BLEND_MODE", "mouth"),
+        "blend_feather": os.environ.get("MUSETALK_BLEND_FEATHER", "0.08"),
+        "milestone": "SCRFD + IPEX + mouth-only mask with soft feather",
     }
 
 

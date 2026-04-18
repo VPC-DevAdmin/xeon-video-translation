@@ -60,6 +60,9 @@ services:
       CUDA_VISIBLE_DEVICES: ""
       # IPEX compute dtype. See .env.example.
       MUSETALK_IPEX_DTYPE: ${MUSETALK_IPEX_DTYPE:-fp32}
+      # Blend mask + feather. See docs/lipsync.md.
+      MUSETALK_BLEND_MODE: ${MUSETALK_BLEND_MODE:-mouth}
+      MUSETALK_BLEND_FEATHER: ${MUSETALK_BLEND_FEATHER:-0.08}
       # KMP affinity helps Intel OpenMP place threads on real cores. "granularity=
       # fine,compact,1,0" is the canonical "one thread per HT sibling, packed"
       # pattern; works well on Xeon where cores share an L2.
