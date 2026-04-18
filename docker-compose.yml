@@ -58,6 +58,13 @@ services:
       JOB_ARTIFACTS_DIR: /jobs
       HF_HOME: /models/huggingface
       CUDA_VISIBLE_DEVICES: ""
+      # IPEX compute dtype. See .env.example.
+      MUSETALK_IPEX_DTYPE: ${MUSETALK_IPEX_DTYPE:-fp32}
+      # KMP affinity helps Intel OpenMP place threads on real cores. "granularity=
+      # fine,compact,1,0" is the canonical "one thread per HT sibling, packed"
+      # pattern; works well on Xeon where cores share an L2.
+      KMP_AFFINITY: granularity=fine,compact,1,0
+      KMP_BLOCKTIME: "1"
     volumes:
       - models:/models
       - jobs:/jobs
