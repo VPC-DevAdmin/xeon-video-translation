@@ -258,14 +258,15 @@ def _ipex_dtype() -> "torch.dtype":
 def _ipex_optimize(model: "torch.nn.Module", name: str) -> "torch.nn.Module":
     """Wrap `model` with ipex.optimize() if IPEX is installed.
 
-    Silently falls through if IPEX is missing or the wrap raises — we never
-    want perf plumbing to hard-fail a request. `name` is included in log
-    lines so a regression can be traced back to a specific wrap site.
+    Silently falls through on any failure — we never want perf plumbing
+    to hard-fail a request. Caught broadly because IPEX import can raise
+    native-loader errors (e.g. executable-stack markers) that aren't
+    strictly ImportError.
     """
     try:
         import intel_extension_for_pytorch as ipex
-    except ImportError:
-        log.info("IPEX not installed; skipping %s optimization", name)
+    except Exception as e:
+        log.warning("IPEX import failed (%s); skipping %s optimization", e, name)
         return model
 
     dtype = _ipex_dtype()
