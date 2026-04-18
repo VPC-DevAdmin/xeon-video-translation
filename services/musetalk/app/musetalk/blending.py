@@ -32,65 +32,76 @@ def face_seg(image, mode="raw", fp=None):
     return seg_image
 
 
-def get_image(image, face, face_box, upper_boundary_ratio=0.5, expand=1.5, mode="raw", fp=None):
-    """
-    将裁剪的面部图像粘贴回原始图像，并进行一些处理。
+def get_image(
+    image,
+    face,
+    face_box,
+    upper_boundary_ratio=0.5,
+    expand=1.5,
+    mode="raw",
+    fp=None,
+    feather_ratio: float | None = None,
+):
+    """Composite a predicted face back onto the original frame.
 
     Args:
-        image (numpy.ndarray): 原始图像（身体部分）。
-        face (numpy.ndarray): 裁剪的面部图像。
-        face_box (tuple): 面部边界框的坐标 (x, y, x1, y1)。
-        upper_boundary_ratio (float): 用于控制面部区域的保留比例。
-        expand (float): 扩展因子，用于放大裁剪框。
-        mode: 融合mask构建方式 
-
-    Returns:
-        numpy.ndarray: 处理后的图像。
+        image: Full frame (numpy BGR).
+        face: Predicted face crop (numpy BGR).
+        face_box: (x1, y1, x2, y2) on the original frame.
+        upper_boundary_ratio: Top fraction of the mask to *blank* — keeps
+            the forehead/eyes/nose untouched. 0.5 = keep top half of the
+            face-region mask from being active.
+        expand: Crop-box expansion factor vs the face_box.
+        mode: `face_seg` mode (raw | jaw | mouth | neck).
+        fp: a `FaceParsing` instance.
+        feather_ratio: Gaussian-blur kernel size as a fraction of the crop
+            width. None → upstream default of 0.05 (~13 px on a 256-wide
+            crop). Higher values (0.08–0.12) produce softer mask edges,
+            hiding small frame-to-frame prediction differences at the
+            expense of letting more "original" pixels through at the
+            seam. Pair with `mode="mouth"` for the tightest, softest
+            composite.
     """
-    # 将 numpy 数组转换为 PIL 图像
-    body = Image.fromarray(image[:, :, ::-1])  # 身体部分图像(整张图)
-    face = Image.fromarray(face[:, :, ::-1])  # 面部图像
+    body = Image.fromarray(image[:, :, ::-1])
+    face = Image.fromarray(face[:, :, ::-1])
 
-    x, y, x1, y1 = face_box  # 获取面部边界框的坐标
-    crop_box, s = get_crop_box(face_box, expand)  # 计算扩展后的裁剪框
-    x_s, y_s, x_e, y_e = crop_box  # 裁剪框的坐标
-    face_position = (x, y)  # 面部在原始图像中的位置
+    x, y, x1, y1 = face_box
+    crop_box, s = get_crop_box(face_box, expand)
+    x_s, y_s, x_e, y_e = crop_box
 
-    # 从身体图像中裁剪出扩展后的面部区域（下巴到边界有距离）
     face_large = body.crop(crop_box)
-        
-    ori_shape = face_large.size  # 裁剪后图像的原始尺寸
+    ori_shape = face_large.size
 
-    # 对裁剪后的面部区域进行面部解析，生成掩码
+    # Mask from the face-parsing network.
     mask_image = face_seg(face_large, mode=mode, fp=fp)
-    
-    mask_small = mask_image.crop((x - x_s, y - y_s, x1 - x_s, y1 - y_s))  # 裁剪出面部区域的掩码
-    
-    mask_image = Image.new('L', ori_shape, 0)  # 创建一个全黑的掩码图像
-    mask_image.paste(mask_small, (x - x_s, y - y_s, x1 - x_s, y1 - y_s))  # 将面部掩码粘贴到全黑图像上
-    
-    
-    # 保留面部区域的上半部分（用于控制说话区域）
-    width, height = mask_image.size
-    top_boundary = int(height * upper_boundary_ratio)  # 计算上半部分的边界
-    modified_mask_image = Image.new('L', ori_shape, 0)  # 创建一个新的全黑掩码图像
-    modified_mask_image.paste(mask_image.crop((0, top_boundary, width, height)), (0, top_boundary))  # 粘贴上半部分掩码
-    
-    
-    # 对掩码进行高斯模糊，使边缘更平滑
-    blur_kernel_size = int(0.05 * ori_shape[0] // 2 * 2) + 1  # 计算模糊核大小
-    mask_array = cv2.GaussianBlur(np.array(modified_mask_image), (blur_kernel_size, blur_kernel_size), 0)  # 高斯模糊
-    #mask_array = np.array(modified_mask_image)
-    mask_image = Image.fromarray(mask_array)  # 将模糊后的掩码转换回 PIL 图像
-    
-    # 将裁剪的面部图像粘贴回扩展后的面部区域
-    face_large.paste(face, (x - x_s, y - y_s, x1 - x_s, y1 - y_s))
-    
-    body.paste(face_large, crop_box[:2], mask_image)
-    
-    body = np.array(body)  # 将 PIL 图像转换回 numpy 数组
 
-    return body[:, :, ::-1]  # 返回处理后的图像（BGR 转 RGB）
+    mask_small = mask_image.crop((x - x_s, y - y_s, x1 - x_s, y1 - y_s))
+    mask_image = Image.new("L", ori_shape, 0)
+    mask_image.paste(mask_small, (x - x_s, y - y_s, x1 - x_s, y1 - y_s))
+
+    # Blank the top `upper_boundary_ratio` of the mask so the forehead/eyes
+    # keep their original pixels.
+    width, height = mask_image.size
+    top_boundary = int(height * upper_boundary_ratio)
+    modified_mask_image = Image.new("L", ori_shape, 0)
+    modified_mask_image.paste(
+        mask_image.crop((0, top_boundary, width, height)),
+        (0, top_boundary),
+    )
+
+    # Gaussian-feather the boundary. Odd-length kernel required by OpenCV.
+    ratio = 0.05 if feather_ratio is None else feather_ratio
+    blur_kernel_size = max(3, int(ratio * ori_shape[0] // 2) * 2 + 1)
+    mask_array = cv2.GaussianBlur(
+        np.array(modified_mask_image), (blur_kernel_size, blur_kernel_size), 0
+    )
+    mask_image = Image.fromarray(mask_array)
+
+    face_large.paste(face, (x - x_s, y - y_s, x1 - x_s, y1 - y_s))
+    body.paste(face_large, crop_box[:2], mask_image)
+    body = np.array(body)
+
+    return body[:, :, ::-1]
 
 
 def get_image_blending(image, face, face_box, mask_array, crop_box):

@@ -87,9 +87,15 @@ bytes cross the wire.
   average on `(x1, y1, x2, y2)` dampens the jitter enough that the blend
   seam doesn't wobble between frames. Shorter window = more responsive to
   real head motion; longer = smoother but laggier. 5 is the current default.
-- **Stubble/detail preservation** uses BiSeNet's `jaw` mask instead of
-  regenerating the whole lower face (`raw` mode). Predicted pixels land in
-  the mouth region; cheeks/chin keep original skin detail.
+- **Stubble/detail preservation** — three blend modes exposed via
+  `MUSETALK_BLEND_MODE`:
+  - `raw`: full lower face replaced (original v1.0 behavior; lots of
+    texture loss)
+  - `jaw`: chin + cheeks + mouth (moderate; some stubble replacement)
+  - `mouth`: lips + teeth only (default; best stubble preservation)
+  Combined with a Gaussian feather controlled by `MUSETALK_BLEND_FEATHER`
+  (fraction of crop width; default 0.08 ≈ 21 px on a 256-wide crop), the
+  predicted mouth fades into original skin rather than replacing it.
 - **Quality ceiling**: even with those fixes, MuseTalk's output is "mouth
   is regenerated, fuzzy but continuous" rather than "indistinguishable from
   source". For demo, a reasonable tradeoff; for production, a higher-res

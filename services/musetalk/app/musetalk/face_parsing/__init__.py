@@ -94,6 +94,15 @@ class FaceParsing:
                 parsing[(face_region == 255) & (~np.isin(parsing, [10]))] = 255
                 parsing[np.isin(parsing, [11, 12, 13])] = 255
                 parsing[parsing != 255] = 0
+            elif mode == "mouth":
+                # Tightest option: only upper lip, lower lip, and mouth/teeth.
+                # Intentionally excludes any skin (class 1). Paired with an
+                # aggressive Gaussian feather at the blending step, the
+                # predicted mouth fades into the original skin rather than
+                # replacing it — which is what preserves stubble/pore detail
+                # around the mouth.
+                parsing[np.isin(parsing, [11, 12, 13])] = 255
+                parsing[parsing != 255] = 0
             else:
                 parsing[np.isin(parsing, [1, 11, 12, 13])] = 255
                 parsing[parsing != 255] = 0
