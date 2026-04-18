@@ -30,7 +30,11 @@ WORKDIR /app
 # torch/torchaudio/torchcodec on the same 2.6 line as the main backend. The
 # Intel OpenMP that ships with these wheels is what actually does the heavy
 # lifting on Xeon; nothing more clever is needed for this milestone.
-RUN pip install --upgrade pip setuptools wheel \
+# setuptools 81 (Oct 2025) removed the `pkg_resources` module. InsightFace,
+# onnx, and several Coqui/HF paths still import it. Pin to <81 until those
+# upstreams migrate so we keep a working `pkg_resources`.
+RUN pip install --upgrade pip wheel \
+    && pip install "setuptools>=68,<81" \
     && pip install \
        --extra-index-url https://download.pytorch.org/whl/cpu \
        "torch>=2.6,<2.7" \
