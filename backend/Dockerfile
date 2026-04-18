@@ -24,7 +24,11 @@ COPY pyproject.toml ./
 # torch/torchaudio/torchcodec have coupled major.minor versions. Keeping all
 # three pinned to the torch 2.6 line: torchcodec 0.3 is the matching build.
 # See https://github.com/pytorch/torchcodec#compatibility
-RUN pip install --upgrade pip setuptools wheel \
+# setuptools 81 (Oct 2025) removed `pkg_resources`. Several of our deps
+# (coqui-tts path, onnx downstream, various HF libs) still import it. Pin
+# to <81 so we keep a working `pkg_resources` until upstreams migrate off.
+RUN pip install --upgrade pip wheel \
+    && pip install "setuptools>=68,<81" \
     && pip install \
        --extra-index-url https://download.pytorch.org/whl/cpu \
        "torch>=2.6,<2.7" \
