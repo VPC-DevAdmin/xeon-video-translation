@@ -24,7 +24,7 @@ from pydantic import BaseModel, Field
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s :: %(message)s")
 log = logging.getLogger(__name__)
 
-VERSION = "0.4.0"
+VERSION = "0.5.0"
 INFERENCE_IMPLEMENTED = True
 
 MODEL_CACHE_DIR = Path(os.environ.get("MODEL_CACHE_DIR", "/models"))
@@ -82,6 +82,9 @@ _REQUIRED_MODULES = (
     "insightface",
     "onnxruntime",
     "huggingface_hub",
+    # IPEX is nice-to-have: if it's missing, inference just runs vanilla
+    # PyTorch. `/ready` still treats an import failure as non-fatal.
+    "intel_extension_for_pytorch",
 )
 
 
@@ -148,7 +151,9 @@ def health() -> dict:
         "version": VERSION,
         "inference_implemented": INFERENCE_IMPLEMENTED,
         "weights_ready": all_weights_present,
-        "milestone": "MuseTalk V1.5 on CPU via InsightFace SCRFD (cached) + bbox smoothing",
+        "ipex_dtype": os.environ.get("MUSETALK_IPEX_DTYPE", "fp32"),
+        "ld_preload": os.environ.get("LD_PRELOAD", ""),
+        "milestone": "SCRFD + IPEX-optimized Whisper/VAE/UNet",
     }
 
 

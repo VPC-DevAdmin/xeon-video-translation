@@ -44,6 +44,14 @@ dependencies = [
   "onnxruntime>=1.17,<2.0",
   "imageio[ffmpeg]>=2.33",
 
+  # Intel Extension for PyTorch. Must track the torch major.minor. On
+  # Xeon with AMX (Sapphire Rapids and newer) gives a meaningful speedup
+  # to Whisper encoder, VAE, and the MuseTalk UNet via optimized conv/
+  # linear kernels and (opt-in) bf16 autocast.
+  "intel-extension-for-pytorch>=2.6,<2.7",
+  # Intel's OpenMP runtime, preferred over libgomp for math-heavy loops.
+  "intel-openmp>=2024.0",
+
   # Google Drive fetch for the BiSeNet face-parse weights. The weights don't
   # have an official HF mirror, unfortunately; see docs/lipsync.md.
   "gdown>=5.1",

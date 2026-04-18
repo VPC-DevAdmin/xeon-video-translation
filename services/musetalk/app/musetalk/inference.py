@@ -203,6 +203,49 @@ def _save_detection_cache(
 
 
 # --------------------------------------------------------------------------- #
+# Intel Extension for PyTorch — kernel-level acceleration on Xeon.
+# --------------------------------------------------------------------------- #
+
+
+def _ipex_dtype() -> "torch.dtype":
+    """Resolve the IPEX compute dtype from env.
+
+    fp32 is the safe default — pure kernel acceleration, no numerical drift.
+    bf16 is opt-in because the VAE and UNet haven't been validated end-to-end
+    at lower precision and may produce subtle output changes (mouth texture,
+    color shift). Enable with `MUSETALK_IPEX_DTYPE=bf16`.
+    """
+    choice = os.environ.get("MUSETALK_IPEX_DTYPE", "fp32").lower()
+    if choice in ("bf16", "bfloat16"):
+        return torch.bfloat16
+    return torch.float32
+
+
+def _ipex_optimize(model: "torch.nn.Module", name: str) -> "torch.nn.Module":
+    """Wrap `model` with ipex.optimize() if IPEX is installed.
+
+    Silently falls through if IPEX is missing or the wrap raises — we never
+    want perf plumbing to hard-fail a request. `name` is included in log
+    lines so a regression can be traced back to a specific wrap site.
+    """
+    try:
+        import intel_extension_for_pytorch as ipex
+    except ImportError:
+        log.info("IPEX not installed; skipping %s optimization", name)
+        return model
+
+    dtype = _ipex_dtype()
+    try:
+        optimized = ipex.optimize(model.eval(), dtype=dtype, inplace=False)
+    except Exception as e:
+        log.warning("IPEX optimize(%s) failed (%s); using vanilla PyTorch", name, e)
+        return model
+
+    log.info("IPEX optimized %s (dtype=%s)", name, str(dtype).rsplit(".", 1)[-1])
+    return optimized
+
+
+# --------------------------------------------------------------------------- #
 # Paths — relative to the service's shared /models volume.
 # --------------------------------------------------------------------------- #
 
@@ -260,19 +303,25 @@ def _load(paths: WeightPaths) -> _Loaded:
     from transformers import WhisperModel
 
     device = torch.device("cpu")
-    dtype = torch.float32  # int8 quantization is a later exercise
+    # `weight_dtype` drives tensor casting in the AudioProcessor + UNet path.
+    # IPEX's optimize() can still run fp32 kernels underneath while our own
+    # tensors stay in this dtype — they're independent knobs.
+    dtype = _ipex_dtype()
 
     log.info("Loading Whisper encoder from %s", paths.whisper_dir)
     whisper = WhisperModel.from_pretrained(str(paths.whisper_dir)).to(device)
     whisper.eval()
+    whisper = _ipex_optimize(whisper, name="whisper")
 
     audio_processor = AudioProcessor(paths.whisper_dir)
 
     log.info("Loading VAE from %s", paths.vae_dir)
     vae = VAE(paths.vae_dir, device=device)
+    vae.vae = _ipex_optimize(vae.vae, name="sd-vae")
 
     log.info("Loading UNet from %s", paths.unet_weights)
     unet = UNet(str(paths.unet_config), str(paths.unet_weights), device=device)
+    unet.model = _ipex_optimize(unet.model, name="musetalk-unet")
 
     log.info("Loading BiSeNet face parser")
     face_parsing = FaceParsing(
@@ -280,8 +329,11 @@ def _load(paths: WeightPaths) -> _Loaded:
         resnet_path=paths.resnet_weights,
         device=device,
     )
+    # BiSeNet is tiny and called per-frame at blend time — the per-call
+    # overhead of optimize() isn't worth paying for the modest speedup.
+    # Leaving it vanilla.
 
-    log.info("Loading face-alignment landmark detector")
+    log.info("Loading SCRFD face detector")
     aligner = build_aligner(device="cpu")
 
     return _Loaded(
@@ -442,7 +494,15 @@ def run(
     predicted_faces: list[np.ndarray | None] = [None] * n
     timesteps = torch.tensor([0], device=state.device)
 
-    with torch.no_grad():
+    # When running under bf16, wrap the forward in CPU autocast so the mixed
+    # math happens safely (BatchNorm/LayerNorm stays fp32 via autocast's
+    # allowlist). fp32 path is unchanged — autocast becomes a no-op below.
+    autocast_enabled = state.weight_dtype == torch.bfloat16
+    autocast_ctx = (
+        torch.autocast(device_type="cpu", dtype=torch.bfloat16, enabled=autocast_enabled)
+    )
+
+    with torch.no_grad(), autocast_ctx:
         for start in range(0, n, batch_size):
             end = min(start + batch_size, n)
 

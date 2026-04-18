@@ -112,6 +112,41 @@ signature of the input video (size + first 1 MB + detector version). A
 second run on the same clip skips the detection pass entirely. This is
 purely a dev-iteration optimization; on a first run it costs nothing.
 
+### CPU acceleration — IPEX, TCMalloc, Intel OpenMP
+
+The lipsync service image ships with Intel's performance tooling wired in by
+default:
+
+- **Intel Extension for PyTorch (IPEX)** — `ipex.optimize()` is applied to
+  the Whisper encoder, SD-VAE, and MuseTalk UNet at load time. On Xeon
+  Sapphire Rapids+ this gives a material speedup on Conv/Linear kernels.
+- **TCMalloc** (`libtcmalloc.so` from `libgoogle-perftools4`) — preloaded
+  before Python starts; reduces allocator contention under heavy ML load.
+- **Intel OpenMP** (`libiomp5.so` from the `intel-openmp` pip wheel) —
+  preferred over libgomp for math-heavy parallel loops. `KMP_AFFINITY=
+  granularity=fine,compact,1,0` and `KMP_BLOCKTIME=1` are set in
+  docker-compose.yml to keep threads pinned and avoid spin-wait penalties.
+
+#### bf16 mode
+
+bf16 autocast on CPU is opt-in behind the `MUSETALK_IPEX_DTYPE` env var:
+
+```
+MUSETALK_IPEX_DTYPE=fp32   # default; safe
+MUSETALK_IPEX_DTYPE=bf16   # ~1.5-2x faster on AMX-capable Xeon; try it
+```
+
+bf16 uses `torch.autocast(device_type="cpu")` around the UNet forward. The
+autocast allowlist keeps BatchNorm/LayerNorm fp32 so stability is usually
+fine, but output can drift subtly (mouth texture, color). Compare before
+shipping.
+
+#### Disabling
+
+All three are non-fatal — if IPEX fails to import, or the preload libraries
+aren't present in the image, the service logs a warning and runs vanilla
+PyTorch.
+
 ### Roadmap
 
 | Phase | What ships | Behavior when you pick `musetalk` |
