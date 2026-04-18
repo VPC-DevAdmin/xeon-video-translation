@@ -78,19 +78,39 @@ bytes cross the wire.
 
 - **Mouth softness** is MuseTalk's inherent 256×256 VAE ceiling. Not fixable
   without retrained weights at higher resolution; no public release exists.
-- **Face detection gaps**: earlier builds passed through the original frame
-  when face-alignment returned no detection on a given frame. Against a
-  MuseTalk-regenerated neighbor (smoothed jaw / no stubble), that caused
-  visible flicker. Now: the nearest valid bbox is forward-filled through
-  gaps so every frame gets inference — no passthrough.
+- **Face detection gaps**: dropped detections would previously leak the
+  original frame (passthrough), flipping visibly against MuseTalk-regenerated
+  neighbors. Now: the nearest valid bbox is forward-filled through gaps so
+  every frame gets inference.
+- **Bbox jitter**: SCRFD returns accurate but not stable boxes — typical
+  jitter is ±few pixels frame-to-frame on a static face. A 5-frame moving
+  average on `(x1, y1, x2, y2)` dampens the jitter enough that the blend
+  seam doesn't wobble between frames. Shorter window = more responsive to
+  real head motion; longer = smoother but laggier. 5 is the current default.
 - **Stubble/detail preservation** uses BiSeNet's `jaw` mask instead of
-  regenerating the whole lower face (`raw` mode). The model's predicted
-  pixels are blended into the mouth region only; cheeks/chin keep their
-  original skin detail.
+  regenerating the whole lower face (`raw` mode). Predicted pixels land in
+  the mouth region; cheeks/chin keep original skin detail.
 - **Quality ceiling**: even with those fixes, MuseTalk's output is "mouth
   is regenerated, fuzzy but continuous" rather than "indistinguishable from
-  source". For demo, it's a reasonable tradeoff; for production, see the
-  roadmap note above — a higher-res successor model is the real answer.
+  source". For demo, a reasonable tradeoff; for production, a higher-res
+  successor model is the real answer.
+
+### Detector: InsightFace SCRFD (not face-alignment)
+
+Earlier builds used `face-alignment` (SFD + FAN). On the demo 53-frame clip,
+face detection alone took 9m23s — nearly half the total MuseTalk runtime.
+SCRFD through ONNX Runtime runs the same workload in seconds while producing
+comparable boxes for front-facing talking heads. The `buffalo_l` pack is
+~285 MB; pre-fetched by `scripts/download_models.sh` alongside the MuseTalk
+weights.
+
+### Detection cache
+
+Raw SCRFD output (per-frame bbox + score) is cached under
+`${MODEL_CACHE_DIR}/cache/face_detections/<sig>.json`, keyed on a cheap
+signature of the input video (size + first 1 MB + detector version). A
+second run on the same clip skips the detection pass entirely. This is
+purely a dev-iteration optimization; on a first run it costs nothing.
 
 ### Roadmap
 

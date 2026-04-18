@@ -5,17 +5,21 @@ Adapted from https://github.com/TMElyralab/MuseTalk/blob/main/scripts/inference.
 
 - No GPU fallback branches.
 - One-shot inference per request (no batch of multiple videos).
-- Face detection via `face-alignment` (replaces mmpose/DWPose).
-- No "cycle/loop" extension when audio is longer than video — we just pad
-  with the last detected frame, which is the behavior the upstream has for
-  the audio > video case.
+- Face detection via InsightFace SCRFD (replaces face-alignment SFD+FAN).
+- Raw detections are cached per-input in /models/cache/face_detections/ so
+  iterating on downstream params doesn't pay the detection cost twice.
+- After detection we gap-fill (carry nearest bbox) and temporally smooth
+  (moving average) to stabilize the blend seam.
 
 Public entry point: `run(video_path, audio_path, output_path, **kwargs)`.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
+import os
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -80,6 +84,122 @@ def _fill_boxes(
             out[i] = first
 
     return out
+
+
+def _smooth_boxes(
+    boxes: list[tuple[int, int, int, int] | None],
+    window: int = 5,
+) -> list[tuple[int, int, int, int] | None]:
+    """Moving-average smoother on per-coordinate bbox sequences.
+
+    SCRFD gives accurate-but-not-stable bboxes: the same static face often
+    jitters ±5 px frame-to-frame. Downstream, that jitter moves the blend
+    seam and reads as flicker between "regenerated" and "original" texture.
+    Averaging across a window of `window` frames damps the jitter without
+    lagging real head motion noticeably at this window size (±2 frames at
+    30 fps = ±67 ms).
+
+    None entries (which _fill_boxes should already have handled) are passed
+    through unchanged.
+    """
+    n = len(boxes)
+    out: list[tuple[int, int, int, int] | None] = list(boxes)
+    half = window // 2
+    for i in range(n):
+        lo, hi = max(0, i - half), min(n, i + half + 1)
+        nearby = [b for b in boxes[lo:hi] if b is not None]
+        if not nearby:
+            continue
+        xs1 = sum(b[0] for b in nearby) / len(nearby)
+        ys1 = sum(b[1] for b in nearby) / len(nearby)
+        xs2 = sum(b[2] for b in nearby) / len(nearby)
+        ys2 = sum(b[3] for b in nearby) / len(nearby)
+        out[i] = (int(round(xs1)), int(round(ys1)), int(round(xs2)), int(round(ys2)))
+    return out
+
+
+# --------------------------------------------------------------------------- #
+# Detection cache
+#
+# Keyed on a cheap signature of the input video (size + first 1 MB).
+# Cached under MODEL_CACHE_DIR/cache/face_detections/.
+# The cache stores raw SCRFD output (pre-fill, pre-smooth) so downstream
+# preprocessing can change without invalidating detection work.
+# --------------------------------------------------------------------------- #
+
+_DETECTOR_VERSION = "scrfd/buffalo_l/v1"
+_CACHE_SCHEMA_VERSION = 1
+
+
+def _cache_dir() -> Path:
+    root = Path(os.environ.get("MODEL_CACHE_DIR", "/models")) / "cache" / "face_detections"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _video_signature(path: Path) -> str:
+    """Fast-enough fingerprint. First 1 MB hash + size + detector version.
+
+    Collisions in practice are negligible for demo use; we're not verifying
+    video identity for security, just avoiding redundant compute across
+    repeated runs on the same asset.
+    """
+    stat = path.stat()
+    h = hashlib.sha1()
+    h.update(_DETECTOR_VERSION.encode())
+    h.update(str(stat.st_size).encode())
+    with path.open("rb") as f:
+        h.update(f.read(1 << 20))
+    return h.hexdigest()
+
+
+def _cache_path_for(video_path: Path) -> Path:
+    return _cache_dir() / f"{_video_signature(video_path)}.json"
+
+
+def _load_detection_cache(
+    video_path: Path,
+) -> list[tuple[tuple[int, int, int, int] | None, float | None]] | None:
+    path = _cache_path_for(video_path)
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text())
+    except Exception as e:
+        log.warning("face-detection cache unreadable (%s); will re-detect", e)
+        return None
+    if data.get("schema") != _CACHE_SCHEMA_VERSION:
+        return None
+    frames = data.get("frames", [])
+    out: list[tuple[tuple[int, int, int, int] | None, float | None]] = []
+    for entry in frames:
+        bbox = entry.get("bbox")
+        score = entry.get("score")
+        if bbox is None:
+            out.append((None, score))
+        else:
+            out.append((tuple(int(v) for v in bbox), score))  # type: ignore[arg-type]
+    return out
+
+
+def _save_detection_cache(
+    video_path: Path,
+    detections: list[tuple[tuple[int, int, int, int] | None, float | None]],
+) -> None:
+    path = _cache_path_for(video_path)
+    payload = {
+        "schema": _CACHE_SCHEMA_VERSION,
+        "detector": _DETECTOR_VERSION,
+        "video": str(video_path),
+        "frames": [
+            {"index": i, "bbox": list(bbox) if bbox else None, "score": score}
+            for i, (bbox, score) in enumerate(detections)
+        ],
+    }
+    try:
+        path.write_text(json.dumps(payload))
+    except Exception as e:
+        log.warning("failed to write face-detection cache: %s", e)
 
 
 # --------------------------------------------------------------------------- #
@@ -255,10 +375,23 @@ def run(
         fps=int(round(fps)),
     )  # (T_audio_frames, 50, 384)
 
-    # --- 3. Face detection + landmarks ------------------------------------
-    log.info("Detecting faces in %d frames", len(frames))
-    detections = detect_batch(state.aligner, frames)
-    raw_boxes = [d.face_box for d in detections]
+    # --- 3. Face detection + stabilization --------------------------------
+    cached = _load_detection_cache(video_path)
+    if cached is not None and len(cached) == len(frames):
+        log.info("Face detections loaded from cache (%d frames)", len(frames))
+        raw_boxes = [bbox for bbox, _ in cached]
+    else:
+        log.info("Detecting faces in %d frames (SCRFD)", len(frames))
+        detections = detect_batch(state.aligner, frames)
+        raw_boxes = [d.face_box for d in detections]
+        try:
+            _save_detection_cache(
+                video_path,
+                [(d.face_box, d.score) for d in detections],
+            )
+        except Exception as e:
+            log.warning("could not persist detection cache: %s", e)
+
     missing_count = sum(1 for b in raw_boxes if b is None)
     if missing_count == len(frames):
         raise RuntimeError(
@@ -267,14 +400,16 @@ def run(
     if missing_count:
         # Fill the gaps with the nearest valid bbox (forward first, then
         # backward for leading gaps) so every frame gets inference. Without
-        # this, frames where face-alignment dropped a detection render as
-        # the original-frame passthrough — which flips visibly back and forth
-        # with MuseTalk-regenerated frames (original beard vs smoothed jaw).
+        # this, frames where detection dropped render as passthrough and
+        # flip visibly against MuseTalk-regenerated neighbors.
         log.info(
             "Face detection gaps: %d/%d frames — carrying nearest bbox forward",
             missing_count, len(frames),
         )
     face_boxes_filled = _fill_boxes(raw_boxes)
+    # 5-frame moving average on bbox coordinates — kills SCRFD's natural
+    # ±few-pixel jitter so the blend seam doesn't wobble between frames.
+    face_boxes_filled = _smooth_boxes(face_boxes_filled, window=5)
 
     # --- 4. Per-frame VAE latents -----------------------------------------
     log.info("Encoding face crops via VAE")

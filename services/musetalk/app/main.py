@@ -24,8 +24,8 @@ from pydantic import BaseModel, Field
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s :: %(message)s")
 log = logging.getLogger(__name__)
 
-VERSION = "0.3.0"
-INFERENCE_IMPLEMENTED = True  # PR 1c: first runnable pass — expect iteration
+VERSION = "0.4.0"
+INFERENCE_IMPLEMENTED = True
 
 MODEL_CACHE_DIR = Path(os.environ.get("MODEL_CACHE_DIR", "/models"))
 WEIGHTS_ROOT = MODEL_CACHE_DIR / "musetalk"
@@ -79,7 +79,8 @@ _REQUIRED_MODULES = (
     "librosa",
     "soundfile",
     "cv2",
-    "face_alignment",
+    "insightface",
+    "onnxruntime",
     "huggingface_hub",
 )
 
@@ -147,7 +148,7 @@ def health() -> dict:
         "version": VERSION,
         "inference_implemented": INFERENCE_IMPLEMENTED,
         "weights_ready": all_weights_present,
-        "milestone": "PR 1b — deps + weights; inference pending in PR 1c",
+        "milestone": "MuseTalk V1.5 on CPU via InsightFace SCRFD (cached) + bbox smoothing",
     }
 
 

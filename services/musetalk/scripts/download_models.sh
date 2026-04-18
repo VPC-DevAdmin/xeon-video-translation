@@ -100,6 +100,31 @@ else:
         str(resnet_path),
     )
 
+# --- InsightFace face detector (SCRFD via ONNX) ---------------------------
+# InsightFace's FaceAnalysis auto-downloads on first `prepare()`, but cold-
+# starting a 300MB download mid-request makes the first musetalk job look
+# hung. Pre-fetch the 'buffalo_l' pack into MODEL_CACHE_DIR/insightface.
+insightface_root = Path(os.environ.get("MODEL_CACHE_DIR", "/models")).resolve() / "insightface"
+insightface_root.mkdir(parents=True, exist_ok=True)
+pack_dir = insightface_root / "models" / "buffalo_l"
+if pack_dir.exists() and any(pack_dir.iterdir()):
+    print("==> InsightFace buffalo_l pack already present.")
+else:
+    print("==> Pre-fetching InsightFace buffalo_l (~285 MB) ...")
+    try:
+        from insightface.app import FaceAnalysis
+        app = FaceAnalysis(
+            name="buffalo_l",
+            root=str(insightface_root),
+            providers=["CPUExecutionProvider"],
+            allowed_modules=["detection"],
+        )
+        app.prepare(ctx_id=-1, det_size=(640, 640))
+        del app
+    except Exception as e:
+        print(f"    WARN: insightface prefetch failed: {e}", file=sys.stderr)
+        print("    first /lipsync request will download on-demand instead.", file=sys.stderr)
+
 print("==> Done. Weights layout:")
 for p in sorted(cache.rglob("*")):
     if p.is_file():
