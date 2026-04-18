@@ -28,15 +28,20 @@ dependencies = [
   "omegaconf>=2.3",
   "huggingface_hub>=0.23,<0.31",
 
-  # Audio + video + preprocessing. We replace MuseTalk's mmpose/DWPose
-  # dependency with face-alignment — same 68-point landmarks, no mmcv
-  # compile-from-source pain on CPU.
+  # Audio + video + preprocessing.
+  #
+  # Face detection runs through InsightFace's SCRFD via onnxruntime. That's
+  # ~100-200x faster on CPU than the face-alignment SFD+FAN stack we used
+  # previously — face detection was 47% of total wall time for a 53-frame
+  # clip, now it's seconds. InsightFace also bundles a landmark model
+  # (buffalo_l pack) we can pick up in a follow-up for finer mouth masks.
   "librosa>=0.10",
   "soundfile>=0.12",
   "scipy>=1.11",
   "numpy<2",
   "opencv-python-headless>=4.9",
-  "face-alignment>=1.4",
+  "insightface>=0.7.3",
+  "onnxruntime>=1.17,<2.0",
   "imageio[ffmpeg]>=2.33",
 
   # Google Drive fetch for the BiSeNet face-parse weights. The weights don't
