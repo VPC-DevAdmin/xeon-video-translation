@@ -50,10 +50,16 @@ ProgressCallback = Callable[[float], None]
 
 
 def _read_blend_mode() -> str:
-    mode = os.environ.get("MUSETALK_BLEND_MODE", "mouth").strip().lower()
+    # Default flipped to `jaw` after user feedback: `mouth` preserved stubble
+    # but produced a visible "sticker" effect because the lips moved while
+    # the chin stayed frozen — real jaw and lips are muscularly coupled.
+    # `jaw` regenerates chin+cheeks+mouth together so the motion reads as
+    # anatomically correct. Stubble loss in the chin region is compensated
+    # for downstream by CodeFormer face restoration (future PR).
+    mode = os.environ.get("MUSETALK_BLEND_MODE", "jaw").strip().lower()
     if mode not in ("raw", "jaw", "mouth", "neck"):
-        log.warning("unknown MUSETALK_BLEND_MODE=%r; falling back to mouth", mode)
-        mode = "mouth"
+        log.warning("unknown MUSETALK_BLEND_MODE=%r; falling back to jaw", mode)
+        mode = "jaw"
     return mode
 
 
