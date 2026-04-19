@@ -80,6 +80,9 @@ services:
       - models:/models
       - jobs:/jobs
       - ./services/musetalk/app:/app/app
+      # Bind-mount scripts/ so fixes to download_models.sh etc. don't
+      # require an image rebuild — matches the backend service's pattern.
+      - ./services/musetalk/scripts:/app/scripts:ro
     ports:
       # Host-exposed for debugging. Backend talks to the service over Docker DNS.
       - "${MUSETALK_PORT:-8089}:8000"
@@ -131,6 +134,9 @@ services:
       - models:/models
       - jobs:/jobs
       - ./services/lipsync-latentsync/app:/app/app
+      # Bind-mount scripts/ so fixes to download_models.sh etc. don't
+      # require an image rebuild — matches the backend service's pattern.
+      - ./services/lipsync-latentsync/scripts:/app/scripts:ro
     ports:
       # Host-exposed for debugging. Backend talks to the service over
       # Docker DNS. 8090 by default to keep it clear of 8089 (MuseTalk).
