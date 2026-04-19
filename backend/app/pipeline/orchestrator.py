@@ -406,6 +406,10 @@ async def _run_stage_tts(
     translation = json.loads(translation_path.read_text())
     transcript = json.loads(transcript_path.read_text()) if transcript_path.exists() else {}
     first_speech = transcript.get("first_speech_seconds")
+    # Per-segment TTS + smart reference selection both need transcript
+    # segments with word timestamps. Missing/empty → synthesize falls back
+    # to the single-shot path.
+    transcript_segments = transcript.get("segments") or None
 
     def _do() -> dict[str, Any]:
         return tts.synthesize(
@@ -414,6 +418,7 @@ async def _run_stage_tts(
             output_path=out_path,
             first_speech_seconds=first_speech,
             source_duration_seconds=state.source_duration_seconds,
+            transcript_segments=transcript_segments,
         ).to_dict()
 
     try:
