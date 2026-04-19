@@ -1,15 +1,17 @@
 # LatentSync lipsync microservice — CPU-only, dep-isolated.
 #
-# PR-LS-1a (this PR): scaffold only. No torch, no diffusers, no model code.
-# The service boots, /health + /ready work, /lipsync returns 501. This
-# gives us an image that rebuilds in seconds so the next PR can layer in
-# the heavier ML stack without invalidating the network wiring.
+# Layered deliberately (largest-cached → most-frequently-edited):
+#   1. apt deps (ffmpeg, build tools for a couple of source wheels)
+#   2. torch 2.5.1 CPU wheels (heaviest single layer; cached across PRs)
+#   3. project deps from pyproject.toml (diffusers, mediapipe, ...)
+#   4. application code (cheapest to rebuild)
 #
-# Staged exactly like lipsync-musetalk:
-#   1a (this PR): apt deps + FastAPI scaffold + structured 501
-#   1b (next):   torch CPU wheels + diffusers/transformers pins
-#                + scripts/download_models.sh for LatentSync + SD 1.5 VAE
-#   1c (later):  vendor inference, first runnable end-to-end frame
+# Staging:
+#   1a (shipped):  FastAPI scaffold only; no torch; /lipsync returns 501.
+#   1b (this PR):  Full ML stack + real download_models.sh. /ready turns
+#                  green after `make rebuild`; /weights turns green after
+#                  `make models-latentsync`. /lipsync still returns 501.
+#   1c (next):     Vendor inference, flip INFERENCE_IMPLEMENTED = True.
 FROM python:3.11-slim AS base
 
 ENV PYTHONUNBUFFERED=1 \
@@ -17,20 +19,41 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1
 
-# ffmpeg is listed even though 1a doesn't use it — keeps the Compose wiring
-# consistent with lipsync-musetalk and saves a rebuild layer later.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ffmpeg \
       ca-certificates \
       curl \
+      git \
+      # build-essential: several wheels on this stack (python_speech_features,
+      # face-alignment, sometimes decord) compile small C extensions from
+      # source when no pre-built wheel matches Python 3.11 + CPU.
+      build-essential \
+      # mediapipe links against libGL for some visualization paths; keep
+      # the minimal GL stubs even though we never open a display.
+      libgl1 \
+      libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-COPY pyproject.toml ./
+# torch/torchvision pinned to match LatentSync upstream (requirements.txt
+# has `torch==2.5.1` / `torchvision==0.20.1`). Upstream was developed
+# against CUDA builds; we install the CPU wheels from the PyTorch index.
+# Nothing in the inference code should depend on the CUDA symbol set —
+# if it does, that's a PR-LS-1c bug to chase down, not something to
+# paper over here.
+#
+# setuptools 81 dropped pkg_resources; insightface + onnx + various HF
+# paths still import it. Pin to <81 like the other services.
 RUN pip install --upgrade pip wheel \
     && pip install "setuptools>=68,<81" \
-    && pip install -e .
+    && pip install \
+       --extra-index-url https://download.pytorch.org/whl/cpu \
+       "torch==2.5.1" \
+       "torchvision==0.20.1"
+
+COPY pyproject.toml ./
+RUN pip install -e .
 
 COPY app ./app
 COPY scripts ./scripts
