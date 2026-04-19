@@ -55,6 +55,9 @@ class JobState:
     source_language: str | None = None
     # Per-job lipsync backend override; None means "use settings.lipsync_backend".
     lipsync_backend: str | None = None
+    # Per-request tuning forwarded to the lipsync-musetalk service. All
+    # None means "use the service's env-derived defaults" (pre-PR behavior).
+    lipsync_quality: dict[str, Any] | None = None
     # Source clip duration in seconds, used for ETA calculations downstream.
     source_duration_seconds: float | None = None
     input_filename: str = ""
@@ -70,6 +73,7 @@ class JobState:
             "target_language": self.target_language,
             "source_language": self.source_language,
             "lipsync_backend": self.lipsync_backend,
+            "lipsync_quality": self.lipsync_quality,
             "source_duration_seconds": self.source_duration_seconds,
             "input_filename": self.input_filename,
             "created_at": self.created_at,
@@ -128,6 +132,7 @@ def get_job(job_id: str) -> JobState | None:
         target_language=meta.get("target_language", "es"),
         source_language=meta.get("source_language"),
         lipsync_backend=meta.get("lipsync_backend"),
+        lipsync_quality=meta.get("lipsync_quality"),
         source_duration_seconds=meta.get("source_duration_seconds"),
         input_filename=meta.get("input_filename", ""),
         created_at=meta.get("created_at", storage.now_iso()),
@@ -506,6 +511,7 @@ async def _run_stage_lipsync(
             audio_in=audio_path,
             output_path=out_path,
             progress=progress_cb,
+            quality_overrides=state.lipsync_quality,
         )
         return result.to_dict()
 

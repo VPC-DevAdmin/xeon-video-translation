@@ -107,12 +107,16 @@ def restore_frame(
     frame_bgr: np.ndarray,
     kps: np.ndarray,
     device: torch.device,
+    fidelity: float | None = None,
+    blend: float | None = None,
 ) -> np.ndarray:
     """Run CodeFormer on the face region of `frame_bgr` and return the
     enhanced full-frame image.
 
     `kps` are SCRFD's 5-point keypoints in the frame's coordinate space.
     If `kps` is None or alignment fails, the original frame is returned.
+
+    `fidelity` and `blend` override the env-driven defaults when provided.
     """
     try:
         aligned, M = align_to_canonical(frame_bgr, kps)
@@ -127,7 +131,8 @@ def restore_frame(
     tensor = tensor.to(device)
 
     model = _get_model(device)
-    w = _fidelity_weight()
+    w = fidelity if fidelity is not None else _fidelity_weight()
+    w = max(0.0, min(1.0, float(w)))
     with torch.no_grad():
         # CodeFormer returns (output, logits, lq_feat) in default mode; we
         # only need the image. `w` is the identity-vs-quality slider.
@@ -140,11 +145,13 @@ def restore_frame(
                     .permute(1, 2, 0).cpu().numpy()).astype(np.uint8)
     out_bgr = cv2.cvtColor(out_img, cv2.COLOR_RGB2BGR)
 
+    b = blend if blend is not None else _blend_weight()
+    b = max(0.0, min(1.0, float(b)))
     return paste_back(
         original=frame_bgr,
         restored_512=out_bgr,
         M=M,
-        blend_weight=_blend_weight(),
+        blend_weight=b,
     )
 
 

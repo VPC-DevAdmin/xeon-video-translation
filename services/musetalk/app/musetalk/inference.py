@@ -464,6 +464,14 @@ def run(
     progress: ProgressCallback | None = None,
     extra_margin: int = 10,
     batch_size: int = 4,
+    # Per-request quality knobs. `None` means "use the module-level default
+    # resolved from env at import time". The Makefile's QUALITY ladder is
+    # the intended producer.
+    blend_mode: str | None = None,
+    blend_feather: float | None = None,
+    face_restore: str | None = None,
+    face_restore_fidelity: float | None = None,
+    face_restore_blend: float | None = None,
 ) -> InferenceResult:
     """Run MuseTalk V1.5 inference end-to-end.
 
@@ -474,6 +482,27 @@ def run(
     video_path = Path(video_path)
     audio_path = Path(audio_path)
     output_path = Path(output_path)
+
+    # Resolve per-request knobs. Fall through to module-level defaults.
+    effective_blend_mode = (blend_mode or _blend_mode).strip().lower()
+    if effective_blend_mode not in ("raw", "jaw", "mouth", "neck"):
+        log.warning("invalid blend_mode=%r; using default %r",
+                    effective_blend_mode, _blend_mode)
+        effective_blend_mode = _blend_mode
+    effective_blend_feather = (
+        blend_feather if blend_feather is not None else _blend_feather
+    )
+    effective_face_restore = (
+        (face_restore or _face_restore_mode).strip().lower()
+    )
+    if effective_face_restore not in ("codeformer", "none"):
+        log.warning("invalid face_restore=%r; using default %r",
+                    effective_face_restore, _face_restore_mode)
+        effective_face_restore = _face_restore_mode
+    log.info(
+        "inference knobs: blend_mode=%s blend_feather=%.3f face_restore=%s",
+        effective_blend_mode, effective_blend_feather, effective_face_restore,
+    )
 
     missing = weight_paths.missing()
     if missing:
@@ -639,8 +668,8 @@ def run(
             # Blend mode / feather are env-tunable.
             #   MUSETALK_BLEND_MODE  = raw | jaw | mouth | neck  (default: jaw)
             #   MUSETALK_BLEND_FEATHER = kernel ratio           (default: 0.04)
-            mode=_blend_mode,
-            feather_ratio=_blend_feather,
+            mode=effective_blend_mode,
+            feather_ratio=effective_blend_feather,
         )
         output_frames.append(blended)
 
@@ -650,22 +679,35 @@ def run(
     # underlying VAE round-trip on nearby frames) and the regenerated
     # lower face. Per-frame cost is ~3-8 s on the Xeon; total adds 2-7 min
     # on a ~50-frame clip. Skipped cleanly if weights are missing.
-    if _face_restore_mode == "codeformer":
+    if effective_face_restore == "codeformer":
         try:
             from ._codeformer import restore_frame as _cf_restore
-            log.info("CodeFormer face restoration: %d frames", n)
+            log.info(
+                "CodeFormer face restoration: %d frames (fidelity=%s blend=%s)",
+                n,
+                "default" if face_restore_fidelity is None else f"{face_restore_fidelity:.2f}",
+                "default" if face_restore_blend is None else f"{face_restore_blend:.2f}",
+            )
             for i in range(n):
                 kps = raw_kps[i] if i < len(raw_kps) else None
                 if kps is None:
                     continue
                 try:
                     output_frames[i] = _cf_restore(
-                        output_frames[i], kps=kps, device=state.device,
+                        output_frames[i],
+                        kps=kps,
+                        device=state.device,
+                        fidelity=face_restore_fidelity,
+                        blend=face_restore_blend,
                     )
                 except Exception as e:
                     log.warning("CodeFormer skipped on frame %d: %s", i, e)
                 if progress is not None:
                     progress(min(1.0, (i + 1) / n))
+                # Per-frame heartbeat in the logs so "looks stalled" questions
+                # have a clear answer. Every 20 frames keeps the log clean.
+                if (i + 1) % 20 == 0 or (i + 1) == n:
+                    log.info("CodeFormer: %d/%d frames", i + 1, n)
         except Exception as e:
             log.warning(
                 "CodeFormer unavailable (%s); shipping un-restored frames", e,

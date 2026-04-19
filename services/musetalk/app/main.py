@@ -53,6 +53,29 @@ class LipsyncRequest(BaseModel):
     audio_path: str = Field(..., description="Absolute path to the new audio.")
     output_path: str = Field(..., description="Where to write the lipsynced MP4.")
 
+    # Per-request quality knobs. Each falls through to its env-derived default
+    # when omitted, so existing callers keep working without change.
+    blend_mode: str | None = Field(
+        None,
+        description="raw | jaw | mouth | neck. Omit to use MUSETALK_BLEND_MODE.",
+    )
+    blend_feather: float | None = Field(
+        None, ge=0.02, le=0.30,
+        description="Gaussian feather ratio. Omit to use MUSETALK_BLEND_FEATHER.",
+    )
+    face_restore: str | None = Field(
+        None,
+        description="codeformer | none. Omit to use MUSETALK_FACE_RESTORE.",
+    )
+    face_restore_fidelity: float | None = Field(
+        None, ge=0.0, le=1.0,
+        description="CodeFormer w parameter. Omit to use MUSETALK_FACE_RESTORE_FIDELITY.",
+    )
+    face_restore_blend: float | None = Field(
+        None, ge=0.0, le=1.0,
+        description="Alpha blend of CodeFormer output. Omit to use MUSETALK_FACE_RESTORE_BLEND.",
+    )
+
 
 class LipsyncResponse(BaseModel):
     status: Literal["ok", "not_implemented"]
@@ -230,6 +253,13 @@ def lipsync(req: LipsyncRequest) -> LipsyncResponse:
             audio_path=audio,
             output_path=Path(req.output_path),
             weight_paths=weights,
+            # Per-request overrides. run() ignores `None` and falls back to
+            # the env-derived defaults that were resolved at module import.
+            blend_mode=req.blend_mode,
+            blend_feather=req.blend_feather,
+            face_restore=req.face_restore,
+            face_restore_fidelity=req.face_restore_fidelity,
+            face_restore_blend=req.face_restore_blend,
         )
     except FileNotFoundError as e:
         raise HTTPException(status_code=503, detail={"phase": "weights-missing", "error": str(e)})

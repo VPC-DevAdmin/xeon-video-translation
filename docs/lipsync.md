@@ -170,6 +170,30 @@ Output quality: the regenerated lower face keeps its anatomy (lips track
 jaw from the `jaw` blend mode) but CodeFormer brings the stubble/pore
 detail back. Identity preservation is usually good at fidelity=0.7.
 
+### `QUALITY=N` ladder
+
+Progressive dial over the per-request knobs above. The Makefile passes the
+corresponding `MUSETALK_*` values as form fields on `POST /jobs`, which the
+backend forwards to the lipsync service in the `/lipsync` request body.
+**No container restart needed between invocations** — the already-loaded
+models just read the per-request overrides in `inference.run()`.
+
+| `QUALITY` | blend_mode | blend_feather | face_restore | Notes |
+|---|---|---|---|---|
+| `1` | `raw` | `0.06` | `none` | Minimum. Whole lower face replaced, no restoration. Fastest. |
+| `2` | `jaw` | `0.04` | `none` | Balanced. Anatomically correct jaw motion, skip restoration. |
+| `3` ← default | `jaw` | `0.04` | `codeformer` (0.7 / 0.6) | Full quality. Jaw + CodeFormer restoration. |
+
+Numeric today; will likely migrate to `low | medium | high` once more
+features land (LatentSync, F5-TTS would claim levels 4+).
+
+Use:
+```bash
+make run-musetalk              # uses QUALITY=3 (default)
+make run-musetalk QUALITY=2    # skip face restore for ~30 min less wall time
+make run-musetalk QUALITY=1    # fastest; visibly lower quality
+```
+
 ### CPU acceleration — IPEX, TCMalloc, Intel OpenMP
 
 The lipsync service image ships with Intel's performance tooling wired in by

@@ -31,10 +31,24 @@ EOF
 fi
 
 echo "==> POST $API_BASE/jobs (target=$TARGET lipsync=$LIPSYNC)"
+
+# Optional per-request musetalk quality knobs. Only forwarded when set, so
+# the backend service's env-driven defaults still apply otherwise.
+_extra_fields=()
+[ -n "${MUSETALK_BLEND_MODE:-}" ]            && _extra_fields+=(-F "musetalk_blend_mode=$MUSETALK_BLEND_MODE")
+[ -n "${MUSETALK_BLEND_FEATHER:-}" ]         && _extra_fields+=(-F "musetalk_blend_feather=$MUSETALK_BLEND_FEATHER")
+[ -n "${MUSETALK_FACE_RESTORE:-}" ]          && _extra_fields+=(-F "musetalk_face_restore=$MUSETALK_FACE_RESTORE")
+[ -n "${MUSETALK_FACE_RESTORE_FIDELITY:-}" ] && _extra_fields+=(-F "musetalk_face_restore_fidelity=$MUSETALK_FACE_RESTORE_FIDELITY")
+[ -n "${MUSETALK_FACE_RESTORE_BLEND:-}" ]    && _extra_fields+=(-F "musetalk_face_restore_blend=$MUSETALK_FACE_RESTORE_BLEND")
+if [ ${#_extra_fields[@]} -gt 0 ]; then
+  echo "    quality overrides: ${_extra_fields[*]}"
+fi
+
 JOB_JSON="$(curl -sS -X POST "$API_BASE/jobs" \
   -F "video=@$FIXTURE" \
   -F "target_language=$TARGET" \
-  -F "lipsync_backend=$LIPSYNC")"
+  -F "lipsync_backend=$LIPSYNC" \
+  "${_extra_fields[@]}")"
 JOB_ID="$(echo "$JOB_JSON" | jq -r '.job_id')"
 echo "    job_id=$JOB_ID"
 
