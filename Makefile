@@ -11,6 +11,7 @@ export
 # --- Defaults (override via .env or CLI) --------------------------------------
 API_BASE   ?= http://localhost:8088
 MUSETALK_HEALTH_URL ?= http://localhost:8089/health
+LATENTSYNC_HEALTH_URL ?= http://localhost:8090/health
 TARGET     ?= es
 LIPSYNC    ?= none
 # TTS backend: xtts (default, 16 langs) or f5tts (EN/ZH base, cleaner prosody).
@@ -73,7 +74,7 @@ help:  ## Show this help
 	@printf "  make run-musetalk FIXTURE=artifacts/inputs/mine.mov TARGET=ja\n"
 	@printf "  make run-musetalk QUALITY=2      # skip face restore for speed\n"
 	@printf "  make run-f5tts TARGET=en          # F5-TTS base (EN/ZH only)\n"
-	@printf "  make run-latentsync              # currently returns a 'coming soon' error\n"
+	@printf "  make run-latentsync              # scaffold service returns structured 501 (PR-LS-1a)\n"
 	@printf "  make fetch JOB=b0965\n\n"
 
 # --- Stack lifecycle ----------------------------------------------------------
@@ -85,14 +86,14 @@ up:  ## Build and start all services (docker compose up -d --build)
 down:  ## Stop all services
 	docker compose down
 
-restart:  ## Restart backend + lipsync-musetalk (picks up bind-mounted code)
-	docker compose restart backend lipsync-musetalk
+restart:  ## Restart backend + lipsync services (picks up bind-mounted code)
+	docker compose restart backend lipsync-musetalk lipsync-latentsync
 
-rebuild:  ## Rebuild and restart both app containers
-	docker compose up -d --build backend lipsync-musetalk
+rebuild:  ## Rebuild and restart all app containers
+	docker compose up -d --build backend lipsync-musetalk lipsync-latentsync
 
 # --- Observability ------------------------------------------------------------
-.PHONY: logs logs-musetalk logs-frontend health status
+.PHONY: logs logs-musetalk logs-latentsync logs-frontend health status
 
 logs:  ## Tail backend logs
 	docker compose logs -f backend
@@ -100,17 +101,23 @@ logs:  ## Tail backend logs
 logs-musetalk:  ## Tail MuseTalk service logs
 	docker compose logs -f lipsync-musetalk
 
+logs-latentsync:  ## Tail LatentSync service logs
+	docker compose logs -f lipsync-latentsync
+
 logs-frontend:  ## Tail frontend logs
 	docker compose logs -f frontend
 
 status: health  ## Alias for health
 
-health:  ## Hit /health on both services
+health:  ## Hit /health on all services
 	@echo '--- backend ---'
 	@curl -sS $(API_BASE)/health | jq . 2>/dev/null || echo '  (unreachable at $(API_BASE))'
 	@echo ''
 	@echo '--- lipsync-musetalk ---'
 	@curl -sS $(MUSETALK_HEALTH_URL) | jq . 2>/dev/null || echo '  (unreachable at $(MUSETALK_HEALTH_URL))'
+	@echo ''
+	@echo '--- lipsync-latentsync ---'
+	@curl -sS $(LATENTSYNC_HEALTH_URL) | jq . 2>/dev/null || echo '  (unreachable at $(LATENTSYNC_HEALTH_URL))'
 
 # --- Model downloads ----------------------------------------------------------
 .PHONY: models models-wav2lip models-musetalk models-all
@@ -127,7 +134,10 @@ models-musetalk:  ## MuseTalk service weights (~1.4 GB)
 models-f5tts:  ## F5-TTS base checkpoint (~1.3 GB, EN/ZH)
 	docker compose exec -e TTS_BACKEND=f5tts backend bash /app/scripts/download_models.sh
 
-models-all: models-wav2lip models-musetalk models-f5tts  ## All models (Wav2Lip + MuseTalk + F5-TTS)
+models-latentsync:  ## LatentSync weights (PR-LS-1a: placeholder, prints next-step note)
+	docker compose exec lipsync-latentsync bash /app/scripts/download_models.sh
+
+models-all: models-wav2lip models-musetalk models-f5tts  ## All models (Wav2Lip + MuseTalk + F5-TTS). Add `models-latentsync` once PR-LS-1b lands.
 
 # --- Running jobs -------------------------------------------------------------
 .PHONY: run run-none run-wav2lip run-musetalk run-f5tts run-latentsync

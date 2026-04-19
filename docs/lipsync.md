@@ -290,35 +290,65 @@ Both services mount `/jobs` and `/models`. Backend reaches the service via
 Docker DNS at `http://lipsync-musetalk:8000`; the host can hit it for
 debugging at `localhost:${MUSETALK_PORT:-8089}`.
 
-## `latentsync` — scaffolded, not yet implemented
+## `latentsync` — microservice scaffold (PR-LS-1a)
 
-SD 1.5 latent-diffusion based. Best open-source quality as of writing. CPU
-inference is **impractical**: estimated 30–60 minutes for a 3 s clip based on
-per-frame latent diffusion step counts × typical CPU iteration times.
+SD 1.5 latent-diffusion based. Best open-source lipsync quality as of
+writing, and designed as a **batch workflow** on CPU: the architecture
+(per-frame latent denoising at video frame rate) isn't optimizable into
+live-demo territory on any current-gen CPU.
 
-Selecting `latentsync` today raises a clean error pointing here:
+**CPU budget:** ~10 minutes of wall-clock per second of source video. A
+10 s clip takes 1.5–2 hours. For translation workflows where batch
+overnight is acceptable (archival, research, accessibility), that's
+reasonable; for a demo booth, use `LIPSYNC=musetalk` or `LIPSYNC=none`.
+
+### State as of PR-LS-1a (this PR)
+
+The **microservice exists and is reachable** at
+`http://lipsync-latentsync:8000` (host-side debug: `LATENTSYNC_PORT=8090`).
+The backend dispatcher calls it via `backend/app/pipeline/_lipsync/
+latentsync_client.py`, same pattern as MuseTalk. `/lipsync` currently
+returns a structured 501 because no inference code is loaded yet — that
+flips on in PR-LS-1c.
+
+This separation is deliberate: LatentSync's `diffusers` / `transformers`
+pins conflict with both the main backend (coqui-tts) and the MuseTalk
+service (`transformers==4.39`), so a third dep-isolated container is the
+only sane home.
+
+Exercising it:
+
+```bash
+make run-latentsync      # kicks a job through the real service and surfaces the 501
+make health              # hits /health on backend + musetalk + latentsync
+make logs-latentsync     # tail service logs
+curl http://localhost:8090/ready    # every dep will show ok=false until PR-LS-1b
+curl http://localhost:8090/weights  # every weight will show missing until PR-LS-1b
 ```
-LipsyncError: LatentSync is scaffolded in this build but not yet
-implemented — the runner is wired up to this dispatch and an API request
-to it reaches here cleanly. Full inference path is coming in a follow-up
-PR; see docs/lipsync.md for the roadmap…
-```
-
-`make run-latentsync` exercises this error path so the plumbing (form
-field → JobState → orchestrator → lipsync dispatch) stays honest while
-the real implementation is staged in a separate PR.
 
 ### Roadmap
 
 | Phase | What ships | Status |
 |-------|------------|--------|
-| **Scaffold (this PR)** | `make run-latentsync` target, lipsync dispatcher branch, improved error message, docs | shipping |
-| **Follow-up PR** | Dep-isolated `lipsync-latentsync` microservice (same pattern as MuseTalk), weight download script, HTTP client, real inference path | planned |
-| **GPU path (later)** | Optional CUDA image variant, gated behind a compose profile | not planned for CPU demo |
+| **PR 35 (scaffold error)** | `make run-latentsync` target, inline dispatcher error pointing here | shipped |
+| **PR-LS-1a (this PR)** | Dep-isolated `lipsync-latentsync` microservice, Compose wiring, HTTP client, structured 501 end-to-end, introspection endpoints (`/health`, `/ready`, `/weights`) | shipping |
+| **PR-LS-1b** | torch CPU wheels + diffusers/transformers/accelerate pins + `scripts/download_models.sh` for LatentSync UNet + SD 1.5 VAE + Whisper tiny | planned |
+| **PR-LS-1c** | Vendor LatentSync inference, first runnable frame, per-request quality knobs (`num_inference_steps`, `guidance_scale`, `seed`) wired through | planned |
+| **GPU path (later)** | Optional CUDA image variant gated behind a compose profile — intentionally not prioritized for the CPU demo | not planned |
 
-Even after it's wired, you should not expect usable live-demo performance on
-CPU. The scaffold exists so the UI and API are ready if and when we add a
-GPU path and so follow-up work has one place to plug into.
+### Per-request knobs (forward-compat in PR-LS-1a, wired in PR-LS-1c)
+
+The `POST /lipsync` payload schema already accepts LatentSync-specific
+fields so clients can be written against them now:
+
+| Field | Range | Default | Purpose |
+|---|---|---|---|
+| `num_inference_steps` | 1–100 | `LATENTSYNC_STEPS=20` | Denoising steps per frame. Halving this ~halves wall time; quality drops visibly below 10. |
+| `guidance_scale` | 0.0–15.0 | `LATENTSYNC_GUIDANCE=1.5` | Classifier-free guidance. Higher = stronger mouth shaping, at cost of identity drift. |
+| `seed` | int | random | Reproducibility. Fix when comparing runs. |
+
+In PR-LS-1a the service accepts and ignores these; in PR-LS-1c they gate
+the actual diffusion loop.
 
 ## ETA and progress events
 

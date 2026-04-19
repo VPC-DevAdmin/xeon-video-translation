@@ -1,0 +1,30 @@
+[project]
+name = "polyglot-demo-lipsync-latentsync"
+version = "0.1.0"
+description = "LatentSync lipsync microservice (CPU-only, dep-isolated from the main backend)"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+
+# NOTE: this service is intentionally dep-isolated from the main backend
+# and from lipsync-musetalk. LatentSync's SD 1.5 latent-diffusion pipeline
+# pulls in a different diffusers/transformers combination than either of
+# the other two envs, and the inference path is heavy enough that mixing
+# it with coqui-tts or MuseTalk invites version drift.
+#
+# PR-LS-1a (this PR) ships *only* FastAPI + Pydantic — no torch, no
+# diffusers, no model code. The service boots, /health and /ready work,
+# /lipsync returns 501. PR-LS-1b adds the ML stack + weight download;
+# PR-LS-1c vendors the inference path.
+dependencies = [
+  "fastapi>=0.110",
+  "uvicorn[standard]>=0.27",
+  "pydantic>=2.6",
+]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]

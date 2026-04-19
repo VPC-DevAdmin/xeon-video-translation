@@ -57,6 +57,12 @@ class Settings(BaseSettings):
     # How long to wait for MuseTalk to finish a single request. Generous:
     # CPU inference for a 30s clip can run into tens of minutes.
     musetalk_timeout_seconds: int = 1800
+    # LatentSync lipsync microservice. PR-LS-1a ships the scaffold only:
+    # the service returns 501 until PR-LS-1c lands. The timeout is sized
+    # for the eventual inference path — LatentSync on CPU is a batch
+    # workflow (~10 min per second of source video), not a live one.
+    latentsync_service_url: str = "http://lipsync-latentsync:8000"
+    latentsync_timeout_seconds: int = 14400  # 4 hours — batch job territory
     # Watermark text drawn on the output video. Respect responsible-use guidance.
     watermark_text: str = "AI-translated"
 
