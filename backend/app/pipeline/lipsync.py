@@ -80,7 +80,13 @@ def run(
     audio_in: Path,
     output_path: Path,
     progress: ProgressCallback | None = None,
+    quality_overrides: dict | None = None,
 ) -> LipsyncResult:
+    """Run the selected lipsync backend.
+
+    `quality_overrides` is forwarded to backends that understand per-request
+    tuning (today: musetalk). `none` and `wav2lip` ignore it.
+    """
     backend = backend.lower()
 
     if backend == "none":
@@ -92,7 +98,11 @@ def run(
 
     if backend == "musetalk":
         from ._lipsync.musetalk_client import run as musetalk_run
-        return musetalk_run(video_in, audio_in, output_path, progress=progress)
+        return musetalk_run(
+            video_in, audio_in, output_path,
+            progress=progress,
+            quality_overrides=quality_overrides,
+        )
 
     if backend == "latentsync":
         raise LipsyncError(

@@ -22,6 +22,10 @@ _ALLOWED_EXTENSIONS = {".mp4", ".mov", ".webm", ".mkv", ".m4v"}
 _ALLOWED_LIPSYNC = {"none", "wav2lip", "musetalk", "latentsync"}
 
 
+_ALLOWED_BLEND_MODES = {"raw", "jaw", "mouth", "neck"}
+_ALLOWED_FACE_RESTORE = {"codeformer", "none"}
+
+
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def create_job(
     background: BackgroundTasks,
@@ -29,6 +33,13 @@ async def create_job(
     target_language: str = Form(...),
     source_language: str | None = Form(None),
     lipsync_backend: str | None = Form(None),
+    # Per-request musetalk knobs (forwarded to the lipsync service).
+    # Each is optional; missing fields fall through to service env defaults.
+    musetalk_blend_mode: str | None = Form(None),
+    musetalk_blend_feather: float | None = Form(None),
+    musetalk_face_restore: str | None = Form(None),
+    musetalk_face_restore_fidelity: float | None = Form(None),
+    musetalk_face_restore_blend: float | None = Form(None),
 ) -> dict:
     """Accept a video upload, persist it, and kick off the pipeline."""
     filename = video.filename or "input"
@@ -44,6 +55,38 @@ async def create_job(
                 400, f"unsupported lipsync_backend: {lipsync_backend!r}. "
                      f"Allowed: {sorted(_ALLOWED_LIPSYNC)}"
             )
+
+    # Normalize + validate the per-request musetalk knobs. Invalid input
+    # raises 400; None stays None and the service falls back to env.
+    def _norm_enum(val: str | None, allowed: set, label: str) -> str | None:
+        if val is None:
+            return None
+        v = val.lower().strip()
+        if v not in allowed:
+            raise HTTPException(
+                400, f"unsupported {label}: {val!r}. Allowed: {sorted(allowed)}",
+            )
+        return v
+
+    def _norm_ratio(val: float | None, lo: float, hi: float, label: str) -> float | None:
+        if val is None:
+            return None
+        if not lo <= val <= hi:
+            raise HTTPException(
+                400, f"{label}={val} out of range [{lo}, {hi}]",
+            )
+        return val
+
+    lipsync_quality: dict | None = None
+    q = {
+        "blend_mode": _norm_enum(musetalk_blend_mode, _ALLOWED_BLEND_MODES, "musetalk_blend_mode"),
+        "blend_feather": _norm_ratio(musetalk_blend_feather, 0.02, 0.30, "musetalk_blend_feather"),
+        "face_restore": _norm_enum(musetalk_face_restore, _ALLOWED_FACE_RESTORE, "musetalk_face_restore"),
+        "face_restore_fidelity": _norm_ratio(musetalk_face_restore_fidelity, 0.0, 1.0, "musetalk_face_restore_fidelity"),
+        "face_restore_blend": _norm_ratio(musetalk_face_restore_blend, 0.0, 1.0, "musetalk_face_restore_blend"),
+    }
+    if any(v is not None for v in q.values()):
+        lipsync_quality = {k: v for k, v in q.items() if v is not None}
 
     job_id = storage.new_job_id()
     job_directory = storage.job_dir(job_id)
@@ -73,6 +116,7 @@ async def create_job(
         target_language=target_language.lower(),
         source_language=source_language.lower() if source_language else None,
         lipsync_backend=lipsync_backend_norm,
+        lipsync_quality=lipsync_quality,
         input_filename=filename,
     )
     register_job(state)

@@ -55,6 +55,7 @@ Run `make help` for the full menu. Most common targets:
 | `make models-musetalk` | MuseTalk weights (~1.4 GB) |
 | `make models-all` | All of the above |
 | `make run-none` / `run-wav2lip` / `run-musetalk` | Smoke test with the named backend |
+| `make run-musetalk QUALITY=N` | Quality ladder (1=fastest, 3=default/best). See `docs/lipsync.md`. |
 | `make list` | Recent jobs on the backend |
 | `make progress` | One-shot status on the latest job (use `JOB=prefix` for specific) |
 | `make watch` | Poll the latest job until it finishes (good for `run-musetalk`) |

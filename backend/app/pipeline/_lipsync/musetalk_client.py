@@ -29,10 +29,15 @@ def run(
     audio_in: Path,
     output_path: Path,
     progress: ProgressCallback | None = None,
+    quality_overrides: dict | None = None,
 ):
     """Call the MuseTalk service and wait for the lipsynced MP4.
 
     Returns a LipsyncResult on success, raises LipsyncError otherwise.
+
+    `quality_overrides`, if present, gets merged into the JSON body so the
+    service can vary blend mode, face restore, etc. per request. Missing
+    keys fall through to the service's env-driven defaults.
     """
     # Imported here to avoid a circular import with the dispatcher.
     from ..lipsync import LipsyncError, LipsyncResult
@@ -42,11 +47,22 @@ def run(
         # service streams per-frame updates.
         progress(0.05)
 
-    body = json.dumps({
+    payload: dict = {
         "video_path": str(video_in),
         "audio_path": str(audio_in),
         "output_path": str(output_path),
-    }).encode("utf-8")
+    }
+    if quality_overrides:
+        # Only forward keys the service understands. Drops `None`s so they
+        # don't override existing env defaults on the service side.
+        for key in (
+            "blend_mode", "blend_feather",
+            "face_restore", "face_restore_fidelity", "face_restore_blend",
+        ):
+            val = quality_overrides.get(key)
+            if val is not None:
+                payload[key] = val
+    body = json.dumps(payload).encode("utf-8")
 
     req = urllib.request.Request(
         f"{settings.musetalk_service_url.rstrip('/')}/lipsync",
