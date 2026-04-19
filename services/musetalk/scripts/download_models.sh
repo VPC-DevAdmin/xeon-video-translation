@@ -100,6 +100,33 @@ else:
         str(resnet_path),
     )
 
+# --- CodeFormer face restoration ------------------------------------------
+# Immutable GitHub release asset. ~376 MB.
+cf_dir = cache / "codeformer"
+cf_dir.mkdir(parents=True, exist_ok=True)
+cf_weights = cf_dir / "codeformer.pth"
+if cf_weights.exists() and cf_weights.stat().st_size > 300_000_000:
+    print("==> CodeFormer weights already present.")
+else:
+    print("==> CodeFormer weights (~376 MB) ...")
+    url = os.environ.get(
+        "CODEFORMER_CHECKPOINT_URL",
+        "https://github.com/sczhou/CodeFormer/releases/download/v0.1.0/codeformer.pth",
+    )
+    tmp = cf_weights.with_suffix(".part")
+    try:
+        with urllib.request.urlopen(url, timeout=600) as resp, tmp.open("wb") as f:
+            while True:
+                chunk = resp.read(1 << 20)
+                if not chunk:
+                    break
+                f.write(chunk)
+        tmp.rename(cf_weights)
+    except Exception as e:
+        print(f"    WARN: CodeFormer download failed: {e}", file=sys.stderr)
+        print("    face-restoration will be skipped until this weight is in place.",
+              file=sys.stderr)
+
 # --- InsightFace face detector (SCRFD via ONNX) ---------------------------
 # InsightFace's FaceAnalysis auto-downloads on first `prepare()`, but cold-
 # starting a 300MB download mid-request makes the first musetalk job look

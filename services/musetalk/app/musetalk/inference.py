@@ -82,6 +82,24 @@ _blend_mode = _read_blend_mode()
 _blend_feather = _read_blend_feather()
 
 
+def _read_face_restore() -> str:
+    """`MUSETALK_FACE_RESTORE`: codeformer | none.
+
+    `codeformer` runs the CodeFormer face-restoration model per frame after
+    the MuseTalk blend to recover high-frequency skin detail that the VAE
+    round-trip loses. `none` skips restoration entirely — use this for
+    speed or when debugging upstream stages.
+    """
+    mode = os.environ.get("MUSETALK_FACE_RESTORE", "codeformer").strip().lower()
+    if mode not in ("codeformer", "none"):
+        log.warning("unknown MUSETALK_FACE_RESTORE=%r; falling back to codeformer", mode)
+        mode = "codeformer"
+    return mode
+
+
+_face_restore_mode = _read_face_restore()
+
+
 def _probe_duration(path: Path) -> float | None:
     try:
         out = subprocess.check_output(
@@ -167,7 +185,10 @@ def _smooth_boxes(
 # --------------------------------------------------------------------------- #
 
 _DETECTOR_VERSION = "scrfd/buffalo_l/v1"
-_CACHE_SCHEMA_VERSION = 1
+# v2 added 5-point kps per frame for the CodeFormer alignment path. Old v1
+# caches are ignored and re-detected — the invalidation is cheap because
+# SCRFD is seconds, not minutes.
+_CACHE_SCHEMA_VERSION = 2
 
 
 def _cache_dir() -> Path:
@@ -196,9 +217,17 @@ def _cache_path_for(video_path: Path) -> Path:
     return _cache_dir() / f"{_video_signature(video_path)}.json"
 
 
-def _load_detection_cache(
-    video_path: Path,
-) -> list[tuple[tuple[int, int, int, int] | None, float | None]] | None:
+# Cache entry type: (bbox, score, kps). `kps` is stored as a python list of
+# 5 [x, y] pairs when present, None otherwise. Numpy is reconstructed on
+# load.
+_CacheEntry = tuple[
+    tuple[int, int, int, int] | None,
+    float | None,
+    "np.ndarray | None",
+]
+
+
+def _load_detection_cache(video_path: Path) -> list[_CacheEntry] | None:
     path = _cache_path_for(video_path)
     if not path.exists():
         return None
@@ -210,20 +239,26 @@ def _load_detection_cache(
     if data.get("schema") != _CACHE_SCHEMA_VERSION:
         return None
     frames = data.get("frames", [])
-    out: list[tuple[tuple[int, int, int, int] | None, float | None]] = []
+    out: list[_CacheEntry] = []
     for entry in frames:
         bbox = entry.get("bbox")
         score = entry.get("score")
-        if bbox is None:
-            out.append((None, score))
-        else:
-            out.append((tuple(int(v) for v in bbox), score))  # type: ignore[arg-type]
+        kps_list = entry.get("kps")
+        kps = None
+        if kps_list is not None:
+            try:
+                import numpy as _np  # local to keep json path cheap
+                kps = _np.asarray(kps_list, dtype=_np.float32).reshape(-1, 2)
+            except Exception:
+                kps = None
+        bbox_tuple = None if bbox is None else tuple(int(v) for v in bbox)
+        out.append((bbox_tuple, score, kps))  # type: ignore[arg-type]
     return out
 
 
 def _save_detection_cache(
     video_path: Path,
-    detections: list[tuple[tuple[int, int, int, int] | None, float | None]],
+    detections: list[_CacheEntry],
 ) -> None:
     path = _cache_path_for(video_path)
     payload = {
@@ -231,8 +266,13 @@ def _save_detection_cache(
         "detector": _DETECTOR_VERSION,
         "video": str(video_path),
         "frames": [
-            {"index": i, "bbox": list(bbox) if bbox else None, "score": score}
-            for i, (bbox, score) in enumerate(detections)
+            {
+                "index": i,
+                "bbox": list(bbox) if bbox else None,
+                "score": score,
+                "kps": kps.tolist() if kps is not None else None,
+            }
+            for i, (bbox, score, kps) in enumerate(detections)
         ],
     }
     try:
@@ -471,15 +511,17 @@ def run(
     cached = _load_detection_cache(video_path)
     if cached is not None and len(cached) == len(frames):
         log.info("Face detections loaded from cache (%d frames)", len(frames))
-        raw_boxes = [bbox for bbox, _ in cached]
+        raw_boxes = [bbox for bbox, _, _ in cached]
+        raw_kps = [kps for _, _, kps in cached]
     else:
         log.info("Detecting faces in %d frames (SCRFD)", len(frames))
         detections = detect_batch(state.aligner, frames)
         raw_boxes = [d.face_box for d in detections]
+        raw_kps = [d.kps for d in detections]
         try:
             _save_detection_cache(
                 video_path,
-                [(d.face_box, d.score) for d in detections],
+                [(d.face_box, d.score, d.kps) for d in detections],
             )
         except Exception as e:
             log.warning("could not persist detection cache: %s", e)
@@ -588,15 +630,40 @@ def run(
             face=face_resized,
             face_box=(x1, y1, x2, y2),
             fp=state.face_parsing,
-            # Blend mode / feather are env-tunable. Defaults bias toward
-            # stubble preservation on bearded subjects (mouth-only mask
-            # with a generously feathered boundary).
-            #   MUSETALK_BLEND_MODE  = raw | jaw | mouth  (default: mouth)
-            #   MUSETALK_BLEND_FEATHER = kernel ratio, e.g. "0.08"  (default: 0.08)
+            # Blend mode / feather are env-tunable.
+            #   MUSETALK_BLEND_MODE  = raw | jaw | mouth | neck  (default: jaw)
+            #   MUSETALK_BLEND_FEATHER = kernel ratio           (default: 0.04)
             mode=_blend_mode,
             feather_ratio=_blend_feather,
         )
         output_frames.append(blended)
+
+    # --- 6b. Optional face restoration (CodeFormer) -----------------------
+    # Applied after the MuseTalk blend so the restored skin detail covers
+    # both the original area (unchanged by MuseTalk but degraded by the
+    # underlying VAE round-trip on nearby frames) and the regenerated
+    # lower face. Per-frame cost is ~3-8 s on the Xeon; total adds 2-7 min
+    # on a ~50-frame clip. Skipped cleanly if weights are missing.
+    if _face_restore_mode == "codeformer":
+        try:
+            from ._codeformer import restore_frame as _cf_restore
+            log.info("CodeFormer face restoration: %d frames", n)
+            for i in range(n):
+                kps = raw_kps[i] if i < len(raw_kps) else None
+                if kps is None:
+                    continue
+                try:
+                    output_frames[i] = _cf_restore(
+                        output_frames[i], kps=kps, device=state.device,
+                    )
+                except Exception as e:
+                    log.warning("CodeFormer skipped on frame %d: %s", i, e)
+                if progress is not None:
+                    progress(min(1.0, (i + 1) / n))
+        except Exception as e:
+            log.warning(
+                "CodeFormer unavailable (%s); shipping un-restored frames", e,
+            )
 
     # --- 7. Write video + mux audio ---------------------------------------
     log.info("Writing output video")

@@ -123,6 +123,49 @@ signature of the input video (size + first 1 MB + detector version). A
 second run on the same clip skips the detection pass entirely. This is
 purely a dev-iteration optimization; on a first run it costs nothing.
 
+### Face restoration — CodeFormer (post-blend)
+
+MuseTalk's 256×256 VAE round-trip softens skin detail (pores, stubble,
+fine wrinkles). The lipsync service runs **CodeFormer** (Shangchen Zhou et
+al., 2022, vendored under `services/musetalk/app/musetalk/_codeformer/`)
+on every output frame to recover that detail. CodeFormer is a face-only
+restoration model trained to preserve identity while sharpening texture.
+
+Pipeline placement: **after** the MuseTalk blend. Frames flow as:
+
+```
+SCRFD → UNet → VAE decode → BiSeNet blend (jaw/mouth mode) → CodeFormer restore → mux
+```
+
+Per-frame cost on Xeon is ~3–8 s. For a 53-frame clip that's ~3–7 min
+added on top of MuseTalk's own run time.
+
+Knobs (all via env):
+
+```
+MUSETALK_FACE_RESTORE          codeformer | none   (default: codeformer)
+MUSETALK_FACE_RESTORE_FIDELITY 0.0–1.0             (default: 0.7)
+MUSETALK_FACE_RESTORE_BLEND    0.0–1.0             (default: 0.6)
+```
+
+`FIDELITY` is CodeFormer's internal `w` parameter. 0.0 = maximum visual
+quality but may morph identity; 1.0 = strict identity preservation with
+less detail recovery. 0.7 is the commonly cited balance.
+
+`BLEND` is how much of the restored face to alpha-blend on top of
+MuseTalk's output. A 5-point affine transform (using SCRFD's keypoints)
+aligns the face to CodeFormer's 512×512 canonical positions and inverse-
+warps the result back. The blend mask is a Gaussian-feathered ellipse so
+the seam at the face boundary doesn't show.
+
+Weight: `codeformer.pth` (~376 MB), official GitHub release
+(`sczhou/CodeFormer`). Pre-fetched by `scripts/download_models.sh`; if
+missing at inference time the stage is skipped with a warning.
+
+Output quality: the regenerated lower face keeps its anatomy (lips track
+jaw from the `jaw` blend mode) but CodeFormer brings the stubble/pore
+detail back. Identity preservation is usually good at fidelity=0.7.
+
 ### CPU acceleration — IPEX, TCMalloc, Intel OpenMP
 
 The lipsync service image ships with Intel's performance tooling wired in by

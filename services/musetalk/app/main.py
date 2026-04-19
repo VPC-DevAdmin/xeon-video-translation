@@ -24,7 +24,7 @@ from pydantic import BaseModel, Field
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s :: %(message)s")
 log = logging.getLogger(__name__)
 
-VERSION = "0.6.1"
+VERSION = "0.7.0"
 INFERENCE_IMPLEMENTED = True
 
 MODEL_CACHE_DIR = Path(os.environ.get("MODEL_CACHE_DIR", "/models"))
@@ -105,6 +105,11 @@ def _dep_status() -> dict[str, dict]:
 # Sizes are defensive — catch accidentally-truncated downloads without being
 # brittle across mirror revisions.
 _REQUIRED_WEIGHTS: tuple[tuple[str, int], ...] = (
+    # codeformer.pth lives at MODEL_CACHE_DIR/codeformer/ — see runner.py.
+    # It's a *sibling* of the musetalk/ tree but tracked here because the
+    # service needs it for the face-restoration stage. Missing = warning,
+    # not error: restoration is skipped and MuseTalk output is shipped raw.
+    ("../codeformer/codeformer.pth",                 300_000_000),
     ("musetalkV15/unet.pth",                         800_000_000),
     ("musetalkV15/musetalk.json",                    100),
     ("sd-vae/config.json",                           100),
@@ -153,9 +158,12 @@ def health() -> dict:
         "weights_ready": all_weights_present,
         "ipex_dtype": os.environ.get("MUSETALK_IPEX_DTYPE", "fp32"),
         "ld_preload": os.environ.get("LD_PRELOAD", ""),
-        "blend_mode": os.environ.get("MUSETALK_BLEND_MODE", "mouth"),
-        "blend_feather": os.environ.get("MUSETALK_BLEND_FEATHER", "0.08"),
-        "milestone": "SCRFD + IPEX + mouth-only mask with soft feather",
+        "blend_mode": os.environ.get("MUSETALK_BLEND_MODE", "jaw"),
+        "blend_feather": os.environ.get("MUSETALK_BLEND_FEATHER", "0.04"),
+        "face_restore": os.environ.get("MUSETALK_FACE_RESTORE", "codeformer"),
+        "face_restore_fidelity": os.environ.get("MUSETALK_FACE_RESTORE_FIDELITY", "0.7"),
+        "face_restore_blend": os.environ.get("MUSETALK_FACE_RESTORE_BLEND", "0.6"),
+        "milestone": "MuseTalk + SCRFD + IPEX + CodeFormer face restore",
     }
 
 
