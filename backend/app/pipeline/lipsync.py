@@ -14,8 +14,11 @@ Four backends are defined:
 - `musetalk`   — stubbed in this PR. See docs/lipsync.md for why (integration
                  effort is substantial; deferred to a follow-up).
 
-- `latentsync` — stubbed in this PR. SD 1.5 latent-diffusion based, effectively
-                 unusable on CPU (~30–60 min per 3 s clip). Same deal.
+- `latentsync` — microservice scaffold in this PR. The service is reachable
+                 and returns a structured 501 explaining staging; real
+                 inference lands in PR-LS-1c. CPU budget is ~10 min per
+                 second of source video (SD 1.5 latent diffusion per
+                 frame) — batch workflow, not live.
 
 Each backend's ``run`` function signature is:
 
@@ -85,7 +88,11 @@ def run(
     """Run the selected lipsync backend.
 
     `quality_overrides` is forwarded to backends that understand per-request
-    tuning (today: musetalk). `none` and `wav2lip` ignore it.
+    tuning:
+      - musetalk: blend_mode / blend_feather / face_restore* (see PR 33)
+      - latentsync: num_inference_steps / guidance_scale / seed (wired in
+        the payload now; actual tuning lands in PR-LS-1c)
+    `none` and `wav2lip` ignore it.
     """
     backend = backend.lower()
 
@@ -105,14 +112,11 @@ def run(
         )
 
     if backend == "latentsync":
-        raise LipsyncError(
-            "LatentSync is scaffolded in this build but not yet implemented "
-            "— the runner is wired up to this dispatch and an API request "
-            "to it reaches here cleanly. Full inference path is coming in a "
-            "follow-up PR; see docs/lipsync.md for the roadmap and honest "
-            "expectations on CPU (SD 1.5 latent diffusion at ~10 min per "
-            "second of video). For now, use LIPSYNC=musetalk (slow but "
-            "works) or LIPSYNC=none (fastest, dub-over only)."
+        from ._lipsync.latentsync_client import run as latentsync_run
+        return latentsync_run(
+            video_in, audio_in, output_path,
+            progress=progress,
+            quality_overrides=quality_overrides,
         )
 
     raise LipsyncError(f"unknown lipsync backend: {backend!r}")
