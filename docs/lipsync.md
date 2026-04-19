@@ -87,16 +87,20 @@ bytes cross the wire.
   average on `(x1, y1, x2, y2)` dampens the jitter enough that the blend
   seam doesn't wobble between frames. Shorter window = more responsive to
   real head motion; longer = smoother but laggier. 5 is the current default.
-- **Stubble/detail preservation** — three blend modes exposed via
+- **Anatomical coupling** — three blend modes exposed via
   `MUSETALK_BLEND_MODE`:
   - `raw`: full lower face replaced (original v1.0 behavior; lots of
     texture loss)
-  - `jaw`: chin + cheeks + mouth (moderate; some stubble replacement)
-  - `mouth`: lips + teeth only (default; best stubble preservation).
-    The mask is dilated by ~7 px inside `face_parsing` before it leaves;
-    without that dilate the Gaussian feather at composite time ate the
-    opaque center of such a small mask and produced a "ghost mouth"
-    overlay on top of the original.
+  - `jaw` (default): chin + cheeks + mouth together. Chin moves with the
+    lips, which is how real jaws work. Some stubble in the chin/cheek
+    region is regenerated and softened; a downstream face-restoration
+    pass (CodeFormer, separate PR) brings that detail back.
+  - `mouth`: lips + teeth only. Best stubble preservation but freezes
+    the chin while the lips move, producing a visible "sticker" effect
+    when the speaker opens their mouth. Mask is dilated by ~7 px inside
+    `face_parsing` to avoid a secondary ghosting issue (the Gaussian
+    feather at composite time would otherwise erode such a small mask's
+    opaque center).
   Feather is controlled by `MUSETALK_BLEND_FEATHER` (fraction of crop
   width; default 0.04). The absolute kernel is capped at 31 px regardless
   of crop size — larger kernels look smoother on big masks but erode
