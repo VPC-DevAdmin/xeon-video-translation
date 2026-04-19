@@ -290,7 +290,7 @@ Both services mount `/jobs` and `/models`. Backend reaches the service via
 Docker DNS at `http://lipsync-musetalk:8000`; the host can hit it for
 debugging at `localhost:${MUSETALK_PORT:-8089}`.
 
-## `latentsync` — microservice scaffold (PR-LS-1a)
+## `latentsync` — microservice with weights (PR-LS-1b)
 
 SD 1.5 latent-diffusion based. Best open-source lipsync quality as of
 writing, and designed as a **batch workflow** on CPU: the architecture
@@ -302,28 +302,46 @@ live-demo territory on any current-gen CPU.
 overnight is acceptable (archival, research, accessibility), that's
 reasonable; for a demo booth, use `LIPSYNC=musetalk` or `LIPSYNC=none`.
 
-### State as of PR-LS-1a (this PR)
+### State as of PR-LS-1b (this PR)
 
-The **microservice exists and is reachable** at
-`http://lipsync-latentsync:8000` (host-side debug: `LATENTSYNC_PORT=8090`).
-The backend dispatcher calls it via `backend/app/pipeline/_lipsync/
-latentsync_client.py`, same pattern as MuseTalk. `/lipsync` currently
-returns a structured 501 because no inference code is loaded yet — that
-flips on in PR-LS-1c.
+The **microservice is reachable and the ML stack is installed**. The
+container has torch 2.5.1 CPU, diffusers 0.32.2, transformers 4.48.0,
+and the rest of LatentSync's upstream `requirements.txt` (CPU-adapted —
+`opencv-python-headless`, `onnxruntime` instead of `-gpu`, lpips /
+DeepCache / gradio dropped as inference-irrelevant).
 
-This separation is deliberate: LatentSync's `diffusers` / `transformers`
-pins conflict with both the main backend (coqui-tts) and the MuseTalk
-service (`transformers==4.39`), so a third dep-isolated container is the
-only sane home.
+**Weights download is live.** `make models-latentsync` pulls three
+files from `ByteDance/LatentSync-1.6` into the shared `/models/latentsync/`
+volume:
+
+```
+/models/latentsync/
+├── latentsync_unet.pt      ~5 GB    SD 1.5 UNet fine-tuned for lipsync
+├── stable_syncnet.pt       ~1.6 GB  SyncNet for audio-visual supervision
+└── whisper/
+    └── tiny.pt             ~75 MB   OpenAI Whisper tiny
+```
+
+`/lipsync` still returns a structured 501 because no inference code is
+loaded yet — that flips on in PR-LS-1c. The 501 body now carries a
+`weights_present` boolean so users can tell whether their
+`make models-latentsync` ran successfully without digging through logs.
+
+Dep isolation rationale: LatentSync's `torch==2.5.1` / `diffusers==0.32.2` /
+`transformers==4.48.0` pins conflict with both the main backend (coqui-tts
+wants transformers <4.47) and the MuseTalk service (`transformers==4.39`).
+A third dep-isolated container is the only sane home.
 
 Exercising it:
 
 ```bash
-make run-latentsync      # kicks a job through the real service and surfaces the 501
-make health              # hits /health on backend + musetalk + latentsync
-make logs-latentsync     # tail service logs
-curl http://localhost:8090/ready    # every dep will show ok=false until PR-LS-1b
-curl http://localhost:8090/weights  # every weight will show missing until PR-LS-1b
+make rebuild                       # rebuilds the lipsync-latentsync image
+make models-latentsync             # pulls ~6.6 GB of weights (once)
+make health                        # /health on all three services
+make logs-latentsync               # tail service logs
+curl http://localhost:8090/ready   # every dep should now show ok=true
+curl http://localhost:8090/weights # every weight should show ok=true after download
+make run-latentsync                # still 501 — inference lands in PR-LS-1c
 ```
 
 ### Roadmap
@@ -331,8 +349,8 @@ curl http://localhost:8090/weights  # every weight will show missing until PR-LS
 | Phase | What ships | Status |
 |-------|------------|--------|
 | **PR 35 (scaffold error)** | `make run-latentsync` target, inline dispatcher error pointing here | shipped |
-| **PR-LS-1a (this PR)** | Dep-isolated `lipsync-latentsync` microservice, Compose wiring, HTTP client, structured 501 end-to-end, introspection endpoints (`/health`, `/ready`, `/weights`) | shipping |
-| **PR-LS-1b** | torch CPU wheels + diffusers/transformers/accelerate pins + `scripts/download_models.sh` for LatentSync UNet + SD 1.5 VAE + Whisper tiny | planned |
+| **PR-LS-1a** | Dep-isolated `lipsync-latentsync` microservice, Compose wiring, HTTP client, structured 501 end-to-end, introspection endpoints (`/health`, `/ready`, `/weights`) | shipped |
+| **PR-LS-1b (this PR)** | torch 2.5.1 CPU + diffusers 0.32.2 + transformers 4.48.0 + the rest of LatentSync's `requirements.txt` (CPU-adapted) + real `scripts/download_models.sh` pulling UNet + SyncNet + Whisper tiny from `ByteDance/LatentSync-1.6` | shipping |
 | **PR-LS-1c** | Vendor LatentSync inference, first runnable frame, per-request quality knobs (`num_inference_steps`, `guidance_scale`, `seed`) wired through | planned |
 | **GPU path (later)** | Optional CUDA image variant gated behind a compose profile — intentionally not prioritized for the CPU demo | not planned |
 

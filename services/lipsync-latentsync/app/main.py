@@ -3,23 +3,20 @@
 Endpoints:
 - GET  /health         — liveness + top-level readiness summary
 - GET  /ready          — imports the ML stack; reports which deps are live.
-                         In PR-LS-1a (this PR) the ML stack isn't installed
-                         yet so every entry reports `ok=false`. That's
-                         expected; the response is still 200.
 - GET  /weights        — reports which weight files are present on disk.
-                         All missing in PR-LS-1a; PR-LS-1b adds the
-                         download script.
-- POST /lipsync        — run lipsync. Returns 501 in PR-LS-1a and PR-LS-1b.
-                         PR-LS-1c flips it on.
+- POST /lipsync        — run lipsync. Returns 501 through PR-LS-1b; flips
+                         on in PR-LS-1c.
 
 Input paths live under /jobs (shared volume). No bytes cross the wire.
 
 Staging:
 
-  PR-LS-1a (this PR)  HTTP scaffold, /lipsync returns structured 501
-  PR-LS-1b            ML deps + weight download; /ready and /weights green
-  PR-LS-1c            First runnable inference (single-frame diffusion,
-                      expect ~10 min/second of source video on CPU)
+  PR-LS-1a (shipped)  HTTP scaffold, /lipsync returns structured 501
+  PR-LS-1b (current)  ML deps installed + weight download live. Once the
+                      user runs `make models-latentsync`, /ready and
+                      /weights both turn green. /lipsync still 501.
+  PR-LS-1c            First runnable inference. Expect ~10 min/sec of
+                      source video on CPU — batch workflow territory.
 
 CPU realism: LatentSync is SD 1.5 latent diffusion per frame. Even with
 every CPU optimization we have, a 10-second clip will take ~1.5–2 hours.
@@ -44,9 +41,12 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 # Flipped to True in PR-LS-1c. Until then, /lipsync returns a clean 501.
 INFERENCE_IMPLEMENTED = False
+# Phase string surfaced in /health and the 501 body so operators can tell
+# at a glance which staged PR built the image they're poking at.
+PHASE = "PR-LS-1b (ML stack + weights download)"
 
 MODEL_CACHE_DIR = Path(os.environ.get("MODEL_CACHE_DIR", "/models"))
 WEIGHTS_ROOT = MODEL_CACHE_DIR / "latentsync"
@@ -57,7 +57,7 @@ app = FastAPI(
     version=VERSION,
     description=(
         "CPU LatentSync lipsync service. "
-        "PR-LS-1a: HTTP scaffold. /lipsync returns 501 until PR-LS-1c."
+        f"{PHASE}. /lipsync still returns 501 — inference lands in PR-LS-1c."
     ),
 )
 
@@ -126,17 +126,15 @@ class LipsyncResponse(BaseModel):
 # --------------------------------------------------------------------------- #
 # Readiness introspection
 #
-# Python modules the inference code will need. In PR-LS-1a every one of
-# these imports fails because the service only ships FastAPI + Pydantic.
-# That's fine — /ready still returns 200, just with `status="degraded"`
-# and every dep marked `ok=false`. This gives the operator a one-line
-# view of exactly how far the image has been built out.
+# Python modules the inference code will need. PR-LS-1a shipped no ML
+# stack so every import failed; PR-LS-1b (this PR) should have them all
+# importable. If /ready still shows failures after a clean rebuild,
+# that's a Dockerfile or pyproject problem, not a code problem.
 # --------------------------------------------------------------------------- #
 
 
 _REQUIRED_MODULES = (
     "torch",
-    "torchaudio",
     "torchvision",
     "diffusers",
     "transformers",
@@ -145,12 +143,19 @@ _REQUIRED_MODULES = (
     "omegaconf",
     "librosa",
     "soundfile",
+    "decord",
     "cv2",
+    "mediapipe",
     "insightface",
     "onnxruntime",
     "huggingface_hub",
-    # IPEX is nice-to-have. Inference still works without it, just slower.
-    "intel_extension_for_pytorch",
+    # LatentSync uses the original openai/whisper package (loads
+    # whisper/tiny.pt directly), not transformers.WhisperModel.
+    "whisper",
+    "imageio",
+    "scenedetect",
+    "kornia",
+    "face_alignment",
 )
 
 
@@ -168,20 +173,23 @@ def _dep_status() -> dict[str, dict]:
 
 
 # Each entry: (relative path under /models/latentsync, minimum plausible
-# size). All missing in PR-LS-1a; PR-LS-1b adds the download script. Paths
-# and sizes are provisional based on LatentSync upstream's release layout
-# and will be tightened once the download script actually pulls them.
+# size). The manifest was realigned in PR-LS-1b against the actual layout
+# published at https://huggingface.co/ByteDance/LatentSync-1.6 — upstream
+# README's "if the download is successful, the checkpoints should appear
+# as follows" section.
+#
+# Sizes are defensive lower bounds so we catch truncated downloads
+# without becoming brittle across minor release size drift.
 _REQUIRED_WEIGHTS: tuple[tuple[str, int], ...] = (
-    # LatentSync UNet checkpoint.
-    ("latentsync_unet.pt",          1_000_000_000),
-    # SD 1.5 VAE reused for latent encode/decode. Same file lipsync-musetalk
-    # uses but we keep a dedicated copy to keep the services independent.
-    ("sd-vae/config.json",                     100),
-    ("sd-vae/diffusion_pytorch_model.bin", 300_000_000),
-    # Whisper tiny for audio conditioning (same pattern as MuseTalk).
-    ("whisper/config.json",                     100),
-    ("whisper/pytorch_model.bin",        50_000_000),
-    ("whisper/preprocessor_config.json",         50),
+    # Main diffusion UNet. SD 1.5 at heart, fine-tuned for lipsync.
+    # Current release is ~5 GB at float32.
+    ("latentsync_unet.pt",       4_000_000_000),
+    # SyncNet auxiliary model, used for audio-visual supervision. Loaded
+    # separately from the UNet. Current release is ~1.6 GB.
+    ("stable_syncnet.pt",        1_000_000_000),
+    # OpenAI Whisper tiny, bundled inside the LatentSync repo. Loaded
+    # through the openai-whisper package, not transformers.
+    ("whisper/tiny.pt",             50_000_000),
 )
 
 
@@ -219,10 +227,14 @@ def health() -> dict:
         "version": VERSION,
         "inference_implemented": INFERENCE_IMPLEMENTED,
         "weights_ready": all_weights_present,
-        "phase": "PR-LS-1a (scaffold only)",
+        "phase": PHASE,
         "milestone": (
-            "HTTP scaffold reachable; /lipsync returns 501. "
-            "Weights + deps land in PR-LS-1b; inference in PR-LS-1c."
+            "ML stack installed; download_models.sh pulls UNet + SyncNet + "
+            "Whisper tiny from ByteDance/LatentSync-1.6. /lipsync still "
+            "returns 501 — inference wiring lands in PR-LS-1c."
+        ),
+        "latentsync_repo": os.environ.get(
+            "LATENTSYNC_HF_REPO", "ByteDance/LatentSync-1.6",
         ),
         "num_inference_steps": os.environ.get("LATENTSYNC_STEPS", "20"),
         "guidance_scale": os.environ.get("LATENTSYNC_GUIDANCE", "1.5"),
@@ -233,16 +245,15 @@ def health() -> dict:
 def ready() -> dict:
     deps = _dep_status()
     missing = [name for name, info in deps.items() if not info["ok"]]
-    # PR-LS-1a: every dep is missing on purpose. `status="degraded"` is
-    # the honest answer. Callers (including `make health`) that just want
-    # a boolean should look at `missing_or_broken` being empty.
     return {
         "status": "ok" if not missing else "degraded",
         "deps": deps,
         "missing_or_broken": missing,
         "note": (
-            "PR-LS-1a ships no ML deps; every module will import-fail. "
-            "PR-LS-1b installs torch + diffusers and this endpoint turns green."
+            "All listed modules should import cleanly after PR-LS-1b's "
+            "image build. Any `ok=false` here means a Dockerfile or "
+            "pyproject.toml regression — check `docker compose logs "
+            "lipsync-latentsync` and `make rebuild`."
         ),
     }
 
@@ -261,8 +272,10 @@ def weights() -> dict:
             "bash /app/scripts/download_models.sh"
         ),
         "note": (
-            "PR-LS-1a ships no download script yet; this endpoint will "
-            "report everything missing until PR-LS-1b lands."
+            "Run `make models-latentsync` (or the download_command above) "
+            "to pull the ~6.6 GB of weights into the shared /models volume. "
+            "First pull takes a few minutes on a decent connection; "
+            "subsequent container restarts reuse the volume."
         ),
     }
 
@@ -296,16 +309,23 @@ def lipsync(req: LipsyncRequest) -> LipsyncResponse:
         )
 
     if not INFERENCE_IMPLEMENTED:
+        # PR-LS-1b still returns 501 by design; the container now has
+        # torch, diffusers, and the weights on disk, but nothing is
+        # wired to actually call the UNet. Inference lands in PR-LS-1c.
+        # We include a weights-present hint so the user can confirm their
+        # `make models-latentsync` ran even while inference is blocked.
+        weights_present = all(w["ok"] for w in _weight_status().values())
         raise HTTPException(
             status_code=501,
             detail={
-                "phase": "PR-LS-1a",
+                "phase": PHASE,
                 "message": (
                     "LatentSync inference is not yet implemented in this "
-                    "service. PR-LS-1a only ships the HTTP scaffold — the "
-                    "ML deps land in PR-LS-1b and the inference path in "
-                    "PR-LS-1c. This 501 is expected behavior."
+                    "service. PR-LS-1b ships the ML stack + weight download "
+                    "but not the inference path — that lands in PR-LS-1c. "
+                    "This 501 is expected behavior."
                 ),
+                "weights_present": weights_present,
                 "next_step": (
                     "Either wait for PR-LS-1c, or use LIPSYNC=musetalk "
                     "(slow but works) / LIPSYNC=none (fastest)."

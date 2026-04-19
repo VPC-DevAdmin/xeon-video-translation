@@ -1,24 +1,76 @@
 [project]
 name = "polyglot-demo-lipsync-latentsync"
-version = "0.1.0"
+version = "0.2.0"
 description = "LatentSync lipsync microservice (CPU-only, dep-isolated from the main backend)"
 requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
 
-# NOTE: this service is intentionally dep-isolated from the main backend
-# and from lipsync-musetalk. LatentSync's SD 1.5 latent-diffusion pipeline
-# pulls in a different diffusers/transformers combination than either of
-# the other two envs, and the inference path is heavy enough that mixing
-# it with coqui-tts or MuseTalk invites version drift.
+# Dep isolation rationale: LatentSync upstream (bytedance/LatentSync)
+# pins torch==2.5.1 / diffusers==0.32.2 / transformers==4.48.0. These
+# don't overlap with either the main backend (coqui-tts / transformers
+# <4.47) or lipsync-musetalk (transformers==4.39, torch 2.6). Three
+# separate containers let each stack keep its own pins.
 #
-# PR-LS-1a (this PR) ships *only* FastAPI + Pydantic — no torch, no
-# diffusers, no model code. The service boots, /health and /ready work,
-# /lipsync returns 501. PR-LS-1b adds the ML stack + weight download;
-# PR-LS-1c vendors the inference path.
+# PR-LS-1a shipped just FastAPI + Pydantic. PR-LS-1b (this PR) adds the
+# full LatentSync dependency surface so /ready turns green and the
+# download script in scripts/download_models.sh can actually pull
+# weights into /models/latentsync/. Inference wiring still lands in
+# PR-LS-1c; /lipsync returns 501 in the meantime.
+#
+# CPU adaptations from upstream requirements.txt:
+#   - `opencv-python`         → `opencv-python-headless` (no X11)
+#   - `onnxruntime-gpu`       → `onnxruntime`            (CPU wheels)
+#   - Dropped `lpips`, `DeepCache`, `gradio` — training-loss / runtime-UI
+#     deps that inference doesn't need. Pulling them only slows the
+#     image build.
+#
+# torch itself is installed from the PyTorch CPU index in the Dockerfile.
+# We don't list it here so pip doesn't accidentally pull the default
+# (CUDA) wheel when developers run `pip install -e .` on a host.
 dependencies = [
+  # Service scaffold — unchanged from PR-LS-1a.
   "fastapi>=0.110",
   "uvicorn[standard]>=0.27",
   "pydantic>=2.6",
+
+  # Core ML. Pin exactly to upstream so the inference code path (landing
+  # in PR-LS-1c) resolves the same symbols the LatentSync authors tested
+  # against. Drift here means silent numerical differences; not worth it.
+  "diffusers==0.32.2",
+  "transformers==4.48.0",
+  "accelerate==0.26.1",
+  "einops==0.7.0",
+  "omegaconf==2.3.0",
+  "huggingface_hub>=0.30.2,<1.0",
+
+  # Audio. LatentSync uses the original OpenAI whisper package (loads
+  # `whisper/tiny.pt` directly), not transformers.WhisperModel.
+  "openai-whisper>=20231117",
+  "librosa==0.10.1",
+  "soundfile>=0.12",
+  "python_speech_features>=0.6",
+
+  # Video IO. decord is LatentSync's frame reader; imageio handles
+  # writing the final MP4 through its ffmpeg backend.
+  "decord==0.6.0",
+  "imageio[ffmpeg]>=2.31,<3.0",
+  "ffmpeg-python==0.2.0",
+  "scenedetect==0.6.1",
+
+  # Image ops.
+  "opencv-python-headless>=4.9,<5.0",
+  "numpy<2",
+  "scipy>=1.11",
+  "kornia==0.8.0",
+
+  # Face detection / landmarks. LatentSync's preprocessing uses both
+  # InsightFace (SCRFD detector) and mediapipe (landmark refinement);
+  # face-alignment is used by the eval/training path and kept here
+  # because removing it would need a code-level patch to upstream.
+  "insightface==0.7.3",
+  "onnxruntime>=1.17,<2.0",
+  "mediapipe==0.10.11",
+  "face-alignment==1.4.1",
 ]
 
 [build-system]
