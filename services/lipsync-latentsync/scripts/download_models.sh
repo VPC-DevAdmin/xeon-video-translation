@@ -1,44 +1,34 @@
 #!/usr/bin/env bash
 # Pre-fetch LatentSync weights into $MODEL_CACHE_DIR/latentsync/.
 #
-# PR-LS-1b: this script is live. PR-LS-1a shipped a placeholder that
-# just printed a next-step note.
-#
 # Pulls the three files LatentSync upstream's README calls out:
 #
 #   $MODEL_CACHE_DIR/latentsync/
-#   ├── latentsync_unet.pt      (~5 GB; SD 1.5 UNet fine-tuned for lipsync)
-#   ├── stable_syncnet.pt       (~1.6 GB; SyncNet for supervision)
-#   └── whisper/
-#       └── tiny.pt             (~75 MB; OpenAI Whisper tiny)
+#   +-- latentsync_unet.pt      (~5 GB; SD 1.5 UNet fine-tuned for lipsync)
+#   +-- stable_syncnet.pt       (~1.6 GB; SyncNet for supervision)
+#   +-- whisper/
+#       +-- tiny.pt             (~75 MB; OpenAI Whisper tiny)
 #
 # Source repo: https://huggingface.co/ByteDance/LatentSync-1.6
-# License: Apache 2.0 on the code; weights carry their own terms — read
+# License: Apache 2.0 on the code; weights carry their own terms -- read
 # them before any commercial use.
 #
-# The download uses `huggingface_hub.hf_hub_download()` rather than
-# `snapshot_download` so we don't accidentally pull training logs,
+# The download uses huggingface_hub.hf_hub_download() rather than
+# snapshot_download so we don't accidentally pull training logs,
 # tensorboard runs, or other non-inference artifacts that live in the
 # repo alongside the release checkpoints.
+#
+# Env overrides:
+#   LATENTSYNC_HF_REPO   default: ByteDance/LatentSync-1.6
+#   MODEL_CACHE_DIR      default: /models  (set by Compose in-container)
 set -euo pipefail
 
-MODEL_CACHE_DIR="${MODEL_CACHE_DIR:-/models}"
-TARGET_DIR="$MODEL_CACHE_DIR/latentsync"
-
-# Default to the 1.6 release. Override via LATENTSYNC_HF_REPO if you
-# want to try a different version (1.5 is still up) or a local mirror.
-LATENTSYNC_HF_REPO="${LATENTSYNC_HF_REPO:-ByteDance/LatentSync-1.6}"
-
-mkdir -p "$TARGET_DIR"
-
-echo "==> Downloading LatentSync weights"
-echo "    repo:   $LATENTSYNC_HF_REPO"
-echo "    target: $TARGET_DIR"
-
-# The inline python keeps this script dependency-free on the host side —
-# you run it via `docker compose exec lipsync-latentsync bash ...` and
-# the service image already has huggingface_hub pinned.
-python - <<PY
+# The python heredoc below is intentionally *quoted* (<<'PY'). An
+# unquoted heredoc lets bash interpret $vars and `backticks` inside the
+# python source, which previously turned a `target/rel` in a comment
+# into a bash command-substitution attempt. Quote-heredoc keeps python
+# source as literal text and we pass env through os.environ instead.
+python - <<'PY'
 import os
 import sys
 from pathlib import Path
@@ -54,23 +44,32 @@ except ImportError as e:
     )
     sys.exit(1)
 
-repo = os.environ["LATENTSYNC_HF_REPO"]
-target = Path(os.environ["TARGET_DIR"]).resolve()
+repo = os.environ.get("LATENTSYNC_HF_REPO", "ByteDance/LatentSync-1.6")
+cache = Path(os.environ.get("MODEL_CACHE_DIR", "/models")).resolve()
+target = cache / "latentsync"
 target.mkdir(parents=True, exist_ok=True)
 
-# (repo-relative path, on-disk relative path under target)
-# Upstream publishes whisper/tiny.pt — hf_hub_download preserves the
-# subdir structure when local_dir is set, so just letting it land in
-# target/ gets us the right layout.
+print(f"==> Downloading LatentSync weights")
+print(f"    repo:   {repo}")
+print(f"    target: {target}")
+
+# Upstream publishes whisper/tiny.pt -- hf_hub_download preserves the
+# subdir structure under local_dir, so the on-disk layout matches what
+# LatentSync's inference code expects without any extra moves.
 FILES = [
     "latentsync_unet.pt",
     "stable_syncnet.pt",
     "whisper/tiny.pt",
 ]
 
+# Defensive lower bounds: the HF repo occasionally ships a placeholder
+# file or partial upload; skipping on size > 1 MB avoids re-downloading
+# a real 5 GB file but catches the "0-byte stub" case.
+_MIN_RESUMABLE_BYTES = 1_000_000
+
 for rel in FILES:
     dest = target / rel
-    if dest.exists() and dest.stat().st_size > 1_000_000:
+    if dest.exists() and dest.stat().st_size > _MIN_RESUMABLE_BYTES:
         print(f"  [skip] {rel} already present ({dest.stat().st_size:,} bytes)")
         continue
     print(f"  [get]  {rel}")
@@ -78,18 +77,19 @@ for rel in FILES:
         repo_id=repo,
         filename=rel,
         local_dir=str(target),
-        # local_dir_use_symlinks=False was the HF 0.x default; 1.x removed
-        # the flag (always uses blob cache + hardlinks/copies). Both
-        # behaviors put the file at `target/rel`, which is what we want.
     )
 print("Done.")
 PY
 
+# Post-download report. Sizes use GNU `stat` format (Debian slim image);
+# the BSD fallback (-f%z) is kept for dev hosts running this on macOS.
+TARGET_DIR="${MODEL_CACHE_DIR:-/models}/latentsync"
 echo
 echo "==> Verifying"
 for f in latentsync_unet.pt stable_syncnet.pt whisper/tiny.pt; do
-  if [ -f "$TARGET_DIR/$f" ]; then
-    size="$(stat -c%s "$TARGET_DIR/$f" 2>/dev/null || stat -f%z "$TARGET_DIR/$f")"
+  path="$TARGET_DIR/$f"
+  if [ -f "$path" ]; then
+    size="$(stat -c%s "$path" 2>/dev/null || stat -f%z "$path")"
     printf "  %-30s %15s bytes\n" "$f" "$size"
   else
     printf "  %-30s MISSING\n" "$f"
