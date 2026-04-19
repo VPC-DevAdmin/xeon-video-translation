@@ -35,6 +35,9 @@ class FrameDetection:
     landmarks: np.ndarray | None           # reserved for later (buffalo_l 2d106); None for detection-only
     face_box: tuple[int, int, int, int] | None  # (x1, y1, x2, y2), clipped to frame bounds
     score: float | None = None             # SCRFD detection confidence, if available
+    # Five-point landmarks from SCRFD: left-eye, right-eye, nose, left-mouth,
+    # right-mouth. Used by the CodeFormer face-alignment path.
+    kps: np.ndarray | None = None          # shape (5, 2) float32, or None
 
 
 # --------------------------------------------------------------------------- #
@@ -112,7 +115,15 @@ def detect_frame(aligner, frame_bgr: np.ndarray) -> FrameDetection:
         return FrameDetection(landmarks=None, face_box=None, score=None)
 
     score = float(face.det_score) if hasattr(face, "det_score") else None
-    return FrameDetection(landmarks=None, face_box=(x1, y1, x2, y2), score=score)
+    kps = None
+    if hasattr(face, "kps") and face.kps is not None:
+        kps = np.asarray(face.kps, dtype=np.float32).reshape(-1, 2)
+    return FrameDetection(
+        landmarks=None,
+        face_box=(x1, y1, x2, y2),
+        score=score,
+        kps=kps,
+    )
 
 
 def detect_batch(aligner, frames_bgr: Sequence[np.ndarray]) -> list[FrameDetection]:
