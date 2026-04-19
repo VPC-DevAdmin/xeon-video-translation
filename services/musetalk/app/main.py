@@ -24,7 +24,7 @@ from pydantic import BaseModel, Field
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s :: %(message)s")
 log = logging.getLogger(__name__)
 
-VERSION = "0.6.0"
+VERSION = "0.6.1"
 INFERENCE_IMPLEMENTED = True
 
 MODEL_CACHE_DIR = Path(os.environ.get("MODEL_CACHE_DIR", "/models"))

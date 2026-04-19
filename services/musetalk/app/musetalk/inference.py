@@ -58,12 +58,17 @@ def _read_blend_mode() -> str:
 
 
 def _read_blend_feather() -> float:
-    raw = os.environ.get("MUSETALK_BLEND_FEATHER", "0.08")
+    # 0.04 is narrow enough that mouth-mode's small mask keeps an opaque
+    # center (no "ghost mouth" overlay), and wide enough that jaw-mode
+    # seams still fade smoothly. blending.py caps the absolute kernel at
+    # 31 px, so setting this very high above ~0.08 has no extra effect on
+    # large crops — intentional.
+    raw = os.environ.get("MUSETALK_BLEND_FEATHER", "0.04")
     try:
         value = float(raw)
     except ValueError:
-        log.warning("bad MUSETALK_BLEND_FEATHER=%r; falling back to 0.08", raw)
-        return 0.08
+        log.warning("bad MUSETALK_BLEND_FEATHER=%r; falling back to 0.04", raw)
+        return 0.04
     # Guard against absurd values that would produce invalid kernel sizes.
     if not 0.02 <= value <= 0.30:
         log.warning(
