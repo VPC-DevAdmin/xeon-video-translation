@@ -96,13 +96,23 @@ class FaceParsing:
                 parsing[parsing != 255] = 0
             elif mode == "mouth":
                 # Tightest option: only upper lip, lower lip, and mouth/teeth.
-                # Intentionally excludes any skin (class 1). Paired with an
-                # aggressive Gaussian feather at the blending step, the
-                # predicted mouth fades into the original skin rather than
-                # replacing it — which is what preserves stubble/pore detail
-                # around the mouth.
-                parsing[np.isin(parsing, [11, 12, 13])] = 255
-                parsing[parsing != 255] = 0
+                # Intentionally excludes any skin (class 1) so stubble around
+                # the mouth survives.
+                #
+                # The naïve version of this mask produces a "ghost mouth" at
+                # composite time: the downstream Gaussian feather has a
+                # kernel wider than the mask itself, so even the center of
+                # the lips gets blended at ~50% alpha with the original.
+                # Dilating by ~7 px here gives the mask an opaque core large
+                # enough that a modest feather doesn't erode the center.
+                # The dilated ring bleeds slightly into the skin immediately
+                # surrounding the lips — acceptable for the ghost fix; the
+                # bulk of the beard/cheek stubble is still outside this.
+                mask = (np.isin(parsing, [11, 12, 13]) * 255).astype(np.uint8)
+                dilate_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
+                mask = cv2.dilate(mask, dilate_kernel, iterations=1)
+                parsing[:] = 0
+                parsing[mask == 255] = 255
             else:
                 parsing[np.isin(parsing, [1, 11, 12, 13])] = 255
                 parsing[parsing != 255] = 0

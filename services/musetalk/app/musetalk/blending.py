@@ -4,6 +4,14 @@ import cv2
 import copy
 
 
+# Absolute cap on the Gaussian feather kernel. Larger kernels look smoother
+# on big masks but over-blur small ones (mouth-only mask, narrow faces),
+# hollowing out the opaque center and producing ghost overlays.
+# 31 px = ~15 px feather radius — wide enough to hide hard seams, narrow
+# enough that a ~30 px mask still reads as fully opaque at its center.
+MAX_FEATHER_KERNEL = 31
+
+
 def get_crop_box(box, expand):
     x, y, x1, y1 = box
     x_c, y_c = (x+x1)//2, (y+y1)//2
@@ -90,8 +98,16 @@ def get_image(
     )
 
     # Gaussian-feather the boundary. Odd-length kernel required by OpenCV.
+    #
+    # The ratio is applied to the crop width, but we cap the absolute size
+    # at MAX_FEATHER_KERNEL so small masks (mouth mode, narrow faces) don't
+    # get eroded to a ghost overlay. On a 700-px crop the uncapped 0.08
+    # ratio lands at 57 px, far wider than a typical lips+teeth mask — the
+    # center of the mouth ended up 50% transparent, which read as a ghost
+    # mouth on top of the original.
     ratio = 0.05 if feather_ratio is None else feather_ratio
-    blur_kernel_size = max(3, int(ratio * ori_shape[0] // 2) * 2 + 1)
+    computed = int(ratio * ori_shape[0] // 2) * 2 + 1
+    blur_kernel_size = max(3, min(MAX_FEATHER_KERNEL, computed))
     mask_array = cv2.GaussianBlur(
         np.array(modified_mask_image), (blur_kernel_size, blur_kernel_size), 0
     )

@@ -92,10 +92,15 @@ bytes cross the wire.
   - `raw`: full lower face replaced (original v1.0 behavior; lots of
     texture loss)
   - `jaw`: chin + cheeks + mouth (moderate; some stubble replacement)
-  - `mouth`: lips + teeth only (default; best stubble preservation)
-  Combined with a Gaussian feather controlled by `MUSETALK_BLEND_FEATHER`
-  (fraction of crop width; default 0.08 ≈ 21 px on a 256-wide crop), the
-  predicted mouth fades into original skin rather than replacing it.
+  - `mouth`: lips + teeth only (default; best stubble preservation).
+    The mask is dilated by ~7 px inside `face_parsing` before it leaves;
+    without that dilate the Gaussian feather at composite time ate the
+    opaque center of such a small mask and produced a "ghost mouth"
+    overlay on top of the original.
+  Feather is controlled by `MUSETALK_BLEND_FEATHER` (fraction of crop
+  width; default 0.04). The absolute kernel is capped at 31 px regardless
+  of crop size — larger kernels look smoother on big masks but erode
+  small ones, so we cap pre-emptively.
 - **Quality ceiling**: even with those fixes, MuseTalk's output is "mouth
   is regenerated, fuzzy but continuous" rather than "indistinguishable from
   source". For demo, a reasonable tradeoff; for production, a higher-res
