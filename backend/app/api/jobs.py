@@ -24,6 +24,7 @@ _ALLOWED_LIPSYNC = {"none", "wav2lip", "musetalk", "latentsync"}
 
 _ALLOWED_BLEND_MODES = {"raw", "jaw", "mouth", "neck"}
 _ALLOWED_FACE_RESTORE = {"codeformer", "none"}
+_ALLOWED_TTS_BACKENDS = {"xtts", "f5tts"}
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
@@ -33,6 +34,8 @@ async def create_job(
     target_language: str = Form(...),
     source_language: str | None = Form(None),
     lipsync_backend: str | None = Form(None),
+    # Per-request TTS backend (xtts | f5tts). Omit → env default (xtts).
+    tts_backend: str | None = Form(None),
     # Per-request musetalk knobs (forwarded to the lipsync service).
     # Each is optional; missing fields fall through to service env defaults.
     musetalk_blend_mode: str | None = Form(None),
@@ -88,6 +91,8 @@ async def create_job(
     if any(v is not None for v in q.values()):
         lipsync_quality = {k: v for k, v in q.items() if v is not None}
 
+    tts_backend_norm = _norm_enum(tts_backend, _ALLOWED_TTS_BACKENDS, "tts_backend")
+
     job_id = storage.new_job_id()
     job_directory = storage.job_dir(job_id)
     input_path = job_directory / f"input{ext}"
@@ -117,6 +122,7 @@ async def create_job(
         source_language=source_language.lower() if source_language else None,
         lipsync_backend=lipsync_backend_norm,
         lipsync_quality=lipsync_quality,
+        tts_backend=tts_backend_norm,
         input_filename=filename,
     )
     register_job(state)

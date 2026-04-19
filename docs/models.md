@@ -37,6 +37,16 @@ you see numerical artifacts on a particular clip.
 
 ## Stage 4 — Voice cloning / TTS
 
+Two backends, selectable per-request via `tts_backend` on `POST /jobs` or
+the `TTS_BACKEND` env default.
+
+| Backend | Default? | Languages                            | Wall-clock (CPU)       | License of weights |
+| ------- | -------- | ------------------------------------ | ---------------------- | ------------------ |
+| `xtts`  | yes      | 16 (see below)                       | ~0.3–0.7× realtime     | CPML (non-commercial) |
+| `f5tts` | no       | EN, ZH (base); others via fine-tunes | ~0.4–0.8× realtime     | CC-BY-NC 4.0       |
+
+### XTTS-v2
+
 **XTTS-v2** via `coqui-tts` (`tts_models/multilingual/multi-dataset/xtts_v2`).
 
 - ~1.8 GB on disk. First `TTS(...)` call downloads into `MODEL_CACHE_DIR/coqui-tts/`.
@@ -50,7 +60,7 @@ you see numerical artifacts on a particular clip.
   load so the library doesn't prompt interactively; do not ship outputs
   commercially without reviewing the license.
 
-### Integration details
+### XTTS-v2 integration details
 
 - **Smart reference selection.** When Whisper word timestamps are
   available, the XTTS speaker reference is trimmed to the longest
@@ -75,6 +85,50 @@ you see numerical artifacts on a particular clip.
   LRA) applied as the final audio step. Broadcast-dialog standard.
 - **De-essing** is still not applied. Add in a follow-up if needed.
 
+### F5-TTS (alternate, opt-in)
+
+**F5-TTS v1** via the `f5-tts` PyPI package. Flow-matching DiT architecture
+trained on Emilia.
+
+- ~1.3 GB base checkpoint. First `F5TTS(...)` call downloads into
+  `$MODEL_CACHE_DIR/huggingface/`.
+- ~0.4–0.8× realtime on a 16-core Xeon — similar order of magnitude to
+  XTTS, with occasionally cleaner prosody on the languages it supports.
+- **Needs a reference WAV + its transcript.** We feed the Whisper transcript
+  automatically; without it F5-TTS falls back to its own whisper-based
+  ref-text inference (slower and occasionally wrong).
+
+**Language support — base checkpoint is EN/ZH only.** This is the honest
+matrix, not marketing:
+
+| Language | Base checkpoint | Community fine-tune | Notes |
+|---|---|---|---|
+| English (`en`) | ✅ strong | — | Primary training language. |
+| Chinese (`zh`) | ✅ strong | — | Primary training language. |
+| Japanese (`ja`) | ❌ refused | partial | Fine-tunes exist; set `F5TTS_MODEL=<repo_id>` if you want to try one. |
+| French (`fr`), German (`de`), Hindi (`hi`), … | ❌ refused | varies | Same. Community quality varies wildly. |
+
+If you try an unsupported language, the backend raises a clear error
+recommending either a fine-tune or `tts_backend=xtts`. Don't ship F5-TTS
+outputs for non-EN/ZH languages without listening to several samples —
+the base model will mispronounce and the community fine-tunes are hit
+and miss.
+
+**Integration status**: currently **single-shot only**. The smart-reference
+and per-segment-synthesis quality wins described above for XTTS don't
+apply to F5-TTS yet — that's a follow-up once the base backend is proven
+out in production clips. For pause-structure preservation today, use
+XTTS.
+
+**License**: F5-TTS weights are CC-BY-NC 4.0 — non-commercial. Same
+commercial-use caveat as the XTTS weights; review before shipping.
+
+**Pre-fetch** (opt-in, saves ~1.3 GB of download on first job):
+
+```bash
+make models-f5tts
+```
+
 ## Stages 5–6 (not yet wired up)
 
 - **Lip sync**: LatentSync needs a GPU realistically. On CPU, the demo will
@@ -87,7 +141,7 @@ you see numerical artifacts on a particular clip.
 ```
 $MODEL_CACHE_DIR/
 ├── faster-whisper/        # CTranslate2 weights, by model name
-├── huggingface/           # HF transformers cache (NLLB lives here)
+├── huggingface/           # HF transformers cache (NLLB + F5-TTS live here)
 └── coqui-tts/             # XTTS-v2 weights (via TTS_HOME)
 ```
 

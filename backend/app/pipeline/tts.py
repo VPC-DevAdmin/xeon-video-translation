@@ -1,12 +1,18 @@
-"""Stage 4 — voice cloning / TTS via XTTS-v2.
+"""Stage 4 — voice cloning / TTS.
 
-Generates `translated_audio.wav` from the translated text, using the original
-speaker's voice as a reference.
+Two backends are supported, selected per-request via ``tts_backend`` on the
+job submission (form field) or the ``TTS_BACKEND`` env default:
 
-CPU realism: XTTS-v2 runs at roughly 0.3–0.7× realtime on a 16-core Xeon.
-A 3-second translation typically takes 5–10 s to synthesize.
+- ``xtts``  — Coqui XTTS-v2 (default). 16 languages. CPML-licensed weights;
+              ~1.8 GB; ~0.3–0.7× realtime on a 16-core Xeon.
 
-Processing pipeline (per request):
+- ``f5tts`` — F5-TTS. Newer flow-matching-on-DiT architecture. Base
+              checkpoint is trained on EN + ZH only; anything else falls
+              through to community fine-tunes or raises a clear error.
+              Typically cleaner prosody than XTTS for its supported
+              languages; comparable wall-clock on CPU.
+
+XTTS processing pipeline (per request):
 
 1. Pick the cleanest contiguous span of source speech (via Whisper word
    timestamps) as the XTTS voice reference. Fall back to the whole audio
@@ -18,6 +24,17 @@ Processing pipeline (per request):
 4. Prepend silence to align the first spoken frame with the source.
 5. Loudness normalization (EBU R128 / −16 LUFS) so dialog lands at a
    consistent broadcast level regardless of the XTTS take.
+
+F5-TTS processing pipeline (per request):
+
+1. Single-shot generation on the full translated text, conditioned on the
+   source reference audio and its Whisper transcript (F5-TTS needs both).
+2. Silence trim on the generated output.
+3. Same steps 3–5 as XTTS (time-stretch, silence prepend, loudnorm).
+
+F5-TTS does NOT currently use per-segment synthesis or smart reference
+selection — that's a follow-up once the base backend proves out. For now,
+when pause-structure preservation matters, stick with XTTS.
 """
 
 from __future__ import annotations
@@ -48,6 +65,13 @@ XTTS_LANG_CODES: dict[str, str] = {
 }
 
 
+# F5-TTS base checkpoint language support. The F5-TTS_v1 base is trained
+# on Emilia (EN + ZH). Community fine-tunes exist for JA/FR/DE/HI/... but
+# we don't pre-download or validate those yet — if users want them they
+# can set F5TTS_MODEL to the fine-tune's HF repo id and we'll try it.
+F5TTS_BASE_LANGS: set[str] = {"en", "zh"}
+
+
 class TTSError(RuntimeError):
     pass
 
@@ -75,18 +99,141 @@ class TTSResult:
         }
 
 
-_tts = None
-_tts_lock = Lock()
+# --------------------------------------------------------------------------- #
+# Public entry
+# --------------------------------------------------------------------------- #
 
 
-def _get_tts():
+def synthesize(
+    translation: dict,
+    reference_audio: Path,
+    output_path: Path,
+    first_speech_seconds: float | None = None,
+    source_duration_seconds: float | None = None,
+    transcript_segments: list[dict] | None = None,
+    backend: str | None = None,
+) -> TTSResult:
+    """Generate speech for `translation` using `reference_audio` as the voice.
+
+    `translation` is the dict written by Stage 3 (see translate.py).
+
+    `backend` selects XTTS-v2 (``"xtts"``) or F5-TTS (``"f5tts"``). When
+    ``None`` we fall back to ``settings.tts_backend`` (env default,
+    currently ``xtts``).
+
+    `first_speech_seconds` (from the transcript) lets us prepend a matching
+    amount of silence so the TTS first-frame lines up with the source's
+    first spoken frame — otherwise a 1 s "speaker pauses then talks" clip
+    becomes a "speaker starts talking immediately" clip.
+
+    `source_duration_seconds` enables formant-preserving time-stretch
+    (rubberband) when the post-trim TTS is still a bit longer than the
+    remaining source video. Stretching is skipped when the ratio would be
+    aggressive — we'd rather freeze-pad video than produce chipmunk audio.
+
+    `transcript_segments` (from Stage 2) enables two XTTS-only quality wins:
+    - smart reference selection (longest clean contiguous speech span)
+    - per-segment synthesis preserving original pause structure
+    When missing, we fall back to single-shot synthesis on the whole
+    translated text. F5-TTS currently only runs single-shot regardless.
+    """
+    chosen = (backend or settings.tts_backend).lower()
+    if chosen not in ("xtts", "f5tts"):
+        raise TTSError(
+            f"unknown tts backend: {chosen!r}. Supported: xtts, f5tts"
+        )
+
+    # Up-front validation, ordered so the clearest error surfaces first:
+    # language (per backend) → text → reference file. Matches the
+    # pre-dispatch behavior tests in tests/test_tts.py rely on.
+    tgt = translation.get("target_language", "").lower()
+    if chosen == "xtts" and tgt not in XTTS_LANG_CODES:
+        raise TTSError(
+            f"XTTS-v2 does not support target language {tgt!r}. "
+            f"Supported: {sorted(XTTS_LANG_CODES)}"
+        )
+    if chosen == "f5tts" and tgt not in F5TTS_BASE_LANGS:
+        raise TTSError(
+            f"F5-TTS base checkpoint ({settings.f5tts_model}) does not "
+            f"officially support {tgt!r}. Base model is EN/ZH only. "
+            f"Community fine-tunes exist for some other languages — set "
+            f"F5TTS_MODEL to the HF repo id of one and retry, or fall "
+            f"back to tts_backend=xtts for a multilingual model. "
+            f"See docs/models.md for the honest language support matrix."
+        )
+
+    text = (translation.get("text") or "").strip()
+    if not text:
+        raise TTSError("translation is empty — nothing to synthesize")
+
+    if not reference_audio.exists():
+        raise TTSError(f"reference audio missing: {reference_audio}")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if chosen == "xtts":
+        result = _synthesize_xtts_full(
+            translation=translation,
+            text=text,
+            target_language=tgt,
+            reference_audio=reference_audio,
+            output_path=output_path,
+            transcript_segments=transcript_segments,
+        )
+    else:  # f5tts (already validated above)
+        result = _synthesize_f5tts_single_shot(
+            text=text,
+            target_language=tgt,
+            reference_audio=reference_audio,
+            output_path=output_path,
+            transcript_segments=transcript_segments,
+        )
+
+    if not output_path.exists() or output_path.stat().st_size == 0:
+        raise TTSError(f"{chosen} produced no output")
+
+    # --- Shared post-processing (both backends) --------------------------- #
+    # Optional speed-up: fit assembled audio into remaining source window.
+    if source_duration_seconds is not None:
+        target = source_duration_seconds - (first_speech_seconds or 0.0)
+        if target > 0:
+            try:
+                _maybe_time_stretch(output_path, target_duration=target)
+            except Exception as e:
+                log.warning("time-stretch failed (%s); keeping untouched TTS", e)
+
+    # Align to source: prepend silence so TTS first-frame lines up.
+    if first_speech_seconds and first_speech_seconds > 0.01:
+        try:
+            _prepend_silence(output_path, seconds=first_speech_seconds)
+        except Exception as e:
+            log.warning("silence-prepend failed (%s); keeping un-aligned TTS", e)
+
+    # Loudness normalization to -16 LUFS.
+    try:
+        _loudnorm(output_path)
+    except Exception as e:
+        log.warning("loudness normalization failed (%s); shipping unnormalized", e)
+
+    return result
+
+
+# --------------------------------------------------------------------------- #
+# XTTS-v2 backend (per-segment + smart reference + loudnorm)
+# --------------------------------------------------------------------------- #
+
+_xtts = None
+_xtts_lock = Lock()
+
+
+def _get_xtts():
     """Lazy-load XTTS-v2. First call downloads ~1.8 GB into HF_HOME."""
-    global _tts
-    if _tts is not None:
-        return _tts
-    with _tts_lock:
-        if _tts is not None:
-            return _tts
+    global _xtts
+    if _xtts is not None:
+        return _xtts
+    with _xtts_lock:
+        if _xtts is not None:
+            return _xtts
 
         # Coqui prompts for CPML license agreement on first load; pre-accept.
         os.environ.setdefault("COQUI_TOS_AGREED", "1")
@@ -103,59 +250,19 @@ def _get_tts():
             "tts_models/multilingual/multi-dataset/xtts_v2",
             progress_bar=False,
         ).to("cpu")
-        _tts = model
-        return _tts
+        _xtts = model
+        return _xtts
 
 
-# --------------------------------------------------------------------------- #
-# Public entry
-# --------------------------------------------------------------------------- #
-
-
-def synthesize(
+def _synthesize_xtts_full(
     translation: dict,
+    text: str,
+    target_language: str,
     reference_audio: Path,
     output_path: Path,
-    first_speech_seconds: float | None = None,
-    source_duration_seconds: float | None = None,
-    transcript_segments: list[dict] | None = None,
+    transcript_segments: list[dict] | None,
 ) -> TTSResult:
-    """Generate speech for `translation` using `reference_audio` as the voice.
-
-    `translation` is the dict written by Stage 3 (see translate.py).
-
-    `first_speech_seconds` (from the transcript) lets us prepend a matching
-    amount of silence so the TTS first-frame lines up with the source's
-    first spoken frame — otherwise a 1 s "speaker pauses then talks" clip
-    becomes a "speaker starts talking immediately" clip.
-
-    `source_duration_seconds` enables formant-preserving time-stretch
-    (rubberband) when the post-trim TTS is still a bit longer than the
-    remaining source video. Stretching is skipped when the ratio would be
-    aggressive — we'd rather freeze-pad video than produce chipmunk audio.
-
-    `transcript_segments` (from Stage 2) enables two quality wins:
-    - smart reference selection (longest clean contiguous speech span)
-    - per-segment synthesis preserving original pause structure
-    When missing, we fall back to single-shot synthesis on the whole
-    translated text.
-    """
-    tgt = translation.get("target_language", "").lower()
-    if tgt not in XTTS_LANG_CODES:
-        raise TTSError(
-            f"XTTS-v2 does not support target language {tgt!r}. "
-            f"Supported: {sorted(XTTS_LANG_CODES)}"
-        )
-
-    text = (translation.get("text") or "").strip()
-    if not text:
-        raise TTSError("translation is empty — nothing to synthesize")
-
-    if not reference_audio.exists():
-        raise TTSError(f"reference audio missing: {reference_audio}")
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
+    """XTTS-v2 synthesis with smart reference + optional per-segment path."""
     # --- 1. Reference-audio selection -------------------------------------
     ref_for_xtts, ref_label = _select_reference(
         reference_audio, transcript_segments, output_path.parent
@@ -169,7 +276,7 @@ def synthesize(
         and len(trans_segs) == len(transcript_segments)
     )
 
-    language = XTTS_LANG_CODES[tgt]
+    language = XTTS_LANG_CODES[target_language]
     segments_synthesized = 0
 
     if can_do_per_segment:
@@ -198,34 +305,9 @@ def synthesize(
             log.warning("silence trim failed (%s); keeping untrimmed output", e)
         segments_synthesized = 1
 
-    if not output_path.exists() or output_path.stat().st_size == 0:
-        raise TTSError("TTS produced no output")
-
-    # --- 3. Optional speed-up: fit assembled audio into source window ----
-    if source_duration_seconds is not None:
-        target = source_duration_seconds - (first_speech_seconds or 0.0)
-        if target > 0:
-            try:
-                _maybe_time_stretch(output_path, target_duration=target)
-            except Exception as e:
-                log.warning("time-stretch failed (%s); keeping untouched TTS", e)
-
-    # --- 4. Align to source: prepend silence so TTS first-frame lines up  -
-    if first_speech_seconds and first_speech_seconds > 0.01:
-        try:
-            _prepend_silence(output_path, seconds=first_speech_seconds)
-        except Exception as e:
-            log.warning("silence-prepend failed (%s); keeping un-aligned TTS", e)
-
-    # --- 5. Loudness normalization to -16 LUFS ---------------------------
-    try:
-        _loudnorm(output_path)
-    except Exception as e:
-        log.warning("loudness normalization failed (%s); shipping unnormalized", e)
-
     return TTSResult(
         backend="xtts_v2",
-        language=tgt,
+        language=target_language,
         reference_audio=ref_label,
         output_path=output_path.name,
         per_segment=can_do_per_segment,
@@ -234,7 +316,114 @@ def synthesize(
 
 
 # --------------------------------------------------------------------------- #
-# Reference-audio selection
+# F5-TTS backend (single-shot; per-segment/smart-ref is a follow-up)
+# --------------------------------------------------------------------------- #
+
+_f5tts = None
+_f5tts_lock = Lock()
+
+
+def _get_f5tts():
+    """Lazy-load F5-TTS. First call downloads the chosen checkpoint."""
+    global _f5tts
+    if _f5tts is not None:
+        return _f5tts
+    with _f5tts_lock:
+        if _f5tts is not None:
+            return _f5tts
+
+        # Keep F5-TTS weights under MODEL_CACHE_DIR like everything else.
+        os.environ.setdefault(
+            "HF_HOME",
+            str(settings.model_cache_dir / "huggingface"),
+        )
+
+        try:
+            from f5_tts.api import F5TTS
+        except ImportError as e:
+            raise TTSError(
+                "f5-tts package is not installed. Rebuild the backend image "
+                "(it ships f5-tts via the Dockerfile) and retry. "
+                "Original error: " + str(e),
+            ) from e
+
+        # device="cpu" forces the CPU path; F5-TTS auto-picks CUDA otherwise.
+        model = F5TTS(model=settings.f5tts_model, device="cpu")
+        _f5tts = model
+        return _f5tts
+
+
+def _f5tts_reference_text(
+    reference_audio: Path, transcript_segments: list[dict] | None,
+) -> str:
+    """Build the F5-TTS reference text.
+
+    F5-TTS conditions generation on both the reference audio *and* the
+    text that was actually spoken in that reference. Passing the Whisper
+    transcript here gives dramatically cleaner timbre than passing an
+    empty string and letting F5-TTS whisper-infer it at inference time.
+
+    Order of preference:
+      1. transcript_segments (inline, no file I/O)
+      2. transcript.json in the same dir as the reference audio
+      3. "" (F5-TTS falls back to its own whisper-based ref inference)
+    """
+    if transcript_segments:
+        chunks = [
+            (s.get("text") or "").strip() for s in transcript_segments
+        ]
+        joined = " ".join(c for c in chunks if c).strip()
+        if joined:
+            return joined
+
+    candidate = reference_audio.parent / "transcript.json"
+    if candidate.exists():
+        try:
+            data = json.loads(candidate.read_text())
+            return (data.get("text") or "").strip()
+        except (OSError, json.JSONDecodeError):
+            pass
+    return ""
+
+
+def _synthesize_f5tts_single_shot(
+    text: str,
+    target_language: str,
+    reference_audio: Path,
+    output_path: Path,
+    transcript_segments: list[dict] | None,
+) -> TTSResult:
+    """Single-shot F5-TTS synthesis. Per-segment path is a follow-up."""
+    f5tts = _get_f5tts()
+    ref_text = _f5tts_reference_text(reference_audio, transcript_segments)
+
+    # F5-TTS's Python API writes directly to `file_wave`.
+    f5tts.infer(
+        ref_file=str(reference_audio),
+        ref_text=ref_text,
+        gen_text=text,
+        file_wave=str(output_path),
+    )
+
+    # Trim the same way XTTS's single-shot path does — F5-TTS also tends
+    # to emit a short leading click / trailing silence.
+    try:
+        _trim_to_speech(output_path)
+    except Exception as e:
+        log.warning("silence trim failed (%s); keeping untrimmed F5 output", e)
+
+    return TTSResult(
+        backend="f5tts",
+        language=target_language,
+        reference_audio=reference_audio.name,
+        output_path=output_path.name,
+        per_segment=False,
+        segments_synthesized=1,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Reference-audio selection (XTTS only)
 #
 # XTTS sounds noticeably cleaner when its speaker reference is a single
 # contiguous span of clean speech vs. an audio file that begins with
@@ -330,7 +519,7 @@ def _longest_contiguous_word_span(
 
 
 # --------------------------------------------------------------------------- #
-# Per-segment synthesis
+# Per-segment synthesis (XTTS only)
 #
 # Produces an output WAV where each segment's translated audio starts at
 # roughly the same clock time as its source counterpart. Inter-segment
@@ -497,7 +686,7 @@ def _xtts_to_file(
     text: str, reference_audio: Path, language: str, output: Path,
 ) -> None:
     """Single XTTS call that writes to `output`."""
-    tts = _get_tts()
+    tts = _get_xtts()
     tts.tts_to_file(
         text=text,
         speaker_wav=str(reference_audio),

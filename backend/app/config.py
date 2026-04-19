@@ -60,6 +60,18 @@ class Settings(BaseSettings):
     # Watermark text drawn on the output video. Respect responsible-use guidance.
     watermark_text: str = "AI-translated"
 
+    # TTS
+    # Backends:
+    #   xtts    — Coqui XTTS-v2 (default). 16 languages, CPML-licensed weights.
+    #   f5tts   — F5-TTS. Strong on EN/ZH; other languages supported via
+    #             community fine-tunes (see docs/models.md for the honest
+    #             language support matrix — experimental outside EN/ZH).
+    tts_backend: Literal["xtts", "f5tts"] = "xtts"
+    # F5-TTS checkpoint to use. The default multilingual base supports EN/ZH
+    # out of the box; community fine-tunes for other languages can be pointed
+    # at here once we pre-download them in scripts/download_models.sh.
+    f5tts_model: str = "F5-TTS_v1"
+
     # Feature flags
     enable_watermark: bool = True
     enable_c2pa: bool = False

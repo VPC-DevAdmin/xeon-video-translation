@@ -185,7 +185,9 @@ models just read the per-request overrides in `inference.run()`.
 | `3` ← default | `jaw` | `0.04` | `codeformer` (0.7 / 0.6) | Full quality. Jaw + CodeFormer restoration. |
 
 Numeric today; will likely migrate to `low | medium | high` once more
-features land (LatentSync, F5-TTS would claim levels 4+).
+features land. F5-TTS landed as a separate `TTS` knob rather than a
+`QUALITY` level (orthogonal axis: voice quality vs. lipsync quality);
+LatentSync, once wired up, would claim levels 4+ on this dial.
 
 Use:
 ```bash
@@ -288,20 +290,35 @@ Both services mount `/jobs` and `/models`. Backend reaches the service via
 Docker DNS at `http://lipsync-musetalk:8000`; the host can hit it for
 debugging at `localhost:${MUSETALK_PORT:-8089}`.
 
-## `latentsync` — stubbed
+## `latentsync` — scaffolded, not yet implemented
 
 SD 1.5 latent-diffusion based. Best open-source quality as of writing. CPU
 inference is **impractical**: estimated 30–60 minutes for a 3 s clip based on
 per-frame latent diffusion step counts × typical CPU iteration times.
 
-Selecting `latentsync` today raises:
+Selecting `latentsync` today raises a clean error pointing here:
 ```
-LipsyncError: LatentSync is not yet wired up in this build.
+LipsyncError: LatentSync is scaffolded in this build but not yet
+implemented — the runner is wired up to this dispatch and an API request
+to it reaches here cleanly. Full inference path is coming in a follow-up
+PR; see docs/lipsync.md for the roadmap…
 ```
 
+`make run-latentsync` exercises this error path so the plumbing (form
+field → JobState → orchestrator → lipsync dispatch) stays honest while
+the real implementation is staged in a separate PR.
+
+### Roadmap
+
+| Phase | What ships | Status |
+|-------|------------|--------|
+| **Scaffold (this PR)** | `make run-latentsync` target, lipsync dispatcher branch, improved error message, docs | shipping |
+| **Follow-up PR** | Dep-isolated `lipsync-latentsync` microservice (same pattern as MuseTalk), weight download script, HTTP client, real inference path | planned |
+| **GPU path (later)** | Optional CUDA image variant, gated behind a compose profile | not planned for CPU demo |
+
 Even after it's wired, you should not expect usable live-demo performance on
-CPU. The stub exists so the UI and API are ready if and when we add a GPU
-path.
+CPU. The scaffold exists so the UI and API are ready if and when we add a
+GPU path and so follow-up work has one place to plug into.
 
 ## ETA and progress events
 

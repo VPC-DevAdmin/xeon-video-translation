@@ -106,9 +106,13 @@ def run(
 
     if backend == "latentsync":
         raise LipsyncError(
-            "LatentSync is not yet wired up in this build. "
-            "Even when it is, CPU inference is effectively unusable — see "
-            "docs/lipsync.md."
+            "LatentSync is scaffolded in this build but not yet implemented "
+            "— the runner is wired up to this dispatch and an API request "
+            "to it reaches here cleanly. Full inference path is coming in a "
+            "follow-up PR; see docs/lipsync.md for the roadmap and honest "
+            "expectations on CPU (SD 1.5 latent diffusion at ~10 min per "
+            "second of video). For now, use LIPSYNC=musetalk (slow but "
+            "works) or LIPSYNC=none (fastest, dub-over only)."
         )
 
     raise LipsyncError(f"unknown lipsync backend: {backend!r}")
