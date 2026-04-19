@@ -50,15 +50,30 @@ you see numerical artifacts on a particular clip.
   load so the library doesn't prompt interactively; do not ship outputs
   commercially without reviewing the license.
 
-### Simplifications in the current integration
+### Integration details
 
-- **Whole-audio reference** rather than picking the longest clean segment
-  from Whisper's VAD output. Works well when the source is single-speaker
-  and well-miked.
-- **One-shot generation** on the full translated text. No per-segment
-  timing alignment, so the synthesized duration will usually not match the
-  original. Sufficient for short clips; visible in longer ones.
-- **No loudness normalization** / de-essing. Output is whatever XTTS produced.
+- **Smart reference selection.** When Whisper word timestamps are
+  available, the XTTS speaker reference is trimmed to the longest
+  contiguous span of clean speech (gap threshold: 300 ms, minimum span:
+  3 s, cap: 12 s). Falls back to the whole source audio when no clean
+  span is long enough. Produces a noticeably cleaner voice clone on
+  clips with lead-in noise or mumbled intros.
+- **Per-segment synthesis** when the transcript has multiple segments.
+  Each Whisper segment is synthesized separately and concatenated with
+  inter-segment silences derived from the original source's gaps, so the
+  translated clip preserves the speaker's pause structure rather than
+  collapsing to a single continuous utterance. Falls back to single-shot
+  for one-segment transcripts or when segment counts don't line up.
+- **Source-aligned first frame.** The first spoken syllable is padded
+  with silence to match the source clip's pre-speech gap
+  (`first_speech_seconds` from the transcript), so the speaker's video
+  cue "pauses, then speaks" stays in sync.
+- **Rubberband time-stretch (formant-preserving)** when assembled TTS
+  exceeds the remaining source-video window. Caps at 0.85× ratio; below
+  that we prefer freeze-padding the video over chipmunk audio.
+- **EBU R128 loudness normalization** (−16 LUFS I / −1.5 dBTP / 11 LU
+  LRA) applied as the final audio step. Broadcast-dialog standard.
+- **De-essing** is still not applied. Add in a follow-up if needed.
 
 ## Stages 5–6 (not yet wired up)
 
