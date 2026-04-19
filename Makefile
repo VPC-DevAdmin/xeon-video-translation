@@ -13,6 +13,9 @@ API_BASE   ?= http://localhost:8088
 MUSETALK_HEALTH_URL ?= http://localhost:8089/health
 TARGET     ?= es
 LIPSYNC    ?= none
+# TTS backend: xtts (default, 16 langs) or f5tts (EN/ZH base, cleaner prosody).
+# See docs/models.md for the language support matrix before switching.
+TTS        ?= xtts
 FIXTURE    ?= artifacts/inputs/IMG_7228.MOV
 OUT_ROOT   ?= ./artifacts/jobs
 
@@ -62,12 +65,15 @@ help:  ## Show this help
 	@printf "  API_BASE = %s\n" "$(API_BASE)"
 	@printf "  TARGET   = %s\n" "$(TARGET)"
 	@printf "  LIPSYNC  = %s\n" "$(LIPSYNC)"
+	@printf "  TTS      = %s\n" "$(TTS)"
 	@printf "  FIXTURE  = %s\n" "$(FIXTURE)"
 	@printf "  OUT_ROOT = %s\n" "$(OUT_ROOT)"
 	@printf "  QUALITY  = %s — %s\n" "$(QUALITY)" "$(_QUALITY_LABEL)"
 	@printf "\nExamples:\n"
 	@printf "  make run-musetalk FIXTURE=artifacts/inputs/mine.mov TARGET=ja\n"
 	@printf "  make run-musetalk QUALITY=2      # skip face restore for speed\n"
+	@printf "  make run-f5tts TARGET=en          # F5-TTS base (EN/ZH only)\n"
+	@printf "  make run-latentsync              # currently returns a 'coming soon' error\n"
 	@printf "  make fetch JOB=b0965\n\n"
 
 # --- Stack lifecycle ----------------------------------------------------------
@@ -118,18 +124,23 @@ models-wav2lip:  ## Backend models + Wav2Lip checkpoint
 models-musetalk:  ## MuseTalk service weights (~1.4 GB)
 	docker compose exec lipsync-musetalk bash /app/scripts/download_models.sh
 
-models-all: models-wav2lip models-musetalk  ## All models including Wav2Lip and MuseTalk
+models-f5tts:  ## F5-TTS base checkpoint (~1.3 GB, EN/ZH)
+	docker compose exec -e TTS_BACKEND=f5tts backend bash /app/scripts/download_models.sh
+
+models-all: models-wav2lip models-musetalk models-f5tts  ## All models (Wav2Lip + MuseTalk + F5-TTS)
 
 # --- Running jobs -------------------------------------------------------------
-.PHONY: run run-none run-wav2lip run-musetalk
+.PHONY: run run-none run-wav2lip run-musetalk run-f5tts run-latentsync
 
-run:  ## Run smoke test with current $(LIPSYNC) / $(TARGET) / $(FIXTURE) / $(QUALITY)
+run:  ## Run smoke test with current $(LIPSYNC) / $(TARGET) / $(TTS) / $(FIXTURE) / $(QUALITY)
 	@test -f "$(FIXTURE)" || { echo "FIXTURE not found: $(FIXTURE)"; echo "Set FIXTURE=... or put a clip under artifacts/inputs/."; exit 1; }
 	@echo "QUALITY=$(QUALITY) — $(_QUALITY_LABEL)"
+	@echo "TTS=$(TTS)"
 	API_BASE=$(API_BASE) \
 	  FIXTURE=$(FIXTURE) \
 	  TARGET=$(TARGET) \
 	  LIPSYNC=$(LIPSYNC) \
+	  TTS_BACKEND=$(TTS) \
 	  MUSETALK_BLEND_MODE=$(_Q_BLEND_MODE) \
 	  MUSETALK_BLEND_FEATHER=$(_Q_BLEND_FEATHER) \
 	  MUSETALK_FACE_RESTORE=$(_Q_FACE_RESTORE) \
@@ -145,6 +156,15 @@ run-wav2lip: run  ## Shortcut: run with LIPSYNC=wav2lip
 
 run-musetalk: LIPSYNC=musetalk
 run-musetalk: run  ## Shortcut: run with LIPSYNC=musetalk (slow, ~20 min/clip)
+
+run-f5tts: TTS=f5tts
+run-f5tts: run  ## Shortcut: run with TTS=f5tts (EN/ZH only on base checkpoint)
+
+# LatentSync is scaffolded but not implemented — backend returns a clean
+# "coming in a follow-up PR" error. Wired up here so the target exists for
+# smoke-testing the error path and so follow-up work can flip one switch.
+run-latentsync: LIPSYNC=latentsync
+run-latentsync: run  ## Shortcut: run with LIPSYNC=latentsync (returns 'coming soon' until landed)
 
 # --- Artifacts ----------------------------------------------------------------
 .PHONY: list fetch progress progress-report watch inputs clean-jobs

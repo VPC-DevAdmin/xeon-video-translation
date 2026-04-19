@@ -34,7 +34,28 @@ RUN pip install --upgrade pip wheel \
        "torch>=2.6,<2.7" \
        "torchaudio>=2.6,<2.7" \
     && pip install "torchcodec>=0.3,<0.4" \
-    && pip install -e .
+    && pip install -e . \
+    # F5-TTS (Stage 4 alternate backend). Installed with --no-deps so its
+    # internal transformers pin doesn't fight with coqui-tts's — the
+    # relevant deps (torch, vocos, accelerate, x-transformers, jieba,
+    # pypinyin, librosa) are either already present from `pip install -e .`
+    # above or pulled in below explicitly. If F5-TTS's API surface shifts,
+    # revisit this list.
+    && pip install --no-deps "f5-tts>=1.0,<2.0" \
+    && pip install \
+       "vocos>=0.1.0" \
+       "x-transformers>=1.31.14" \
+       "accelerate>=0.33.0" \
+       "jieba>=0.42.1" \
+       "pypinyin>=0.50.0" \
+       "cached-path>=1.6.0" \
+       "ema-pytorch>=0.5.2" \
+       "bitsandbytes==0.44.0 ; platform_machine == 'x86_64'" \
+       || true \
+    # The `|| true` is intentional: bitsandbytes is GPU-oriented and may
+    # fail its CPU-only import at build time on some base images. F5-TTS
+    # handles its absence gracefully; we'd rather ship a working image.
+    && echo "F5-TTS install step complete"
 
 COPY app ./app
 COPY tests ./tests

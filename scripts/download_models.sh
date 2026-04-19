@@ -65,6 +65,26 @@ os.environ["TTS_HOME"] = str(cache / "coqui-tts")
 from TTS.api import TTS
 TTS("tts_models/multilingual/multi-dataset/xtts_v2", progress_bar=False)
 
+# F5-TTS prefetch (~1.3 GB). Skip by default — the XTTS install is already
+# heavy and most users stick with the default backend. Opt in via
+# TTS_BACKEND=f5tts (or TTS_BACKEND=all to grab both).
+tts_backend = os.environ.get("TTS_BACKEND", "xtts").lower()
+if tts_backend in ("f5tts", "all"):
+    os.environ.setdefault("HF_HOME", str(hf_dir))
+    print("Downloading F5-TTS base checkpoint (~1.3 GB)…")
+    try:
+        from f5_tts.api import F5TTS
+        # Constructor downloads the default checkpoint on first use.
+        F5TTS(model=os.environ.get("F5TTS_MODEL", "F5-TTS_v1"), device="cpu")
+    except ImportError:
+        print(
+            "  warning: f5-tts not installed in this image — rebuild with "
+            "`make rebuild` to pick up the f5-tts pip install, then re-run."
+        )
+else:
+    print(f"Skipping F5-TTS download (TTS_BACKEND={tts_backend}). "
+          "Set TTS_BACKEND=f5tts to pre-fetch.")
+
 # Wav2Lip checkpoint (~400 MB). Skip if LIPSYNC_BACKEND=none.
 backend = os.environ.get("LIPSYNC_BACKEND", "none")
 if backend == "wav2lip":
