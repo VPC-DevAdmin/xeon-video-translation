@@ -1,0 +1,40 @@
+This service vendors source code from ByteDance's LatentSync project.
+
+Upstream:   https://github.com/bytedance/LatentSync
+Commit:     a229c39 (snapshot at PR-LS-1c)
+License:    Apache License 2.0 (see LICENSE in the upstream repo)
+
+Vendored subtree lives under ``app/latentsync/`` (models, pipelines,
+whisper, utils) and ``app/configs/`` (unet/stage2.yaml,
+scheduler_config.json). Each file retains its original copyright
+headers from ByteDance.
+
+CPU adaptations applied to the vendored code are marked inline with a
+"CPU patch:" comment. Summary of changes:
+
+  - app/latentsync/pipelines/lipsync_pipeline.py
+      ImageProcessor device changed from hard-coded "cuda" to
+      self._execution_device (line ~342).
+
+  - app/latentsync/utils/face_detector.py
+      FaceDetector routes through onnxruntime's CPUExecutionProvider
+      (and InsightFace ctx_id=-1) when device is not a cuda:* string.
+
+  - app/latentsync/utils/image_processor.py
+      Removed the "face detection on CPU is not supported" guard now
+      that FaceDetector handles CPU.
+
+  - app/latentsync/utils/affine_transform.py
+      AlignRestore dtype default changed from torch.float16 to
+      torch.float32. fp16 CPU kernels are partial and noisy; float32
+      is the safe CPU default.
+
+  - app/latentsync/models/unet.py
+    app/latentsync/whisper/whisper/__init__.py
+      torch.cuda.empty_cache() calls guarded behind
+      torch.cuda.is_available() so they no-op on CPU-only hosts.
+
+Weight downloads (app/scripts/download_models.sh) pull from
+https://huggingface.co/ByteDance/LatentSync-1.6. The weights carry
+their own license terms as published on that HF page; consult them
+before any commercial redistribution.
