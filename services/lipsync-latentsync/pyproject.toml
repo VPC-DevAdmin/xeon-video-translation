@@ -74,11 +74,15 @@ dependencies = [
 
   # --- Performance stack (added in the 1c perf follow-up) ----------- #
   #
-  # Intel Extension for PyTorch. Must track the torch major.minor (2.5
-  # on this service). On Xeon Sapphire Rapids+ gives a meaningful
-  # speedup to the SD 1.5 UNet via optimized conv/linear kernels and
-  # (opt-in) bf16 autocast. Same pattern as lipsync-musetalk.
-  "intel-extension-for-pytorch>=2.5,<2.6",
+  # Intel Extension for PyTorch. Must track the torch major.minor — we
+  # bumped both together to 2.6.x in a follow-up because IPEX 2.5.x
+  # was yanked from PyPI and the only un-yanked wheels are 2.6+,
+  # which require torch 2.6. See the Dockerfile comment above the
+  # torch install for the full note. On Xeon Sapphire Rapids+ this
+  # gives a meaningful speedup to the SD 1.5 UNet via optimized
+  # conv/linear kernels and (opt-in) bf16 autocast. Same pattern as
+  # lipsync-musetalk.
+  "intel-extension-for-pytorch>=2.6,<2.7",
   # Intel's OpenMP runtime, preferred over libgomp for math-heavy
   # loops. Preloaded via the Dockerfile entrypoint.
   "intel-openmp>=2024.0",
