@@ -158,12 +158,20 @@ services:
     deploy:
       resources:
         limits:
-          # Scaffold only in PR-LS-1a so the resource ceiling barely
-          # matters today, but sizing now so PR-LS-1b doesn't thrash.
-          # LatentSync's diffusion UNet + SD 1.5 VAE + Whisper together
-          # peak higher than MuseTalk's working set.
           cpus: "8.0"
-          memory: 16g
+          # 16g was confirmed too tight in PR-LS-1c testing — the
+          # cgroup OOM killer fired during the final restore_video
+          # step. Measured peak RSS was ~16.7 GB with all three
+          # models resident (UNet ~5 GB + VAE ~5 GB + Whisper) plus
+          # full-resolution kornia warp/blur tensors for compositing.
+          # (Note: Docker's `OOMKilled` flag often reads false on
+          # cgroup-level kills; `dmesg | grep oom` is ground truth.)
+          #
+          # 32g gives comfortable headroom for longer clips without
+          # needing to unload+reload weights mid-inference. The host
+          # on a Xeon dev box typically has 128 GB+; scale up further
+          # if someone runs a 4K clip or a 30 s+ source and OOMs again.
+          memory: 32g
 
   frontend:
     build:
