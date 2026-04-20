@@ -265,11 +265,26 @@ def _progress_emitter(
     state: JobState,
     stage_name: str,
 ):
+    """Return a progress callback safe to call from any thread.
+
+    The callback is *monotonic*: `cb(0.3)` followed by `cb(0.1)` leaves
+    progress at 0.3. This matters because we now have two sources
+    writing into the same channel — real progress from backends that
+    stream it (wav2lip), and a time-based ticker from the orchestrator
+    for backends that don't (musetalk, latentsync). The higher value
+    wins; neither can drag the bar backwards.
+    """
     stage = _stage(state, stage_name)
-    last_emit = [0.0]  # mutable cell
+    last_emit = [0.0]  # last value we actually emitted to SSE
+    max_seen = [0.0]   # max p observed across all calls
 
     def cb(p: float) -> None:
         p = max(0.0, min(1.0, float(p)))
+        # Monotonic: never regress. The 1.0 "done" signal still
+        # overwrites as a special case (it always passes the ≥ check).
+        if p < max_seen[0]:
+            return
+        max_seen[0] = p
         stage.progress = p
         # Throttle: only emit every 2% to avoid flooding the SSE queue.
         if p - last_emit[0] < 0.02 and p < 1.0:
@@ -526,6 +541,16 @@ async def _run_stage_lipsync(
         )
         return result.to_dict()
 
+    # Fallback progress ticker. musetalk and latentsync don't stream
+    # real per-step progress from their services — without this, the
+    # bar would sit at 0.05 (the initial "request started" tick) for
+    # the entire 30+ minute LatentSync run. The ticker estimates from
+    # elapsed vs eta and calls the monotonic progress_cb; real progress
+    # from wav2lip still dominates when it flows (higher values win).
+    ticker = asyncio.create_task(
+        _tick_lipsync_progress(progress_cb, stage.eta_seconds, started)
+    )
+
     try:
         result = await asyncio.to_thread(_do)
         stage.duration_ms = int((time.perf_counter() - started) * 1000)
@@ -547,6 +572,56 @@ async def _run_stage_lipsync(
         stage.duration_ms = int((time.perf_counter() - started) * 1000)
         _persist(state)
         raise
+    finally:
+        # Always tear the ticker down — on success, failure, or cancel.
+        # It's an asyncio task on this loop, so awaiting its cancel is
+        # cheap and guarantees we don't leak a background coroutine.
+        ticker.cancel()
+        try:
+            await ticker
+        except (asyncio.CancelledError, Exception):
+            pass
+
+
+async def _tick_lipsync_progress(
+    progress_cb,
+    eta_seconds: float | None,
+    started_at: float,
+    *,
+    interval_s: float = 15.0,
+    cap: float = 0.98,
+) -> None:
+    """Emit time-based progress estimates every `interval_s` seconds.
+
+    This is a fallback for lipsync backends that don't stream real
+    per-step progress (musetalk, latentsync). Without it, the bar sits
+    at 0.05 for the full run and users think the job is stuck.
+
+    The estimate is naive: ``min(cap, elapsed / eta_seconds)``. It caps
+    at `cap` (default 0.98) so the final 2% is reserved for the actual
+    completion signal — users see a clear "done" transition at the end
+    rather than the bar silently sitting at 100% for a beat.
+
+    Calls go through the same monotonic ``progress_cb`` that real
+    backend progress uses, so if a backend *does* stream (wav2lip) the
+    higher real value wins and this ticker becomes a no-op for that
+    run. No flag or backend-specific branching needed.
+
+    No-op when we don't have an ETA. Better to show nothing than to
+    report fake progress against an unknown denominator.
+    """
+    if not eta_seconds or eta_seconds <= 0:
+        return
+    try:
+        while True:
+            await asyncio.sleep(interval_s)
+            elapsed = time.perf_counter() - started_at
+            p = min(cap, elapsed / eta_seconds)
+            progress_cb(p)
+    except asyncio.CancelledError:
+        # Normal termination when the stage completes. Swallow so the
+        # finally-block in the caller doesn't have to special-case it.
+        pass
 
 
 async def _run_stage_mux(
