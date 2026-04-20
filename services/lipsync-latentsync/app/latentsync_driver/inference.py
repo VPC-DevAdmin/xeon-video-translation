@@ -284,6 +284,34 @@ def run(
         scheduler=scheduler,
     ).to(device)
 
+    # --- DeepCache -----------------------------------------------------
+    # Caches intermediate UNet feature maps on one denoising step and
+    # reuses them on subsequent steps ("skip" steps). Net effect: about
+    # 30% fewer UNet calls for a given num_inference_steps, with
+    # negligible visual drift at cache_interval=3.
+    #
+    # Upstream LatentSync uses exactly these params (scripts/inference.py):
+    #   helper.set_params(cache_interval=3, cache_branch_id=0)
+    # We default them on and expose an env toggle for debugging. IPEX
+    # and DeepCache stack — the speedup is multiplicative, not additive.
+    deepcache_enabled = os.environ.get(
+        "LATENTSYNC_ENABLE_DEEPCACHE", "1",
+    ).lower() in ("1", "true", "yes")
+    if deepcache_enabled:
+        try:
+            from DeepCache import DeepCacheSDHelper
+            helper = DeepCacheSDHelper(pipe=pipeline)
+            helper.set_params(cache_interval=3, cache_branch_id=0)
+            helper.enable()
+            log.info("DeepCache enabled (cache_interval=3, cache_branch_id=0)")
+        except Exception as e:
+            # DeepCache is a speedup, not a correctness piece. If its
+            # monkey-patching ever bites an upstream diffusers API
+            # change, fall back to vanilla rather than failing the run.
+            log.warning(
+                "DeepCache enable failed (%s); running without it", e,
+            )
+
     # Bind the mask image path to the vendored asset so the pipeline
     # finds it without depending on the container's working directory.
     mask_image_path = Path(__file__).resolve().parent.parent / "latentsync" / "utils" / "mask.png"
