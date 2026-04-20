@@ -344,6 +344,62 @@ wiring bugs surface fast.
 | `LATENTSYNC_IPEX_DTYPE` | `bf16` | `bf16` = 2–4× faster on AMX Xeon; `fp32` = vanilla path |
 | `LATENTSYNC_ENABLE_DEEPCACHE` | `1` | Cache intermediate UNet features (~1.3× on top of IPEX) |
 | `LATENTSYNC_DRY_RUN` | `0` | Collapse diffusion to 1 step; smoke-test wiring only |
+| `LATENTSYNC_IGNORE_DENOISE_CACHE` | `0` | Bypass the resume cache — forces a full rerun |
+
+### Resume / post-denoise cache
+
+The pipeline splits into an expensive half (face detection + denoising,
+~20 min) and a cheap half (per-frame compositing + ffmpeg mux, ~1 min).
+When the cheap half fails — typically an OOM during `restore_video` —
+redoing the expensive half is pure waste.
+
+The service writes a **post-denoise checkpoint** after the denoising
+loop completes, keyed by a content hash over (video bytes, audio
+bytes, steps, guidance, seed). Any subsequent run with identical
+inputs loads that checkpoint and skips straight to compositing.
+
+- **Cache location**: `/models/cache/latentsync_denoise/<hash>.pt`
+  on the shared `models` volume; persists across container restarts.
+- **Cache entries**: 50–200 MB each depending on clip length; one
+  per unique input tuple.
+- **Invalidation**: change any of `(video, audio, steps, guidance,
+  seed)` → new hash → cache miss → fresh run. To force a rerun with
+  identical inputs (e.g. after changing CPU patches to the pipeline
+  internals), set `LATENTSYNC_IGNORE_DENOISE_CACHE=1` or `rm -rf
+  /models/cache/latentsync_denoise/` from the host.
+
+### Memory sizing + adaptive escalation
+
+Measured peak RSS against clip length (1080p, default perf stack):
+
+| Clip | Frames | Peak RSS | Fits in 48 GB? |
+|---|---|---|---|
+| 1.77 s | 62 | ~15 GB | yes |
+| 30 s | 750 | ~20 GB | yes |
+| 60 s | 1500 | ~25 GB | yes |
+| 90 s | 2250 | ~30 GB | yes |
+| 4K (any length) | — | `video_frames`/restore × 4 | depends |
+
+The container's declared limit in `docker-compose.yml` is **48 GB**.
+That covers 1080p up to roughly the backend's `max_video_duration_
+seconds=60` cap with headroom. Longer or 4K clips need more.
+
+For clips where the footprint isn't known ahead of time, use:
+
+```bash
+make run-latentsync-adaptive FIXTURE=your-clip.mov
+```
+
+This runs the job at the declared limit. On OOM (detected via
+container restart) it calls `docker update --memory=<next>` and
+retries — the resume cache makes the retry cheap because only the
+failed restore step reruns. Default escalation ladder is
+**48g → 64g → 96g → 128g**; override via `LADDER="64g 128g 256g"`.
+
+Confirm OOM-kills via `sudo dmesg | grep oom` — Docker's
+`State.OOMKilled` flag reads false when the *cgroup* killer fires
+(as opposed to the host-level killer), which is why the adaptive
+script uses RestartCount as its signal instead.
 
 **CPU adaptations** (inline in the vendored tree, marked with
 `CPU patch:` comments — see `services/lipsync-latentsync/NOTICE` for

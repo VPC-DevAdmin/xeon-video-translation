@@ -159,19 +159,27 @@ services:
       resources:
         limits:
           cpus: "8.0"
-          # 16g was confirmed too tight in PR-LS-1c testing — the
-          # cgroup OOM killer fired during the final restore_video
-          # step. Measured peak RSS was ~16.7 GB with all three
-          # models resident (UNet ~5 GB + VAE ~5 GB + Whisper) plus
-          # full-resolution kornia warp/blur tensors for compositing.
-          # (Note: Docker's `OOMKilled` flag often reads false on
-          # cgroup-level kills; `dmesg | grep oom` is ground truth.)
+          # Memory sizing — measured peak RSS vs clip length at 1080p
+          # fp32 base + bf16 IPEX + DeepCache (the PR-LS-1c perf stack):
           #
-          # 32g gives comfortable headroom for longer clips without
-          # needing to unload+reload weights mid-inference. The host
-          # on a Xeon dev box typically has 128 GB+; scale up further
-          # if someone runs a 4K clip or a 30 s+ source and OOMs again.
-          memory: 32g
+          #   1.77 s  (62 frames)   ~15 GB     (OOM'd at 16 g, source of the bug)
+          #   30 s    (750 frames)  ~20 GB     video_frames buffer grows linearly
+          #   60 s    (1500 frames) ~25 GB     restore peak during kornia warp
+          #   4K anything           multiply video_frames / restore by 4×
+          #
+          # 48 g was picked as the static default because it comfortably
+          # handles 1080p clips up to ~90 s without OOM — covering the
+          # realistic max_video_duration_seconds=60 from the backend
+          # config, with headroom. For 4K or >90 s 1080p clips, the
+          # adaptive-retry path (see Makefile: run-latentsync-adaptive)
+          # will escalate this via `docker update --memory=...` up to
+          # 128 GB on OOM detection. Host is assumed to have >= 128 GB
+          # (Xeon dev boxes typically do; this one has 1 TB).
+          #
+          # Docker quirk reminder: when the cgroup OOM killer fires (as
+          # opposed to the host-level OOM killer), Docker's State.OOMKilled
+          # flag reads `false`. Confirm via `sudo dmesg | grep oom`.
+          memory: 48g
 
   frontend:
     build:

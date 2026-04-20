@@ -49,6 +49,7 @@ issue and want to isolate the cause.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import sys
@@ -58,6 +59,62 @@ from pathlib import Path
 from typing import Any
 
 log = logging.getLogger(__name__)
+
+
+# ------------------------------------------------------------------ #
+# Resume / checkpoint cache
+#
+# The pipeline's expensive half (face detection + affine transform +
+# the 20-step denoising loop per chunk) typically takes 20+ min on CPU.
+# The cheap half (restore_video's per-frame kornia warp + ffmpeg mux)
+# takes ~1 min. When the cheap half fails (we've seen OOM during
+# restore several times), redoing the expensive half is pure waste.
+#
+# The cache is content-addressable: a sha256 over (video bytes, audio
+# bytes, steps, guidance, seed). Any re-run with identical inputs hits
+# the cache automatically. Different inputs → different hash → cache
+# miss → full run. No manual "resume this job" command needed.
+#
+# Cache lives under /models/cache/latentsync_denoise/ so it persists
+# across container restarts via the shared `models` volume.
+# ------------------------------------------------------------------ #
+
+_DENOISE_CACHE_SUBDIR = "cache/latentsync_denoise"
+
+
+def _compute_content_hash(
+    video_path: Path, audio_path: Path,
+    steps: int, guidance: float, seed: int | None,
+) -> str:
+    """Return a 16-char hex hash identifying the inputs to the denoise loop.
+
+    Reads the video and audio bytes through a streaming hash so we don't
+    pull large files into memory. Keyed on the knobs that affect the
+    denoising output — a change in any of them forces a fresh run.
+    """
+    h = hashlib.sha256()
+    for p in (video_path, audio_path):
+        with open(p, "rb") as f:
+            while True:
+                chunk = f.read(1 << 20)  # 1 MB
+                if not chunk:
+                    break
+                h.update(chunk)
+    h.update(f"|steps={steps}|guidance={guidance:.4f}|seed={seed}".encode())
+    return h.hexdigest()[:16]
+
+
+def _resolve_checkpoint_path(
+    model_cache_dir: Path,
+    video_path: Path, audio_path: Path,
+    steps: int, guidance: float, seed: int | None,
+) -> Path | None:
+    """Return the cache path for these inputs, or None if caching disabled."""
+    if os.environ.get("LATENTSYNC_IGNORE_DENOISE_CACHE", "").lower() in ("1", "true", "yes"):
+        return None
+    digest = _compute_content_hash(video_path, audio_path, steps, guidance, seed)
+    cache_dir = model_cache_dir / _DENOISE_CACHE_SUBDIR
+    return cache_dir / f"{digest}.pt"
 
 
 # Path to the vendored configs dir (app/configs/). Resolved at import
@@ -327,6 +384,29 @@ def run(
     temp_dir = Path(os.environ.get("LATENTSYNC_TEMP_DIR", "/tmp/latentsync_work"))
     temp_dir.mkdir(parents=True, exist_ok=True)
 
+    # --- Resume / denoise cache --------------------------------------
+    # See the module header for the rationale. One-line summary: we
+    # hash (video + audio + knobs), look for a post-denoise tensor
+    # cached under /models/cache/latentsync_denoise/<hash>.pt, and
+    # skip straight to restore_video if we find one.
+    model_cache_dir = Path(os.environ.get("MODEL_CACHE_DIR", "/models"))
+    checkpoint_path = _resolve_checkpoint_path(
+        model_cache_dir, video_path, audio_path, steps, guidance, seed,
+    )
+    if checkpoint_path is None:
+        log.info("denoise cache: disabled (LATENTSYNC_IGNORE_DENOISE_CACHE)")
+    elif checkpoint_path.exists():
+        size_mb = checkpoint_path.stat().st_size / (1024 * 1024)
+        log.info(
+            "denoise cache HIT: %s (%.1f MB) — skipping expensive half",
+            checkpoint_path.name, size_mb,
+        )
+    else:
+        log.info(
+            "denoise cache MISS: will write to %s after denoise loop",
+            checkpoint_path.name,
+        )
+
     # Wrap the pipeline call in CPU autocast when bf16 is requested.
     # autocast's allowlist keeps BatchNorm / LayerNorm / Softmax at
     # fp32 for numerical stability; Conv / Linear / etc. run at bf16.
@@ -356,6 +436,11 @@ def run(
             height=int(config.data.resolution),
             mask_image_path=str(mask_image_path),
             temp_dir=str(temp_dir),
+            # Passed through **kwargs; the pipeline reads it when present
+            # and handles None/missing gracefully.
+            denoise_checkpoint_path=(
+                str(checkpoint_path) if checkpoint_path is not None else None
+            ),
         )
     elapsed = time.perf_counter() - started
     log.info("latentsync inference finished in %.1fs", elapsed)

@@ -170,11 +170,25 @@ run-musetalk: run  ## Shortcut: run with LIPSYNC=musetalk (slow, ~20 min/clip)
 run-f5tts: TTS=f5tts
 run-f5tts: run  ## Shortcut: run with TTS=f5tts (EN/ZH only on base checkpoint)
 
-# LatentSync is scaffolded but not implemented — backend returns a clean
-# "coming in a follow-up PR" error. Wired up here so the target exists for
-# smoke-testing the error path and so follow-up work can flip one switch.
+# LatentSync — SD 1.5 latent-diffusion lipsync. ~25-60 min per clip on CPU
+# depending on length. Resume cache lives under /models/cache/latentsync_denoise/;
+# re-running the same inputs skips the expensive half.
 run-latentsync: LIPSYNC=latentsync
-run-latentsync: run  ## Shortcut: run with LIPSYNC=latentsync (returns 'coming soon' until landed)
+run-latentsync: run  ## Shortcut: run with LIPSYNC=latentsync (SD 1.5 diffusion, slow)
+
+# Adaptive variant: same run, but on OOM (detected via container restart)
+# it bumps memory via `docker update` and retries — the resume cache
+# makes the retry cheap (~3 min for just the restore step). Use this
+# for clips you don't know the memory footprint of yet.
+run-latentsync-adaptive:  ## LatentSync with auto memory escalation on OOM (48g -> 64/96/128g)
+	@test -f "$(FIXTURE)" || { echo "FIXTURE not found: $(FIXTURE)"; exit 1; }
+	@echo "QUALITY=$(QUALITY) — $(_QUALITY_LABEL)"
+	API_BASE=$(API_BASE) \
+	  FIXTURE=$(FIXTURE) \
+	  TARGET=$(TARGET) \
+	  TTS_BACKEND=$(TTS) \
+	  CONTAINER=polyglot-lipsync-latentsync \
+	  ./scripts/run_latentsync_adaptive.sh
 
 # --- Artifacts ----------------------------------------------------------------
 .PHONY: list fetch progress progress-report watch inputs clean-jobs
