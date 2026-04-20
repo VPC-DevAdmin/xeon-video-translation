@@ -158,6 +158,13 @@ _REQUIRED_MODULES = (
     "scenedetect",
     "kornia",
     "face_alignment",
+    # Performance stack (PR-LS-1c perf follow-up). IPEX is the big win
+    # on Xeon; DeepCache is a smaller stacking speedup. Both are
+    # treated as required for a healthy /ready now that they're part
+    # of the default inference path. If either import fails, that's
+    # a Dockerfile regression worth surfacing loudly.
+    "intel_extension_for_pytorch",
+    "DeepCache",
 )
 
 
@@ -241,6 +248,12 @@ def health() -> dict:
         "num_inference_steps": os.environ.get("LATENTSYNC_STEPS", "20"),
         "guidance_scale": os.environ.get("LATENTSYNC_GUIDANCE", "1.5"),
         "dry_run_default": os.environ.get("LATENTSYNC_DRY_RUN", "0"),
+        # Performance knobs surfaced for debugging: operators can curl
+        # /health to confirm the container is running the configuration
+        # they intended without having to docker exec and grep env.
+        "ipex_dtype": os.environ.get("LATENTSYNC_IPEX_DTYPE", "bf16"),
+        "deepcache_enabled": os.environ.get("LATENTSYNC_ENABLE_DEEPCACHE", "1"),
+        "ld_preload": os.environ.get("LD_PRELOAD", ""),
     }
 
 

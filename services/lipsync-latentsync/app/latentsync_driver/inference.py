@@ -27,6 +27,24 @@ CPU adaptations from upstream ``scripts/inference.py``:
 Dry-run mode: set ``LATENTSYNC_DRY_RUN=1`` to reduce num_inference_steps
 to 1 and num_frames to 1. Useful for "does the pipeline even wire up"
 smoke tests without committing to a ~50-minute full inference run.
+
+Performance stack (added in the 1c perf follow-up):
+
+  - IPEX bf16 via ``LATENTSYNC_IPEX_DTYPE=bf16`` (default). Applies
+    ``ipex.optimize()`` to the UNet + VAE and wraps the pipeline call
+    in ``torch.autocast(device_type="cpu", dtype=bfloat16)``. On
+    AMX-capable Xeon (Sapphire Rapids+) this is typically 2–4×
+    faster than fp32 at essentially imperceptible quality loss.
+    Set to ``fp32`` if you see color drift or mouth-texture artifacts.
+
+  - DeepCache via ``LATENTSYNC_ENABLE_DEEPCACHE=1`` (default). Caches
+    early denoising-step tensors and reuses them on later steps,
+    cutting UNet calls by ~30%. Upstream LatentSync uses it with
+    ``cache_interval=3, cache_branch_id=0``.
+
+Both knobs are opt-out, not opt-in — a fresh container ships with
+both enabled. Turn them off individually if you're chasing a quality
+issue and want to isolate the cause.
 """
 
 from __future__ import annotations
@@ -46,6 +64,51 @@ log = logging.getLogger(__name__)
 # time so stacktraces make the layout obvious when a file is missing.
 _CONFIGS_DIR = Path(__file__).resolve().parent.parent / "configs"
 _UNET_CONFIG_PATH = _CONFIGS_DIR / "unet" / "stage2.yaml"
+
+
+def _ipex_dtype():
+    """Resolve the IPEX compute dtype from env.
+
+    ``fp32`` is pure kernel acceleration — no numerical drift from
+    upstream's tested path. ``bf16`` enables torch CPU autocast around
+    the UNet forward and typically gives 2–4× speedup on AMX-capable
+    Xeon (Sapphire Rapids+). Mirrors MuseTalk's ``_ipex_dtype`` so
+    operators who've tuned one service understand the other's knob.
+
+    Imports torch lazily — the ``/health`` endpoint must stay
+    responsive even if the torch stack breaks on boot.
+    """
+    import torch
+
+    choice = os.environ.get("LATENTSYNC_IPEX_DTYPE", "bf16").lower()
+    if choice in ("bf16", "bfloat16"):
+        return torch.bfloat16
+    return torch.float32
+
+
+def _ipex_optimize(model, name: str):
+    """Wrap `model` with ipex.optimize() if IPEX is installed.
+
+    Silently falls through on any failure — perf plumbing should never
+    hard-fail a request. Caught broadly because IPEX import can raise
+    native-loader errors (e.g. executable-stack markers on some wheels)
+    that aren't strictly ImportError.
+    """
+    try:
+        import intel_extension_for_pytorch as ipex
+    except Exception as e:
+        log.warning("IPEX import failed (%s); skipping %s optimization", e, name)
+        return model
+
+    dtype = _ipex_dtype()
+    try:
+        optimized = ipex.optimize(model.eval(), dtype=dtype, inplace=False)
+    except Exception as e:
+        log.warning("IPEX optimize(%s) failed (%s); using vanilla PyTorch", name, e)
+        return model
+
+    log.info("IPEX optimized %s (dtype=%s)", name, str(dtype).rsplit(".", 1)[-1])
+    return optimized
 
 
 @dataclass
@@ -155,7 +218,10 @@ def run(
     from latentsync.whisper.audio2feature import Audio2Feature
 
     device = "cpu"
+    # Model weights stay fp32 on disk. IPEX handles the bf16 cast
+    # internally when enabled; the pipeline's autocast does the rest.
     dtype = torch.float32
+    compute_dtype = _ipex_dtype()  # torch.bfloat16 or torch.float32
 
     # Seed for reproducibility. accelerate.set_seed seeds torch, numpy,
     # and python random in one call. If no seed is given we just log
@@ -199,6 +265,7 @@ def run(
     )
     vae.config.scaling_factor = 0.18215
     vae.config.shift_factor = 0
+    vae = _ipex_optimize(vae, "vae")
 
     # --- UNet ----------------------------------------------------------
     unet, _ = UNet3DConditionModel.from_pretrained(
@@ -207,6 +274,7 @@ def run(
         device="cpu",
     )
     unet = unet.to(dtype=dtype)
+    unet = _ipex_optimize(unet, "unet")
 
     # --- Pipeline ------------------------------------------------------
     pipeline = LipsyncPipeline(
@@ -215,6 +283,34 @@ def run(
         unet=unet,
         scheduler=scheduler,
     ).to(device)
+
+    # --- DeepCache -----------------------------------------------------
+    # Caches intermediate UNet feature maps on one denoising step and
+    # reuses them on subsequent steps ("skip" steps). Net effect: about
+    # 30% fewer UNet calls for a given num_inference_steps, with
+    # negligible visual drift at cache_interval=3.
+    #
+    # Upstream LatentSync uses exactly these params (scripts/inference.py):
+    #   helper.set_params(cache_interval=3, cache_branch_id=0)
+    # We default them on and expose an env toggle for debugging. IPEX
+    # and DeepCache stack — the speedup is multiplicative, not additive.
+    deepcache_enabled = os.environ.get(
+        "LATENTSYNC_ENABLE_DEEPCACHE", "1",
+    ).lower() in ("1", "true", "yes")
+    if deepcache_enabled:
+        try:
+            from DeepCache import DeepCacheSDHelper
+            helper = DeepCacheSDHelper(pipe=pipeline)
+            helper.set_params(cache_interval=3, cache_branch_id=0)
+            helper.enable()
+            log.info("DeepCache enabled (cache_interval=3, cache_branch_id=0)")
+        except Exception as e:
+            # DeepCache is a speedup, not a correctness piece. If its
+            # monkey-patching ever bites an upstream diffusers API
+            # change, fall back to vanilla rather than failing the run.
+            log.warning(
+                "DeepCache enable failed (%s); running without it", e,
+            )
 
     # Bind the mask image path to the vendored asset so the pipeline
     # finds it without depending on the container's working directory.
@@ -231,20 +327,36 @@ def run(
     temp_dir = Path(os.environ.get("LATENTSYNC_TEMP_DIR", "/tmp/latentsync_work"))
     temp_dir.mkdir(parents=True, exist_ok=True)
 
-    started = time.perf_counter()
-    pipeline(
-        video_path=str(video_path),
-        audio_path=str(audio_path),
-        video_out_path=str(output_path),
-        num_frames=int(config.data.num_frames),
-        num_inference_steps=steps,
-        guidance_scale=guidance,
-        weight_dtype=dtype,
-        width=int(config.data.resolution),
-        height=int(config.data.resolution),
-        mask_image_path=str(mask_image_path),
-        temp_dir=str(temp_dir),
+    # Wrap the pipeline call in CPU autocast when bf16 is requested.
+    # autocast's allowlist keeps BatchNorm / LayerNorm / Softmax at
+    # fp32 for numerical stability; Conv / Linear / etc. run at bf16.
+    # When compute_dtype is fp32, autocast becomes a no-op.
+    autocast_enabled = compute_dtype == torch.bfloat16
+    autocast_ctx = torch.autocast(
+        device_type="cpu", dtype=torch.bfloat16, enabled=autocast_enabled,
     )
+    log.info(
+        "pipeline starting: steps=%d guidance=%.2f compute_dtype=%s autocast=%s",
+        steps, guidance,
+        str(compute_dtype).rsplit(".", 1)[-1],
+        autocast_enabled,
+    )
+
+    started = time.perf_counter()
+    with torch.no_grad(), autocast_ctx:
+        pipeline(
+            video_path=str(video_path),
+            audio_path=str(audio_path),
+            video_out_path=str(output_path),
+            num_frames=int(config.data.num_frames),
+            num_inference_steps=steps,
+            guidance_scale=guidance,
+            weight_dtype=dtype,
+            width=int(config.data.resolution),
+            height=int(config.data.resolution),
+            mask_image_path=str(mask_image_path),
+            temp_dir=str(temp_dir),
+        )
     elapsed = time.perf_counter() - started
     log.info("latentsync inference finished in %.1fs", elapsed)
 

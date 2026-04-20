@@ -32,6 +32,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       # the minimal GL stubs even though we never open a display.
       libgl1 \
       libglib2.0-0 \
+      # Performance stack — mirrors services/musetalk/Dockerfile. TCMalloc
+      # reduces allocator contention under heavy ML load; libiomp5 comes
+      # from the intel-openmp pip package; we just need google-perftools
+      # on the system for the LD_PRELOAD below.
+      libgoogle-perftools4 \
+      # Linux 5.8+ refuses to load shared objects that declare an executable
+      # stack (PT_GNU_STACK with RWE). Intel Extension for PyTorch 2.5 on
+      # some releases ships libintel-ext-pt-cpu.so with that flag set;
+      # without clearing it, every `import intel_extension_for_pytorch`
+      # would abort with
+      #   ImportError: cannot enable executable stack as shared object requires
+      # We patch the flag off with patchelf post-install.
+      patchelf \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -55,9 +68,35 @@ RUN pip install --upgrade pip wheel \
 COPY pyproject.toml ./
 RUN pip install -e .
 
+# Clear the executable-stack marker from IPEX's native libs (see apt
+# patchelf note above). Targeted only at intel_extension_for_pytorch
+# and intel-openmp in case either ever ships the same flag; patchelf
+# failures are tolerated so a future clean wheel won't break the build.
+RUN find /usr/local/lib/python3.11/site-packages/intel_extension_for_pytorch \
+         /usr/local/lib/python3.11/site-packages/intel_openmp \
+         -name "*.so*" 2>/dev/null \
+    | xargs -r -n1 -I{} sh -c 'patchelf --clear-execstack "{}" 2>/dev/null || true'
+
 COPY app ./app
 COPY scripts ./scripts
 
 EXPOSE 8000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Preload TCMalloc + Intel OpenMP before uvicorn starts. libiomp5 comes
+# from the `intel-openmp` pip wheel (site-packages/intel_openmp/lib) —
+# we resolve the real path at runtime because the wheel's layout can
+# vary across versions. TCMalloc is the Debian libgoogle-perftools
+# package. Both failures are non-fatal; uvicorn starts either way.
+# Mirrors services/musetalk/Dockerfile's entrypoint.
+RUN echo '#!/bin/bash\n\
+IOMP_LIB="$(python -c "import intel_openmp, os; print(os.path.join(os.path.dirname(intel_openmp.__file__), \"lib\", \"libiomp5.so\"))" 2>/dev/null)"\n\
+TCMALLOC_LIB="$(find /usr/lib -name "libtcmalloc.so*" 2>/dev/null | head -1)"\n\
+PRELOAD=""\n\
+[ -f "$IOMP_LIB" ] && PRELOAD="$IOMP_LIB"\n\
+[ -n "$TCMALLOC_LIB" ] && PRELOAD="${PRELOAD:+$PRELOAD:}$TCMALLOC_LIB"\n\
+[ -n "$PRELOAD" ] && export LD_PRELOAD="$PRELOAD"\n\
+echo "LD_PRELOAD=$LD_PRELOAD" >&2\n\
+exec uvicorn app.main:app --host 0.0.0.0 --port 8000 "$@"' > /usr/local/bin/entrypoint.sh \
+ && chmod +x /usr/local/bin/entrypoint.sh
+
+CMD ["/usr/local/bin/entrypoint.sh"]

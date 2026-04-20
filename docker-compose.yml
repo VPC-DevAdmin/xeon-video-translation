@@ -129,9 +129,19 @@ services:
       # face, ffmpeg writes the mp4) without committing to a full run.
       # Set LATENTSYNC_DRY_RUN=1 in .env, rebuild, re-run.
       LATENTSYNC_DRY_RUN: ${LATENTSYNC_DRY_RUN:-0}
-      # Same thread-affinity incantation as lipsync-musetalk; harmless
-      # in PR-LS-1a (no ML load to pin) but keeps the Compose surfaces
-      # aligned so PR-LS-1b/1c don't touch docker-compose.yml.
+      # --- Performance knobs (added in the 1c perf follow-up) --------- #
+      # IPEX compute dtype. `bf16` enables torch.autocast around the
+      # UNet forward on AMX-capable Xeon (Sapphire Rapids+) — 2–4×
+      # faster at essentially imperceptible quality loss. `fp32` is
+      # the conservative default on older hosts; set to bf16 in .env
+      # after one successful bf16 run shows no visible drift.
+      LATENTSYNC_IPEX_DTYPE: ${LATENTSYNC_IPEX_DTYPE:-bf16}
+      # DeepCache — caches early denoising-step tensors and reuses
+      # them later. ~1.3× speedup at negligible quality cost on SD 1.5.
+      # Set to 0 if it ever causes an artifact you can't explain.
+      LATENTSYNC_ENABLE_DEEPCACHE: ${LATENTSYNC_ENABLE_DEEPCACHE:-1}
+      # Intel OpenMP thread affinity — pins threads to cores so they
+      # don't bounce, improves cache locality on math-heavy loops.
       KMP_AFFINITY: granularity=fine,compact,1,0
       KMP_BLOCKTIME: "1"
     volumes:

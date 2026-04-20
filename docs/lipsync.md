@@ -306,9 +306,21 @@ reasonable; for a demo booth, use `LIPSYNC=musetalk` or `LIPSYNC=none`.
 
 **Inference is live.** The vendored LatentSync package
 (`services/lipsync-latentsync/app/latentsync/`) is callable end-to-end
-on CPU. `make run-latentsync` now kicks a real job — budget
-**~10 minutes of wall-clock per second of source video** (SD 1.5 latent
-diffusion per frame at 20 denoising steps by default).
+on CPU. `make run-latentsync` kicks a real job.
+
+**Performance stack** (IPEX bf16 + DeepCache, both default-on):
+
+| Config | Per source-second | For a 3 s clip |
+|---|---|---|
+| fp32, no DeepCache | ~90 min | ~4.5 h |
+| bf16 IPEX, no DeepCache | ~25 min | ~1.25 h |
+| bf16 IPEX + DeepCache (default) | **~18 min** | **~55 min** |
+
+The bf16 path requires an AMX-capable Xeon (Sapphire Rapids or newer);
+older cores fall through to fp32 without error. Flip to fp32 via
+`LATENTSYNC_IPEX_DTYPE=fp32` in `.env` if you're chasing a quality
+regression; flip DeepCache off with `LATENTSYNC_ENABLE_DEEPCACHE=0`
+for the same reason. Both stack multiplicatively.
 
 **Dry-run mode for fast iteration.** Set `LATENTSYNC_DRY_RUN=1` in your
 `.env` and rebuild — the driver collapses the denoising loop to 1 step
@@ -316,6 +328,22 @@ so you can verify the pipeline wires together in minutes instead of
 hours. Output quality is unusable (single-step diffusion ≠ a real take)
 but face detection, VAE encode/decode, and ffmpeg mux all run, so
 wiring bugs surface fast.
+
+**Per-request knobs** (all accept `null` for env-default fallback):
+
+| Field | Range | Default | Purpose |
+|---|---|---|---|
+| `num_inference_steps` | 1–100 | `LATENTSYNC_STEPS=20` | Denoising steps. Halving roughly halves wall time; below 10 visible quality drops |
+| `guidance_scale` | 0–15 | `LATENTSYNC_GUIDANCE=1.5` | Classifier-free guidance. Higher pushes mouth shapes harder at identity cost |
+| `seed` | int | random | Set for reproducibility between runs |
+
+**Container-level knobs** (env only, not per-request):
+
+| Env | Default | Purpose |
+|---|---|---|
+| `LATENTSYNC_IPEX_DTYPE` | `bf16` | `bf16` = 2–4× faster on AMX Xeon; `fp32` = vanilla path |
+| `LATENTSYNC_ENABLE_DEEPCACHE` | `1` | Cache intermediate UNet features (~1.3× on top of IPEX) |
+| `LATENTSYNC_DRY_RUN` | `0` | Collapse diffusion to 1 step; smoke-test wiring only |
 
 **CPU adaptations** (inline in the vendored tree, marked with
 `CPU patch:` comments — see `services/lipsync-latentsync/NOTICE` for

@@ -71,6 +71,24 @@ dependencies = [
   "onnxruntime>=1.17,<2.0",
   "mediapipe==0.10.11",
   "face-alignment==1.4.1",
+
+  # --- Performance stack (added in the 1c perf follow-up) ----------- #
+  #
+  # Intel Extension for PyTorch. Must track the torch major.minor (2.5
+  # on this service). On Xeon Sapphire Rapids+ gives a meaningful
+  # speedup to the SD 1.5 UNet via optimized conv/linear kernels and
+  # (opt-in) bf16 autocast. Same pattern as lipsync-musetalk.
+  "intel-extension-for-pytorch>=2.5,<2.6",
+  # Intel's OpenMP runtime, preferred over libgomp for math-heavy
+  # loops. Preloaded via the Dockerfile entrypoint.
+  "intel-openmp>=2024.0",
+
+  # DeepCache: caches early denoising-step tensors and reuses them on
+  # later steps, cutting UNet calls by ~30%. Upstream LatentSync uses
+  # it; we dropped it in PR-LS-1b to stand the service up on a minimal
+  # dep surface and are bringing it back here. Safe to disable via
+  # LATENTSYNC_ENABLE_DEEPCACHE=0 if it ever misbehaves.
+  "DeepCache==0.1.1",
 ]
 
 [build-system]
