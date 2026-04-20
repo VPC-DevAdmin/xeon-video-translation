@@ -172,19 +172,22 @@ services:
           #   60 s    (1500 frames) ~25 GB     restore peak during kornia warp
           #   4K anything           multiply video_frames / restore by 4×
           #
-          # 48 g was picked as the static default because it comfortably
-          # handles 1080p clips up to ~90 s without OOM — covering the
-          # realistic max_video_duration_seconds=60 from the backend
-          # config, with headroom. For 4K or >90 s 1080p clips, the
-          # adaptive-retry path (see Makefile: run-latentsync-adaptive)
-          # will escalate this via `docker update --memory=...` up to
-          # 128 GB on OOM detection. Host is assumed to have >= 128 GB
-          # (Xeon dev boxes typically do; this one has 1 TB).
+          # 128 g — empirically required. Measured peak RSS hit 50 GB
+          # even for a 1.77 s / 62-frame 1080p clip, much higher than
+          # my original ~15 GB estimate. Rather than escalate via the
+          # adaptive retry path, we just give the container more
+          # upfront. Host has >> 128 GB, so this is free.
+          #
+          # The allocator (tcmalloc + PyTorch CPU cache) is greedy and
+          # fills whatever ceiling we set, so "real" working set is
+          # probably smaller. A future perf follow-up could add
+          # gc.collect() calls between restore frames to make memory
+          # release more aggressive. For now: overprovision and move on.
           #
           # Docker quirk reminder: when the cgroup OOM killer fires (as
           # opposed to the host-level OOM killer), Docker's State.OOMKilled
           # flag reads `false`. Confirm via `sudo dmesg | grep oom`.
-          memory: 48g
+          memory: 128g
 
   frontend:
     build:
