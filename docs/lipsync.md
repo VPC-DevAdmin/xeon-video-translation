@@ -290,7 +290,7 @@ Both services mount `/jobs` and `/models`. Backend reaches the service via
 Docker DNS at `http://lipsync-musetalk:8000`; the host can hit it for
 debugging at `localhost:${MUSETALK_PORT:-8089}`.
 
-## `latentsync` — microservice with weights (PR-LS-1b)
+## `latentsync` — live inference (PR-LS-1c)
 
 SD 1.5 latent-diffusion based. Best open-source lipsync quality as of
 writing, and designed as a **batch workflow** on CPU: the architecture
@@ -302,46 +302,58 @@ live-demo territory on any current-gen CPU.
 overnight is acceptable (archival, research, accessibility), that's
 reasonable; for a demo booth, use `LIPSYNC=musetalk` or `LIPSYNC=none`.
 
-### State as of PR-LS-1b (this PR)
+### State as of PR-LS-1c (this PR)
 
-The **microservice is reachable and the ML stack is installed**. The
-container has torch 2.5.1 CPU, diffusers 0.32.2, transformers 4.48.0,
-and the rest of LatentSync's upstream `requirements.txt` (CPU-adapted —
-`opencv-python-headless`, `onnxruntime` instead of `-gpu`, lpips /
-DeepCache / gradio dropped as inference-irrelevant).
+**Inference is live.** The vendored LatentSync package
+(`services/lipsync-latentsync/app/latentsync/`) is callable end-to-end
+on CPU. `make run-latentsync` now kicks a real job — budget
+**~10 minutes of wall-clock per second of source video** (SD 1.5 latent
+diffusion per frame at 20 denoising steps by default).
 
-**Weights download is live.** `make models-latentsync` pulls three
-files from `ByteDance/LatentSync-1.6` into the shared `/models/latentsync/`
-volume:
+**Dry-run mode for fast iteration.** Set `LATENTSYNC_DRY_RUN=1` in your
+`.env` and rebuild — the driver collapses the denoising loop to 1 step
+so you can verify the pipeline wires together in minutes instead of
+hours. Output quality is unusable (single-step diffusion ≠ a real take)
+but face detection, VAE encode/decode, and ffmpeg mux all run, so
+wiring bugs surface fast.
 
-```
-/models/latentsync/
-├── latentsync_unet.pt      ~5 GB    SD 1.5 UNet fine-tuned for lipsync
-├── stable_syncnet.pt       ~1.6 GB  SyncNet for audio-visual supervision
-└── whisper/
-    └── tiny.pt             ~75 MB   OpenAI Whisper tiny
-```
+**CPU adaptations** (inline in the vendored tree, marked with
+`CPU patch:` comments — see `services/lipsync-latentsync/NOTICE` for
+the full list):
 
-`/lipsync` still returns a structured 501 because no inference code is
-loaded yet — that flips on in PR-LS-1c. The 501 body now carries a
-`weights_present` boolean so users can tell whether their
-`make models-latentsync` ran successfully without digging through logs.
+- `ImageProcessor` now respects `self._execution_device` instead of
+  hard-coding `"cuda"`.
+- `FaceDetector` routes through `onnxruntime` CPU provider + InsightFace
+  `ctx_id=-1` when device isn't `cuda:*`.
+- `AlignRestore` default dtype changed from `float16` to `float32` —
+  many CPU kernels don't have fp16 paths.
+- `torch.cuda.empty_cache()` calls gated behind
+  `torch.cuda.is_available()`.
+- Dropped the upstream `NotImplementedError("Using the CPU for face
+  detection is not supported")` guard that refused CPU face detection
+  outright.
 
-Dep isolation rationale: LatentSync's `torch==2.5.1` / `diffusers==0.32.2` /
-`transformers==4.48.0` pins conflict with both the main backend (coqui-tts
-wants transformers <4.47) and the MuseTalk service (`transformers==4.39`).
-A third dep-isolated container is the only sane home.
+**What didn't change.** The UNet, the diffusion pipeline math, the
+Audio2Feature whisper wrapper, the loss functions, the overall
+architecture — all upstream verbatim.
 
 Exercising it:
 
 ```bash
-make rebuild                       # rebuilds the lipsync-latentsync image
+make rebuild                       # rebuilds image with vendored code + driver
 make models-latentsync             # pulls ~6.6 GB of weights (once)
-make health                        # /health on all three services
-make logs-latentsync               # tail service logs
-curl http://localhost:8090/ready   # every dep should now show ok=true
-curl http://localhost:8090/weights # every weight should show ok=true after download
-make run-latentsync                # still 501 — inference lands in PR-LS-1c
+make health                        # all three services
+curl http://localhost:8090/health  # inference_implemented: true, phase: PR-LS-1c
+
+# Smoke test: dry-run (~2 min)
+echo LATENTSYNC_DRY_RUN=1 >> .env
+make rebuild
+make run-latentsync FIXTURE=artifacts/inputs/short.mov   # ~2 min, unusable output but proves wiring
+
+# Real run (~10 min per second of source)
+sed -i '/LATENTSYNC_DRY_RUN/d' .env
+make rebuild
+make run-latentsync FIXTURE=artifacts/inputs/short.mov   # real output
 ```
 
 ### Roadmap
@@ -350,8 +362,8 @@ make run-latentsync                # still 501 — inference lands in PR-LS-1c
 |-------|------------|--------|
 | **PR 35 (scaffold error)** | `make run-latentsync` target, inline dispatcher error pointing here | shipped |
 | **PR-LS-1a** | Dep-isolated `lipsync-latentsync` microservice, Compose wiring, HTTP client, structured 501 end-to-end, introspection endpoints (`/health`, `/ready`, `/weights`) | shipped |
-| **PR-LS-1b (this PR)** | torch 2.5.1 CPU + diffusers 0.32.2 + transformers 4.48.0 + the rest of LatentSync's `requirements.txt` (CPU-adapted) + real `scripts/download_models.sh` pulling UNet + SyncNet + Whisper tiny from `ByteDance/LatentSync-1.6` | shipping |
-| **PR-LS-1c** | Vendor LatentSync inference, first runnable frame, per-request quality knobs (`num_inference_steps`, `guidance_scale`, `seed`) wired through | planned |
+| **PR-LS-1b** | torch 2.5.1 CPU + diffusers 0.32.2 + transformers 4.48.0 + the rest of LatentSync's `requirements.txt` (CPU-adapted) + real `scripts/download_models.sh` pulling UNet + SyncNet + Whisper tiny from `ByteDance/LatentSync-1.6` | shipped |
+| **PR-LS-1c (this PR)** | Vendored LatentSync inference tree + CPU adaptation patches + driver + per-request quality knobs (`num_inference_steps`, `guidance_scale`, `seed`) + `LATENTSYNC_DRY_RUN` mode | shipping |
 | **GPU path (later)** | Optional CUDA image variant gated behind a compose profile — intentionally not prioritized for the CPU demo | not planned |
 
 ### Per-request knobs (forward-compat in PR-LS-1a, wired in PR-LS-1c)

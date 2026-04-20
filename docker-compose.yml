@@ -120,11 +120,15 @@ services:
       JOB_ARTIFACTS_DIR: /jobs
       HF_HOME: /models/huggingface
       CUDA_VISIBLE_DEVICES: ""
-      # Per-request quality knobs, wired up for real in PR-LS-1c. Carried
-      # here now so the Compose surface doesn't churn between rollout
-      # phases. Defaults match LatentSync upstream.
+      # Per-request quality knobs. Defaults match LatentSync upstream.
       LATENTSYNC_STEPS: ${LATENTSYNC_STEPS:-20}
       LATENTSYNC_GUIDANCE: ${LATENTSYNC_GUIDANCE:-1.5}
+      # Dry-run mode: collapses num_inference_steps to 1 so we reach the
+      # end of the pipeline in minutes instead of hours — useful for
+      # verifying the wiring holds (VAE loads, face detection finds a
+      # face, ffmpeg writes the mp4) without committing to a full run.
+      # Set LATENTSYNC_DRY_RUN=1 in .env, rebuild, re-run.
+      LATENTSYNC_DRY_RUN: ${LATENTSYNC_DRY_RUN:-0}
       # Same thread-affinity incantation as lipsync-musetalk; harmless
       # in PR-LS-1a (no ML load to pin) but keeps the Compose surfaces
       # aligned so PR-LS-1b/1c don't touch docker-compose.yml.
