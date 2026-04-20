@@ -72,19 +72,24 @@ def realtime_factor(backend: str) -> float:
     wrong factor here is the reason the bar plateaus too early and
     sits at 98% for most of the run.
 
-    LatentSync specifically: measured ~90 min of wall-clock per second
-    of source video at fp32, steps=20, on a 16-core Sapphire Rapids
-    Xeon (PR #41 debugging session). That's ~5400 s/sec of source,
-    not the 600 I had originally. bf16 via IPEX (coming shortly)
-    typically drops this 2–4×; DeepCache another ~1.3×. The factor
-    here is deliberately the fp32 baseline so we over-estimate ETA
-    rather than plateau early — under-estimating is the worse UX.
+    LatentSync specifically: measured numbers from a 16-core Sapphire
+    Rapids Xeon at steps=20 —
+      fp32, no DeepCache:      ~90 min / source-second (5400 s/s)
+      bf16 IPEX, no DeepCache: ~25 min / source-second (1500 s/s)
+      bf16 IPEX + DeepCache:   ~18 min / source-second (1080 s/s)
+    Default container config ships with both bf16 and DeepCache on, so
+    we use the 1080 number. Operators who flip either knob off via
+    .env will see the bar pessimize (hit 98% earlier than the real
+    finish) — acceptable, and still monotonic. If an AMX-less older
+    CPU falls through to fp32, the bar will visibly plateau at 98% for
+    a long tail; that's the cue to add LATENTSYNC_IPEX_DTYPE=fp32 and
+    let the ticker stay honest.
     """
     return {
         "none": 0.0,
         "wav2lip": 15.0,
         "musetalk": 200.0,
-        "latentsync": 5400.0,
+        "latentsync": 1080.0,
     }.get(backend, 0.0)
 
 
