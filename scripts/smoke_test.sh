@@ -53,8 +53,21 @@ JOB_JSON="$(curl -sS -X POST "$API_BASE/jobs" \
 JOB_ID="$(echo "$JOB_JSON" | jq -r '.job_id')"
 echo "    job_id=$JOB_ID"
 
-echo "==> polling /jobs/$JOB_ID"
-for _ in $(seq 1 240); do
+# Poll until the job reaches a terminal state. The 4-minute budget
+# the old loop used was fine for the default lipsync=none path (a few
+# seconds total) but wildly short for musetalk (~10 min) and latentsync
+# (~25-60 min). When the old loop timed out it fell through silently
+# and the script exited 0, which broke any caller that treated the
+# exit code as "job succeeded" — notably scripts/run_latentsync_adaptive.sh.
+#
+# Now: poll at 5 s intervals for up to SMOKE_TIMEOUT_SECS (default 3 h)
+# and exit non-zero on timeout so upstream callers can detect it.
+SMOKE_TIMEOUT_SECS="${SMOKE_TIMEOUT_SECS:-10800}"
+SMOKE_POLL_INTERVAL="${SMOKE_POLL_INTERVAL:-5}"
+echo "==> polling /jobs/$JOB_ID (timeout ${SMOKE_TIMEOUT_SECS}s, every ${SMOKE_POLL_INTERVAL}s)"
+_deadline=$(( $(date +%s) + SMOKE_TIMEOUT_SECS ))
+STATUS=""
+while [ "$(date +%s)" -lt "$_deadline" ]; do
   STATUS_JSON="$(curl -sS "$API_BASE/jobs/$JOB_ID")"
   STATUS="$(echo "$STATUS_JSON" | jq -r '.status')"
   CURRENT="$(echo "$STATUS_JSON" | jq -r '.current_stage // "—"')"
@@ -63,8 +76,15 @@ for _ in $(seq 1 240); do
     completed) echo; break ;;
     failed)    echo; echo "JOB FAILED:"; echo "$STATUS_JSON" | jq .; exit 1 ;;
   esac
-  sleep 1
+  sleep "$SMOKE_POLL_INTERVAL"
 done
+if [ "$STATUS" != "completed" ]; then
+  echo
+  echo "JOB TIMED OUT after ${SMOKE_TIMEOUT_SECS}s — last status=${STATUS}."
+  echo "  Bump SMOKE_TIMEOUT_SECS if this was a legitimately long run,"
+  echo "  or check 'make logs-latentsync' / 'make progress' for what stalled."
+  exit 2
+fi
 
 echo
 echo "==> Transcript:"
