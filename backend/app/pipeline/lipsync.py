@@ -66,14 +66,25 @@ def backend_in_use(override: str | None = None) -> str:
 def realtime_factor(backend: str) -> float:
     """Rough CPU-wall-clock cost per second of source video, by backend.
 
-    Used by the orchestrator to publish ETA estimates over SSE. These are
-    deliberately conservative; the UI will revise them once a job starts.
+    Used by the orchestrator to publish ETA estimates over SSE. The
+    orchestrator's time-based progress ticker also reads this value to
+    estimate progress mid-run (see _tick_lipsync_progress); a wildly
+    wrong factor here is the reason the bar plateaus too early and
+    sits at 98% for most of the run.
+
+    LatentSync specifically: measured ~90 min of wall-clock per second
+    of source video at fp32, steps=20, on a 16-core Sapphire Rapids
+    Xeon (PR #41 debugging session). That's ~5400 s/sec of source,
+    not the 600 I had originally. bf16 via IPEX (coming shortly)
+    typically drops this 2–4×; DeepCache another ~1.3×. The factor
+    here is deliberately the fp32 baseline so we over-estimate ETA
+    rather than plateau early — under-estimating is the worse UX.
     """
     return {
         "none": 0.0,
         "wav2lip": 15.0,
         "musetalk": 200.0,
-        "latentsync": 600.0,
+        "latentsync": 5400.0,
     }.get(backend, 0.0)
 
 
