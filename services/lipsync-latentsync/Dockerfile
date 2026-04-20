@@ -49,12 +49,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# torch/torchvision pinned to match LatentSync upstream (requirements.txt
-# has `torch==2.5.1` / `torchvision==0.20.1`). Upstream was developed
-# against CUDA builds; we install the CPU wheels from the PyTorch index.
-# Nothing in the inference code should depend on the CUDA symbol set —
-# if it does, that's a PR-LS-1c bug to chase down, not something to
-# paper over here.
+# torch/torchvision were originally pinned to LatentSync upstream's
+# requirements.txt (`torch==2.5.1` / `torchvision==0.20.1`). We bumped
+# to the 2.6 line in this patch because Intel Extension for PyTorch
+# 2.5.0 was yanked from PyPI — the lowest un-yanked IPEX is 2.6.0,
+# and IPEX 2.6.x tracks torch 2.6.x exactly. Running a torch 2.5.1 /
+# IPEX 2.6.0 combo would segfault at import on most systems.
+#
+# This aligns the whole repo's torch stack at 2.6 (backend and
+# lipsync-musetalk were already there), at the cost of diverging from
+# LatentSync's upstream-tested version by one minor release. Risk is
+# low: the vendored inference code doesn't depend on torch API
+# surfaces that changed between 2.5 and 2.6. If quality regresses
+# after this bump, that's the first thing to blame.
 #
 # setuptools 81 dropped pkg_resources; insightface + onnx + various HF
 # paths still import it. Pin to <81 like the other services.
@@ -62,8 +69,8 @@ RUN pip install --upgrade pip wheel \
     && pip install "setuptools>=68,<81" \
     && pip install \
        --extra-index-url https://download.pytorch.org/whl/cpu \
-       "torch==2.5.1" \
-       "torchvision==0.20.1"
+       "torch>=2.6,<2.7" \
+       "torchvision>=0.21,<0.22"
 
 COPY pyproject.toml ./
 RUN pip install -e .
