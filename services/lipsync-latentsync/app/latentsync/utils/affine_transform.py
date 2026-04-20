@@ -95,8 +95,32 @@ class AlignRestore(object):
         inv_soft_mask_3d = inv_soft_mask.expand_as(inv_face)
         img_back = inv_soft_mask_3d * pasted_face + (1 - inv_soft_mask_3d) * input_img
 
+        # Debug dump: four critical intermediates from the restore step.
+        # The reviewer called these out as the sequence that reveals
+        # where restore goes wrong — if inv_face looks wrong you know
+        # the warp is off; if inv_mask is a rectangle (not face-shaped)
+        # you know affine is failing; if inv_soft_mask lacks a proper
+        # feather you know the mask ops are broken.
+        try:
+            from . import _debug
+            _debug.dump("03_restore_inv_face", inv_face)
+            _debug.dump("04_restore_inv_mask", inv_mask)
+            _debug.dump("05_restore_inv_soft_mask", inv_soft_mask)
+        except Exception:
+            pass
+
         img_back = rearrange(img_back, "c h w -> h w c").contiguous().to(dtype=torch.uint8)
         img_back = img_back.cpu().numpy()
+
+        # Final dump is the composited frame — what actually lands in
+        # the output mp4. Comparing this to the earlier stages tells
+        # us where the artifact we see on screen entered the pipeline.
+        try:
+            from . import _debug
+            _debug.dump("06_restore_img_back", img_back)
+        except Exception:
+            pass
+
         return img_back
 
     def transformation_from_points(self, points1: torch.Tensor, points0: torch.Tensor, smooth=True, p_bias=None):

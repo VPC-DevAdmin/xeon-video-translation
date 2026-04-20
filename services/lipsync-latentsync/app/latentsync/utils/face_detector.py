@@ -72,6 +72,22 @@ class FaceDetector:
             x2 = min(f_w, x2)
             y2 = min(f_h, y2)
 
+            # Debug dump: annotated source frame with the final
+            # derived bbox + all 106 landmarks drawn on top. No-op
+            # unless LATENTSYNC_DEBUG_DUMP=1. See utils/_debug.py for
+            # the rationale — this is the reviewer-suggested diagnostic
+            # for "does detection work but landmarks are garbage?"
+            try:
+                from . import _debug
+                _debug.dump_annotated_frame(
+                    "01_detection_and_landmarks",
+                    frame,
+                    bbox=(x1, y1, x2, y2),
+                    landmarks=lmk,
+                )
+            except Exception:
+                pass
+
             return (x1, y1, x2, y2), lmk
 
 

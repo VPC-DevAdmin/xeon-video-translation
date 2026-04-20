@@ -140,6 +140,11 @@ services:
       # them later. ~1.3× speedup at negligible quality cost on SD 1.5.
       # Set to 0 if it ever causes an artifact you can't explain.
       LATENTSYNC_ENABLE_DEEPCACHE: ${LATENTSYNC_ENABLE_DEEPCACHE:-1}
+      # Debug intermediate dumps (face detection / affine / restore).
+      # Produces PNGs under /jobs/latentsync_debug/ for inspecting
+      # where the pipeline is going wrong. Rate-limited per stage.
+      LATENTSYNC_DEBUG_DUMP: ${LATENTSYNC_DEBUG_DUMP:-0}
+      LATENTSYNC_DEBUG_FRAME_LIMIT: ${LATENTSYNC_DEBUG_FRAME_LIMIT:-3}
       # Intel OpenMP thread affinity — pins threads to cores so they
       # don't bounce, improves cache locality on math-heavy loops.
       KMP_AFFINITY: granularity=fine,compact,1,0
