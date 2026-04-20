@@ -345,6 +345,8 @@ wiring bugs surface fast.
 | `LATENTSYNC_ENABLE_DEEPCACHE` | `1` | Cache intermediate UNet features (~1.3× on top of IPEX) |
 | `LATENTSYNC_DRY_RUN` | `0` | Collapse diffusion to 1 step; smoke-test wiring only |
 | `LATENTSYNC_IGNORE_DENOISE_CACHE` | `0` | Bypass the resume cache — forces a full rerun |
+| `LATENTSYNC_DEBUG_DUMP` | `0` | Save intermediates (bbox/landmarks/affine/restore) to `/jobs/latentsync_debug/` |
+| `LATENTSYNC_DEBUG_FRAME_LIMIT` | `3` | Max dumps per stage when debug is on (prevents disk bloat) |
 
 ### Resume / post-denoise cache
 
@@ -367,6 +369,41 @@ inputs loads that checkpoint and skips straight to compositing.
   identical inputs (e.g. after changing CPU patches to the pipeline
   internals), set `LATENTSYNC_IGNORE_DENOISE_CACHE=1` or `rm -rf
   /models/cache/latentsync_denoise/` from the host.
+
+### Debugging bad output
+
+When the final video has visible artifacts (translucent mouth, blocky
+patches in the face region, misplaced rectangles, color smears), the
+artifact pattern can be misleading. Rather than guessing which stage
+is at fault, enable the debug dump and inspect intermediates:
+
+```bash
+# In .env
+LATENTSYNC_DEBUG_DUMP=1
+LATENTSYNC_DEBUG_FRAME_LIMIT=3   # 3 frames per stage; usually enough
+
+# Rebuild and run a short clip
+make rebuild
+make run-latentsync FIXTURE=artifacts/inputs/<short>.mov
+
+# Find the dumps on the host (inside the shared jobs volume)
+docker compose exec lipsync-latentsync ls -l /jobs/latentsync_debug/
+```
+
+What each dump shows and what to look for:
+
+| File | Should show | If it looks wrong → |
+|---|---|---|
+| `01_detection_and_landmarks_*.png` | Source frame with a green bbox and 106 red landmark dots on actual features (eyes, nose, mouth) | Landmarks are the bug. Face detection found the face but landmarks are noisy — common under side lighting or partial occlusion. |
+| `02_canonical_face_crop_*.png` | Upright, centered 256×256 face crop | Affine transform is wrong. Landmarks → canonical warp math has bad inputs. |
+| `03_restore_inv_face_*.png` | The diffusion-generated face, warped back to its position in the source frame | The diffusion output is bad. Check guidance_scale and dtype. |
+| `04_restore_inv_mask_*.png` | A **face-shaped** white region on black (not a rectangle) | Inverse affine is broken. `self.mask` is a rectangle; it should warp to face shape. If it stays rectangular, the warp failed. |
+| `05_restore_inv_soft_mask_*.png` | Same face-shaped region but blurred at the edges (soft feather) | Erosion + gaussian_blur2d didn't run. |
+| `06_restore_img_back_*.png` | Final composite — original frame with the diffusion face cleanly feathered into the mouth region | — |
+
+Reading the sequence forwards, the first file that looks wrong is
+where your bug lives. Dumps are rate-limited (default 3 frames per
+stage) so a 60 s run doesn't fill disk with ~1500 frames × 6 stages.
 
 ### Memory sizing + adaptive escalation
 
