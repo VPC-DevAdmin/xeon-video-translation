@@ -65,6 +65,13 @@ class JobState:
     # fallback) before transcribe/lipsync see the video. None means
     # "use settings.enable_video_stabilization" (env default, False).
     enable_stabilization: bool | None = None
+    # Per-job post-stabilization toggle. True runs vidstab on the
+    # lipsynced video before the final mux. Catches jitter from any
+    # source (source motion, pipeline artifacts, sub-pixel VAE drift).
+    # None means "use settings.enable_output_stabilization" (env
+    # default, False). Can stack with pre-stabilization or be used
+    # independently.
+    enable_output_stabilization: bool | None = None
     # Source clip duration in seconds, used for ETA calculations downstream.
     source_duration_seconds: float | None = None
     input_filename: str = ""
@@ -83,6 +90,7 @@ class JobState:
             "lipsync_quality": self.lipsync_quality,
             "tts_backend": self.tts_backend,
             "enable_stabilization": self.enable_stabilization,
+            "enable_output_stabilization": self.enable_output_stabilization,
             "source_duration_seconds": self.source_duration_seconds,
             "input_filename": self.input_filename,
             "created_at": self.created_at,
@@ -107,11 +115,12 @@ class JobState:
 # marks SKIPPED until those milestones land.
 STAGE_NAMES = [
     "audio",
-    "stabilize",   # optional; SKIPPED when not requested
+    "stabilize",       # optional pre-stabilize; SKIPPED when not requested
     "transcribe",
     "translate",
     "tts",
     "lipsync",
+    "poststabilize",   # optional post-stabilize; SKIPPED when not requested
     "mux",
 ]
 
@@ -218,6 +227,11 @@ async def run_pipeline(
             await _run_stage_translate(state, queue)
             await _run_stage_tts(state, queue)
             await _run_stage_lipsync(state, queue, input_path)
+            # Optional post-stabilization. When enabled, stabilizes the
+            # lipsynced output before it reaches mux. Catches any jitter
+            # the lipsync pipeline or its inputs may have introduced
+            # (source motion missed by pre-stab, VAE precision, etc.).
+            await _run_stage_poststabilize(state, queue)
             await _run_stage_mux(state, queue, input_path)
 
             state.status = "completed"
@@ -256,6 +270,9 @@ def estimate_eta_seconds(state: JobState, stage_name: str) -> float | None:
         # vidstab two-pass on CPU: detect + transform at ~1-2× realtime
         # depending on resolution. Cap at 3 so the ETA doesn't feel
         # absurd for short clips.
+        return max(3.0, src * 2.0) if src else None
+    if stage_name == "poststabilize":
+        # Same ffmpeg two-pass on the lipsynced output; same cost.
         return max(3.0, src * 2.0) if src else None
     if stage_name == "transcribe":
         # faster-whisper base int8 ~ 6× realtime on Xeon.
@@ -770,6 +787,86 @@ async def _tick_lipsync_progress(
         pass
 
 
+async def _run_stage_poststabilize(
+    state: JobState,
+    queue: asyncio.Queue[dict[str, Any]],
+) -> None:
+    """Optional post-stabilization of the lipsynced video.
+
+    Runs vidstab (or deshake fallback) on lipsynced.mp4 and writes
+    lipsynced_stable.mp4. The mux stage prefers `lipsynced_stable.mp4`
+    when it exists, falling back to `lipsynced.mp4` otherwise —
+    meaning this stage being SKIPPED or FAILED is safe and transparent.
+
+    Use case: the lipsync pipeline introduces its own per-frame jitter
+    (affine smoothing helps but can't eliminate it entirely; VAE
+    precision can shift pixel content; etc). Stabilizing the output
+    directly is the catch-all that doesn't care what caused the
+    jitter. Tradeoff is the usual vidstab artifact risk — floaty feel
+    on intentional motion, brief warping on fast motion. For
+    stationary-subject clips (most of this workflow's use case),
+    downside is invisible.
+    """
+    from ..config import settings
+    name = "poststabilize"
+    stage = _stage(state, name)
+
+    # Per-request flag wins; env default is the fallback.
+    enable = state.enable_output_stabilization
+    if enable is None:
+        enable = settings.enable_output_stabilization
+
+    # Skip if disabled, or if lipsync didn't produce a file (passthrough
+    # path, or lipsync=none — stabilizing the untouched source via this
+    # stage provides no value over the pre-stab stage).
+    lipsynced = storage.job_artifact_path(state.job_id, "lipsynced.mp4")
+    if not enable or not lipsynced.exists():
+        stage.status = StageStatus.SKIPPED
+        stage.duration_ms = 0
+        _persist(state)
+        await _emit(queue, "stage_skipped", {"stage": name})
+        return
+
+    stage = await _start_stage(state, queue, name)
+    out_path = storage.job_artifact_path(state.job_id, "lipsynced_stable.mp4")
+    started = time.perf_counter()
+
+    def _do() -> dict[str, Any]:
+        return stabilize.stabilize_video(
+            input_path=lipsynced,
+            output_path=out_path,
+            smoothing=settings.stabilize_smoothing,
+            shakiness=settings.stabilize_shakiness,
+        ).to_dict()
+
+    try:
+        result = await asyncio.to_thread(_do)
+        stage.duration_ms = int((time.perf_counter() - started) * 1000)
+        stage.output = result
+        stage.status = StageStatus.DONE
+        _persist(state)
+        await _emit(queue, "stage_completed", {
+            "stage": name, "output": result,
+            "duration_ms": stage.duration_ms,
+        })
+    except Exception as e:
+        # Soft-fail: same philosophy as the pre-stabilize stage. If
+        # post-stab fails we ship the un-post-stabilized lipsync
+        # output rather than killing the job.
+        stage.status = StageStatus.FAILED
+        stage.error = f"{type(e).__name__}: {e}"
+        stage.duration_ms = int((time.perf_counter() - started) * 1000)
+        _persist(state)
+        await _emit(queue, "stage_failed_soft", {
+            "stage": name, "error": stage.error,
+            "continuing_with": "un-stabilized lipsync output",
+        })
+        log.warning(
+            "poststabilize failed (%s); mux will use lipsynced.mp4",
+            stage.error,
+        )
+
+
 async def _run_stage_mux(
     state: JobState,
     queue: asyncio.Queue[dict[str, Any]],
@@ -778,9 +875,18 @@ async def _run_stage_mux(
     name = "mux"
     stage = await _start_stage(state, queue, name)
 
-    # Video input: if lipsync produced something, use that. Otherwise the original upload.
+    # Video input preference: post-stabilized if present, then plain
+    # lipsynced if present, else the original upload. This chain
+    # ensures a failed/skipped stabilize stage is transparent —
+    # mux just falls back to the next-best artifact.
+    lipsynced_stable = storage.job_artifact_path(state.job_id, "lipsynced_stable.mp4")
     lipsynced = storage.job_artifact_path(state.job_id, "lipsynced.mp4")
-    video_in = lipsynced if lipsynced.exists() else input_path
+    if lipsynced_stable.exists():
+        video_in = lipsynced_stable
+    elif lipsynced.exists():
+        video_in = lipsynced
+    else:
+        video_in = input_path
     audio_in = storage.job_artifact_path(state.job_id, "translated_audio.wav")
     out_path = storage.job_artifact_path(state.job_id, "final.mp4")
     started = time.perf_counter()

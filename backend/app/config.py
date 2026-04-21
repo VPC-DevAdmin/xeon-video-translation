@@ -101,6 +101,13 @@ class Settings(BaseSettings):
     # default and works well for typical phone-held footage.
     stabilize_shakiness: int = 5
 
+    # Post-stabilization — stabilize the lipsync output (lipsynced.mp4)
+    # before mux. Catches any jitter introduced by the lipsync pipeline
+    # itself (affine residual, VAE precision, etc.) that pre-stab can't
+    # address because pre-stab runs before the pipeline. Independent of
+    # enable_video_stabilization; the two can stack or be used alone.
+    enable_output_stabilization: bool = False
+
     # Feature flags
     enable_watermark: bool = True
     enable_c2pa: bool = False
