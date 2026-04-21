@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import storage
-from . import audio, lipsync, transcribe, translate, tts, watermark
+from . import audio, lipsync, stabilize, transcribe, translate, tts, watermark
 
 log = logging.getLogger(__name__)
 
@@ -61,6 +61,10 @@ class JobState:
     # Per-job TTS backend override ("xtts" | "f5tts"). None means "use
     # settings.tts_backend" (env default, currently xtts).
     tts_backend: str | None = None
+    # Per-job pre-stabilization toggle. True runs vidstab (or deshake
+    # fallback) before transcribe/lipsync see the video. None means
+    # "use settings.enable_video_stabilization" (env default, False).
+    enable_stabilization: bool | None = None
     # Source clip duration in seconds, used for ETA calculations downstream.
     source_duration_seconds: float | None = None
     input_filename: str = ""
@@ -78,6 +82,7 @@ class JobState:
             "lipsync_backend": self.lipsync_backend,
             "lipsync_quality": self.lipsync_quality,
             "tts_backend": self.tts_backend,
+            "enable_stabilization": self.enable_stabilization,
             "source_duration_seconds": self.source_duration_seconds,
             "input_filename": self.input_filename,
             "created_at": self.created_at,
@@ -100,7 +105,15 @@ class JobState:
 
 # Defines the full pipeline. Stages 4–6 are placeholders that the orchestrator
 # marks SKIPPED until those milestones land.
-STAGE_NAMES = ["audio", "transcribe", "translate", "tts", "lipsync", "mux"]
+STAGE_NAMES = [
+    "audio",
+    "stabilize",   # optional; SKIPPED when not requested
+    "transcribe",
+    "translate",
+    "tts",
+    "lipsync",
+    "mux",
+]
 
 
 # --------------------------------------------------------------------------- #
@@ -196,6 +209,11 @@ async def run_pipeline(
 
         try:
             await _run_stage_audio(state, queue, input_path)
+            # Optional pre-stabilization. When enabled, produces
+            # stabilized.mp4 and subsequent stages use it as the video
+            # input. When disabled, the stage is marked SKIPPED and
+            # input_path is untouched.
+            input_path = await _run_stage_stabilize(state, queue, input_path)
             await _run_stage_transcribe(state, queue)
             await _run_stage_translate(state, queue)
             await _run_stage_tts(state, queue)
@@ -234,6 +252,11 @@ def estimate_eta_seconds(state: JobState, stage_name: str) -> float | None:
         return None
     if stage_name == "audio":
         return 1.0
+    if stage_name == "stabilize":
+        # vidstab two-pass on CPU: detect + transform at ~1-2× realtime
+        # depending on resolution. Cap at 3 so the ETA doesn't feel
+        # absurd for short clips.
+        return max(3.0, src * 2.0) if src else None
     if stage_name == "transcribe":
         # faster-whisper base int8 ~ 6× realtime on Xeon.
         return max(2.0, src / 6.0) if src else None
@@ -374,6 +397,84 @@ async def _run_stage_audio(
         stage.duration_ms = int((time.perf_counter() - started) * 1000)
         _persist(state)
         raise
+
+
+async def _run_stage_stabilize(
+    state: JobState,
+    queue: asyncio.Queue[dict[str, Any]],
+    input_path: Path,
+) -> Path:
+    """Pre-stabilization pass. Returns the path subsequent stages should use.
+
+    When disabled (the default), marks the stage SKIPPED and returns
+    the input path unchanged. When enabled via per-request or env
+    default, produces stabilized.mp4 and returns that path so
+    downstream stages (transcribe / lipsync / mux) operate on the
+    stable video.
+
+    Stabilization failure (e.g. ffmpeg without vidstab *and* deshake
+    paths both error) is logged and the stage is marked FAILED, but
+    we still return the original input_path — the pipeline continues
+    with the un-stabilized source rather than aborting the whole job.
+    A shaky final video is usually better than no video.
+    """
+    from ..config import settings
+    name = "stabilize"
+    stage = _stage(state, name)
+
+    # Resolve the toggle: per-request value takes priority; env default
+    # is the fallback. Don't run if neither opts in.
+    enable = state.enable_stabilization
+    if enable is None:
+        enable = settings.enable_video_stabilization
+
+    if not enable:
+        stage.status = StageStatus.SKIPPED
+        stage.duration_ms = 0
+        _persist(state)
+        await _emit(queue, "stage_skipped", {"stage": name})
+        return input_path
+
+    stage = await _start_stage(state, queue, name)
+    out_path = storage.job_artifact_path(state.job_id, "stabilized.mp4")
+    started = time.perf_counter()
+
+    def _do() -> dict[str, Any]:
+        return stabilize.stabilize_video(
+            input_path=input_path,
+            output_path=out_path,
+            smoothing=settings.stabilize_smoothing,
+            shakiness=settings.stabilize_shakiness,
+        ).to_dict()
+
+    try:
+        result = await asyncio.to_thread(_do)
+        stage.duration_ms = int((time.perf_counter() - started) * 1000)
+        stage.output = result
+        stage.status = StageStatus.DONE
+        _persist(state)
+        await _emit(queue, "stage_completed", {
+            "stage": name, "output": result,
+            "duration_ms": stage.duration_ms,
+        })
+        return out_path
+    except Exception as e:
+        # Don't abort the whole pipeline on stabilization failure —
+        # shaky video is better than no video. Mark FAILED, log, and
+        # fall through to the original input.
+        stage.status = StageStatus.FAILED
+        stage.error = f"{type(e).__name__}: {e}"
+        stage.duration_ms = int((time.perf_counter() - started) * 1000)
+        _persist(state)
+        await _emit(queue, "stage_failed_soft", {
+            "stage": name, "error": stage.error,
+            "continuing_with": "original input",
+        })
+        log.warning(
+            "stabilize failed (%s); continuing with original input",
+            stage.error,
+        )
+        return input_path
 
 
 async def _run_stage_transcribe(
