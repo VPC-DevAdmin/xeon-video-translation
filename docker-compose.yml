@@ -23,6 +23,14 @@ services:
       # Points at the LatentSync lipsync microservice. Scaffold only in
       # PR-LS-1a (the service returns 501); real inference in PR-LS-1c.
       LATENTSYNC_SERVICE_URL: http://lipsync-latentsync:8000
+      # Optional pre-stabilization stage (ffmpeg vidstab). Off by
+      # default — most source videos don't need it. Turn on to remove
+      # handheld camera shake from clips before they reach downstream
+      # stages; primarily helps lipsync quality by stabilizing the
+      # face track. See backend/app/pipeline/stabilize.py.
+      ENABLE_VIDEO_STABILIZATION: ${ENABLE_VIDEO_STABILIZATION:-false}
+      STABILIZE_SMOOTHING: ${STABILIZE_SMOOTHING:-10}
+      STABILIZE_SHAKINESS: ${STABILIZE_SHAKINESS:-5}
     volumes:
       - models:/models
       - jobs:/jobs

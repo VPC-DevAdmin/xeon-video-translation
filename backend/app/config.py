@@ -78,6 +78,29 @@ class Settings(BaseSettings):
     # at here once we pre-download them in scripts/download_models.sh.
     f5tts_model: str = "F5-TTS_v1"
 
+    # Pre-stabilization (Stage 1.5). Optional pass that runs ffmpeg's
+    # vidstab (or deshake fallback) on the source video before the rest
+    # of the pipeline sees it. Primary benefit: the lipsync stage gets
+    # a stable source, so landmark detection → affine warp → face
+    # compositing all carry less per-frame jitter. Best for clips with
+    # handheld shake but a mostly-stationary subject; tradeoff is
+    # some smoothing of intentional motion (head turns) and brief
+    # warping artifacts on very fast movement. Default off — most
+    # source videos are fine without it, and it adds ~2× source
+    # duration to wall-clock time.
+    enable_video_stabilization: bool = False
+    # vidstab smoothing window (value*2+1 frames of centered moving
+    # average on detected motion vectors). 10 is a balanced default —
+    # eliminates handheld jitter without noticeable lag on head turns.
+    # 20+ gives a "locked-off tripod" feel at the cost of visible lag
+    # on real subject motion. 5 or lower is barely smoother than raw.
+    stabilize_smoothing: int = 10
+    # vidstab detection sensitivity (1-10). Higher = more aggressive
+    # motion search, catches more shake but also more false positives
+    # that can register as shake where none exists. 5 is the upstream
+    # default and works well for typical phone-held footage.
+    stabilize_shakiness: int = 5
+
     # Feature flags
     enable_watermark: bool = True
     enable_c2pa: bool = False

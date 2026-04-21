@@ -41,6 +41,7 @@ _extra_fields=()
 [ -n "${MUSETALK_FACE_RESTORE_FIDELITY:-}" ] && _extra_fields+=(-F "musetalk_face_restore_fidelity=$MUSETALK_FACE_RESTORE_FIDELITY")
 [ -n "${MUSETALK_FACE_RESTORE_BLEND:-}" ]    && _extra_fields+=(-F "musetalk_face_restore_blend=$MUSETALK_FACE_RESTORE_BLEND")
 [ -n "${TTS_BACKEND:-}" ]                    && _extra_fields+=(-F "tts_backend=$TTS_BACKEND")
+[ -n "${ENABLE_STABILIZATION:-}" ]           && _extra_fields+=(-F "enable_stabilization=$ENABLE_STABILIZATION")
 if [ ${#_extra_fields[@]} -gt 0 ]; then
   echo "    quality overrides: ${_extra_fields[*]}"
 fi

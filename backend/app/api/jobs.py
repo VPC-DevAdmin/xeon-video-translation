@@ -36,6 +36,10 @@ async def create_job(
     lipsync_backend: str | None = Form(None),
     # Per-request TTS backend (xtts | f5tts). Omit → env default (xtts).
     tts_backend: str | None = Form(None),
+    # Per-request pre-stabilization toggle. Omit → env default
+    # (ENABLE_VIDEO_STABILIZATION, currently False). Accepts truthy
+    # strings ("1", "true", "yes") or falsy strings.
+    enable_stabilization: str | None = Form(None),
     # Per-request musetalk knobs (forwarded to the lipsync service).
     # Each is optional; missing fields fall through to service env defaults.
     musetalk_blend_mode: str | None = Form(None),
@@ -93,6 +97,21 @@ async def create_job(
 
     tts_backend_norm = _norm_enum(tts_backend, _ALLOWED_TTS_BACKENDS, "tts_backend")
 
+    # Normalize the pre-stabilization toggle. None → None (falls through
+    # to settings.enable_video_stabilization in the orchestrator).
+    # Explicit "true"/"false"/"1"/"0" maps as expected.
+    def _norm_bool(val: str | None) -> bool | None:
+        if val is None:
+            return None
+        v = val.lower().strip()
+        if v in ("1", "true", "yes", "on"):
+            return True
+        if v in ("0", "false", "no", "off", ""):
+            return False
+        raise HTTPException(400, f"invalid boolean for enable_stabilization: {val!r}")
+
+    enable_stabilization_norm = _norm_bool(enable_stabilization)
+
     job_id = storage.new_job_id()
     job_directory = storage.job_dir(job_id)
     input_path = job_directory / f"input{ext}"
@@ -123,6 +142,7 @@ async def create_job(
         lipsync_backend=lipsync_backend_norm,
         lipsync_quality=lipsync_quality,
         tts_backend=tts_backend_norm,
+        enable_stabilization=enable_stabilization_norm,
         input_filename=filename,
     )
     register_job(state)
