@@ -40,6 +40,50 @@ import soundfile as sf
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
 
+def _smooth_affine_sequence(
+    affine_matrices: list,
+    boxes: list,
+    window: int,
+) -> tuple[list, list]:
+    """CPU patch: temporal moving-average smoothing for affine matrices + boxes.
+
+    The face aligner's per-frame matrices jitter with landmark noise;
+    applied directly in restore_img, that jitter becomes a visible
+    "face breathing" in the output where even unmasked pixels shift
+    per frame.
+
+    This function takes the full per-frame sequence of affine matrices
+    (each a (1, 2, 3) torch.Tensor) and bounding boxes (each a 4-tuple
+    of ints), and returns a smoothed copy of each using a centered
+    moving average of `window` frames. Near the sequence edges the
+    window is clipped to what's available.
+
+    The UNet inputs are not changed — only the warp-back alignment is
+    stabilized. For the small jitter amplitudes we see (1-3 pixels per
+    frame), the slight mismatch between "what the UNet saw" and "where
+    we warp it back to" is imperceptible; the jitter elimination is not.
+    """
+    if window <= 1 or len(affine_matrices) < 2:
+        return affine_matrices, boxes
+
+    # Stack for vectorised smoothing. Each matrix is (1, 2, 3); squeeze
+    # the leading singleton, stack to (N, 2, 3), operate, re-expand.
+    mat_stack = torch.stack([m.squeeze(0) for m in affine_matrices], dim=0)
+    box_stack = np.array(boxes, dtype=np.float32)
+
+    n = mat_stack.shape[0]
+    half = window // 2
+    smoothed_mats = []
+    smoothed_boxes = []
+    for i in range(n):
+        lo = max(0, i - half)
+        hi = min(n, i + half + 1)
+        smoothed_mats.append(mat_stack[lo:hi].mean(dim=0, keepdim=True))
+        box_mean = box_stack[lo:hi].mean(axis=0)
+        smoothed_boxes.append(tuple(int(v) for v in box_mean))
+    return smoothed_mats, smoothed_boxes
+
+
 class LipsyncPipeline(DiffusionPipeline):
     _optional_components = []
 
@@ -514,6 +558,26 @@ class LipsyncPipeline(DiffusionPipeline):
                     )
                 except Exception as e:
                     print(f"Checkpoint save failed ({e}); continuing anyway")
+
+        # CPU patch: temporal smoothing on affine matrices + bboxes. Landmark
+        # detection jitters a few pixels frame-to-frame (normal for
+        # InsightFace on real video), and that jitter propagates through the
+        # affine warp-back into a visible "face breathing" effect where even
+        # unmasked regions shift 1-2 pixels per frame. A centered moving
+        # average over `LATENTSYNC_AFFINE_SMOOTH_WINDOW` frames (default 5)
+        # dampens this without touching the UNet inputs or content. Same
+        # pattern MuseTalk uses for bbox smoothing (see docs/lipsync.md).
+        #
+        # Set LATENTSYNC_AFFINE_SMOOTH_WINDOW=1 (or 0) to disable.
+        _smooth_window = int(os.environ.get("LATENTSYNC_AFFINE_SMOOTH_WINDOW", "5"))
+        if _smooth_window > 1 and len(affine_matrices) > 1:
+            affine_matrices, boxes = _smooth_affine_sequence(
+                affine_matrices, boxes, window=_smooth_window,
+            )
+            print(
+                f"Smoothed {len(affine_matrices)} affine matrices + boxes "
+                f"(window={_smooth_window}) to reduce face-jitter."
+            )
 
         synced_video_frames = self.restore_video(synced_video_frames_tensor, video_frames, boxes, affine_matrices)
 
