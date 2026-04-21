@@ -40,47 +40,172 @@ import soundfile as sf
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
 
+def _decompose_similarity(matrix: torch.Tensor) -> tuple:
+    """Decompose a 2×3 similarity-transform matrix into (tx, ty, theta, scale).
+
+    LatentSync's face aligner produces similarity transforms
+    (rotation + translation + uniform scale, no shear), so 4 scalars
+    fully characterize each matrix. Smoothing these four components
+    independently is the right way to temporally stabilize a sequence
+    of affine matrices — averaging the raw 2×3 entries mixes rotation
+    and scale noise together, producing compound artifacts visible as
+    "zoom + rotate + drift" in the output.
+
+    Shape convention: accepts (2, 3) or (1, 2, 3); always returns
+    scalars.
+    """
+    m = matrix.squeeze(0) if matrix.dim() == 3 else matrix
+    a, _b_ignored, tx = m[0, 0], m[0, 1], m[0, 2]
+    c, _d_ignored, ty = m[1, 0], m[1, 1], m[1, 2]
+    # Under a pure similarity transform: d = a and b = -c. We pull
+    # scale from the norm of the first column; that's robust to any
+    # small numerical drift from the un-used symmetry entries.
+    scale = torch.sqrt(a * a + c * c)
+    theta = torch.atan2(c, a)
+    return tx, ty, theta, scale
+
+
+def _compose_similarity(
+    tx: torch.Tensor, ty: torch.Tensor,
+    theta: torch.Tensor, scale: torch.Tensor,
+) -> torch.Tensor:
+    """Compose (tx, ty, theta, scale) into a (1, 2, 3) similarity matrix."""
+    ct = torch.cos(theta) * scale
+    st = torch.sin(theta) * scale
+    row0 = torch.stack([ct, -st, tx])
+    row1 = torch.stack([st, ct, ty])
+    return torch.stack([row0, row1]).unsqueeze(0)  # (1, 2, 3)
+
+
 def _smooth_affine_sequence(
     affine_matrices: list,
     boxes: list,
     window: int,
 ) -> tuple[list, list]:
-    """CPU patch: temporal moving-average smoothing for affine matrices + boxes.
+    """CPU patch: temporal smoothing for affine matrices + bboxes in the
+    similarity-parameter space (tx, ty, theta, scale).
 
     The face aligner's per-frame matrices jitter with landmark noise;
     applied directly in restore_img, that jitter becomes a visible
-    "face breathing" in the output where even unmasked pixels shift
-    per frame.
+    face-bouncing in the output: translation drift, small rotations,
+    and zoom in/out all at once. Averaging the raw 2×3 matrix entries
+    mixes these components — a small rotation change bleeds into scale
+    and translation estimates. The fix is to decompose each matrix
+    into its 4 similarity parameters (tx, ty, rotation, scale), smooth
+    each component independently, then recompose.
 
-    This function takes the full per-frame sequence of affine matrices
-    (each a (1, 2, 3) torch.Tensor) and bounding boxes (each a 4-tuple
-    of ints), and returns a smoothed copy of each using a centered
-    moving average of `window` frames. Near the sequence edges the
-    window is clipped to what's available.
+    Per-component smoothing details:
 
-    The UNet inputs are not changed — only the warp-back alignment is
-    stabilized. For the small jitter amplitudes we see (1-3 pixels per
-    frame), the slight mismatch between "what the UNet saw" and "where
-    we warp it back to" is imperceptible; the jitter elimination is not.
+    - **tx / ty**: plain Savitzky-Golay over the window. SG preserves
+      local trends better than a flat moving average — when the subject
+      actually turns their head, the smoothed output tracks the real
+      motion rather than lagging behind it. For static content SG is
+      indistinguishable from a moving average.
+
+    - **rotation**: smoothed in unit-vector space (cos/sin separately,
+      recombined via atan2) to respect the ±π wraparound. In practice
+      face-alignment rotations are always small, so the wraparound
+      never bites; doing it right is free.
+
+    - **scale**: smoothed in log-space. Scale is multiplicative: 1.02
+      and 1/1.02 ≈ 0.98 are equidistant from 1.0 geometrically, but
+      linear-averaging them gives 1.0 only by coincidence at small
+      amplitudes. Log-averaging is correct-by-construction.
+
+    - **bboxes**: smoothed component-wise via SG on each of the four
+      coordinates.
+
+    Boundary handling uses scipy's `mode='interp'` — a polynomial is
+    fit to the first/last window and evaluated at the boundary points.
+    Cleaner than shrinking the window at edges (which leaves visible
+    residual jitter on the first and last few frames) and simpler than
+    a hand-rolled exponential taper.
+
+    The UNet inputs are unchanged — only the warp-back alignment is
+    stabilized. For small jitter amplitudes, the mismatch between
+    "what the UNet saw" (per-frame affine) and "where we warp it back"
+    (smoothed affine) is imperceptible; the jitter elimination is not.
     """
     if window <= 1 or len(affine_matrices) < 2:
         return affine_matrices, boxes
 
-    # Stack for vectorised smoothing. Each matrix is (1, 2, 3); squeeze
-    # the leading singleton, stack to (N, 2, 3), operate, re-expand.
-    mat_stack = torch.stack([m.squeeze(0) for m in affine_matrices], dim=0)
-    box_stack = np.array(boxes, dtype=np.float32)
+    # scipy is a pipeline dependency (pyproject.toml pins scipy>=1.11).
+    # Import here rather than at module top so any failure lands as a
+    # clear per-call error rather than blocking pipeline import.
+    from scipy.signal import savgol_filter
 
-    n = mat_stack.shape[0]
-    half = window // 2
+    n = len(affine_matrices)
+
+    # Decompose each matrix into its similarity parameters. Use numpy
+    # throughout since savgol_filter is a numpy function and the
+    # per-frame tensors are small anyway.
+    txs = np.empty(n, dtype=np.float64)
+    tys = np.empty(n, dtype=np.float64)
+    thetas = np.empty(n, dtype=np.float64)
+    scales = np.empty(n, dtype=np.float64)
+    for i, m in enumerate(affine_matrices):
+        tx, ty, theta, scale = _decompose_similarity(m)
+        txs[i] = float(tx)
+        tys[i] = float(ty)
+        thetas[i] = float(theta)
+        scales[i] = float(scale)
+
+    # Rotation via unit-vector decomposition (handles ±π wraparound).
+    cos_t = np.cos(thetas)
+    sin_t = np.sin(thetas)
+
+    # Scale in log space — multiplicative quantity, symmetric treatment
+    # of x and 1/x around 1.0.
+    log_scales = np.log(np.clip(scales, 1e-6, None))
+
+    box_stack = np.array(boxes, dtype=np.float64)  # (n, 4)
+
+    # Effective window: must be odd, must be <= signal length, and
+    # > polyorder. For short clips we shrink toward 3 (the minimum SG
+    # window for polyorder=2) and fall through to unsmoothed output if
+    # even that doesn't fit.
+    polyorder = 2
+    eff_window = min(int(window), n)
+    if eff_window % 2 == 0:
+        eff_window -= 1
+    if eff_window <= polyorder:
+        # Too few frames to do a meaningful SG — return inputs unchanged.
+        return affine_matrices, boxes
+
+    def _sg(signal: np.ndarray) -> np.ndarray:
+        # mode='interp' fits a polynomial to first/last window and
+        # evaluates at boundary points — handles edges smoothly.
+        return savgol_filter(signal, eff_window, polyorder, mode="interp")
+
+    txs_s = _sg(txs)
+    tys_s = _sg(tys)
+    cos_s = _sg(cos_t)
+    sin_s = _sg(sin_t)
+    log_scales_s = _sg(log_scales)
+
+    # Recombine into smoothed matrices, matching the original dtype and
+    # device of each input matrix so downstream consumers see no change.
     smoothed_mats = []
-    smoothed_boxes = []
     for i in range(n):
-        lo = max(0, i - half)
-        hi = min(n, i + half + 1)
-        smoothed_mats.append(mat_stack[lo:hi].mean(dim=0, keepdim=True))
-        box_mean = box_stack[lo:hi].mean(axis=0)
-        smoothed_boxes.append(tuple(int(v) for v in box_mean))
+        theta_s = float(np.arctan2(sin_s[i], cos_s[i]))
+        scale_s = float(np.exp(log_scales_s[i]))
+
+        m_dtype = affine_matrices[i].dtype
+        m_device = affine_matrices[i].device
+        smoothed = _compose_similarity(
+            torch.tensor(txs_s[i], dtype=m_dtype),
+            torch.tensor(tys_s[i], dtype=m_dtype),
+            torch.tensor(theta_s, dtype=m_dtype),
+            torch.tensor(scale_s, dtype=m_dtype),
+        ).to(device=m_device)
+        smoothed_mats.append(smoothed)
+
+    # Smooth each of the four bbox coordinates independently.
+    smoothed_box_cols = np.stack(
+        [_sg(box_stack[:, c]) for c in range(4)], axis=1,
+    )  # (n, 4)
+    smoothed_boxes = [tuple(int(v) for v in row) for row in smoothed_box_cols]
+
     return smoothed_mats, smoothed_boxes
 
 
@@ -613,17 +738,25 @@ class LipsyncPipeline(DiffusionPipeline):
                 except Exception as e:
                     print(f"Checkpoint save failed ({e}); continuing anyway")
 
-        # CPU patch: temporal smoothing on affine matrices + bboxes. Landmark
-        # detection jitters a few pixels frame-to-frame (normal for
-        # InsightFace on real video), and that jitter propagates through the
-        # affine warp-back into a visible "face breathing" effect where even
-        # unmasked regions shift 1-2 pixels per frame. A centered moving
-        # average over `LATENTSYNC_AFFINE_SMOOTH_WINDOW` frames (default 5)
-        # dampens this without touching the UNet inputs or content. Same
-        # pattern MuseTalk uses for bbox smoothing (see docs/lipsync.md).
+        # CPU patch: temporal smoothing on affine matrices + bboxes.
+        # Landmark detection jitters a few pixels frame-to-frame (normal
+        # for InsightFace on real video), and that jitter propagates
+        # through the affine warp-back into visible face-bouncing:
+        # translation drift, small rotations, and zoom in/out. This step
+        # decomposes each affine into its 4 similarity parameters
+        # (tx, ty, rotation, scale), smooths each independently with a
+        # centered moving average over LATENTSYNC_AFFINE_SMOOTH_WINDOW
+        # frames (default 9), then recomposes. Bboxes are smoothed
+        # component-wise over the same window.
+        #
+        # Default raised from 5 → 9 because real-world jitter has
+        # components slower than the 5-frame (0.2 s) budget — zoom and
+        # rotation noise compounds visibly over longer windows. 9 frames
+        # (0.36 s at 25 fps) catches those without lagging intentional
+        # head motion.
         #
         # Set LATENTSYNC_AFFINE_SMOOTH_WINDOW=1 (or 0) to disable.
-        _smooth_window = int(os.environ.get("LATENTSYNC_AFFINE_SMOOTH_WINDOW", "5"))
+        _smooth_window = int(os.environ.get("LATENTSYNC_AFFINE_SMOOTH_WINDOW", "9"))
         if _smooth_window > 1 and len(affine_matrices) > 1:
             affine_matrices, boxes = _smooth_affine_sequence(
                 affine_matrices, boxes, window=_smooth_window,

@@ -347,7 +347,7 @@ wiring bugs surface fast.
 | `LATENTSYNC_IGNORE_DENOISE_CACHE` | `0` | Bypass the resume cache — forces a full rerun |
 | `LATENTSYNC_DEBUG_DUMP` | `0` | Save intermediates (bbox/landmarks/affine/restore) to `/jobs/latentsync_debug/` |
 | `LATENTSYNC_DEBUG_FRAME_LIMIT` | `3` | Max dumps per stage when debug is on (prevents disk bloat) |
-| `LATENTSYNC_AFFINE_SMOOTH_WINDOW` | `5` | Centered moving-average window for per-frame affine matrices + bboxes; set 1 to disable |
+| `LATENTSYNC_AFFINE_SMOOTH_WINDOW` | `9` | Centered moving-average window for per-frame affine matrices + bboxes; decomposed into (tx, ty, rotation, scale) and smoothed per-component, then recomposed. Set 1 to disable |
 
 ### Resume / post-denoise cache
 

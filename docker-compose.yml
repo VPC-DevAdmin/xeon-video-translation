@@ -154,10 +154,13 @@ services:
       LATENTSYNC_DEBUG_DUMP: ${LATENTSYNC_DEBUG_DUMP:-0}
       LATENTSYNC_DEBUG_FRAME_LIMIT: ${LATENTSYNC_DEBUG_FRAME_LIMIT:-3}
       # Temporal smoothing window for per-frame affine matrices + bboxes.
-      # Reduces "face breathing" jitter from landmark noise. Default 5
-      # (centered moving average). Set to 1 to disable; larger values
-      # smooth more aggressively but can lag real head motion.
-      LATENTSYNC_AFFINE_SMOOTH_WINDOW: ${LATENTSYNC_AFFINE_SMOOTH_WINDOW:-5}
+      # Decomposes each affine into (tx, ty, rotation, scale) and
+      # smooths each independently with a centered moving average over
+      # this many frames. Default 9 (0.36 s at 25 fps) handles the
+      # translation/rotation/zoom jitter that 5 was too short for.
+      # Set to 1 to disable; larger values smooth more aggressively but
+      # can lag real head motion on fast turns.
+      LATENTSYNC_AFFINE_SMOOTH_WINDOW: ${LATENTSYNC_AFFINE_SMOOTH_WINDOW:-9}
       # Intel OpenMP thread affinity — pins threads to cores so they
       # don't bounce, improves cache locality on math-heavy loops.
       KMP_AFFINITY: granularity=fine,compact,1,0
