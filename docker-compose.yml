@@ -145,6 +145,11 @@ services:
       # where the pipeline is going wrong. Rate-limited per stage.
       LATENTSYNC_DEBUG_DUMP: ${LATENTSYNC_DEBUG_DUMP:-0}
       LATENTSYNC_DEBUG_FRAME_LIMIT: ${LATENTSYNC_DEBUG_FRAME_LIMIT:-3}
+      # Temporal smoothing window for per-frame affine matrices + bboxes.
+      # Reduces "face breathing" jitter from landmark noise. Default 5
+      # (centered moving average). Set to 1 to disable; larger values
+      # smooth more aggressively but can lag real head motion.
+      LATENTSYNC_AFFINE_SMOOTH_WINDOW: ${LATENTSYNC_AFFINE_SMOOTH_WINDOW:-5}
       # Intel OpenMP thread affinity — pins threads to cores so they
       # don't bounce, improves cache locality on math-heavy loops.
       KMP_AFFINITY: granularity=fine,compact,1,0
