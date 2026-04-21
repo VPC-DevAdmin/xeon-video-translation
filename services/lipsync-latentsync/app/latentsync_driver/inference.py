@@ -305,6 +305,19 @@ def run(
         set_seed(int(seed))
     log.info("torch initial seed: %d", torch.initial_seed())
 
+    # Debug knob: force deterministic algorithms. Meaningful when
+    # hunting "two identical runs produce different jitter" bugs.
+    # `warn_only=True` so ops without a deterministic implementation
+    # (e.g. some kornia kernels) log a warning rather than raising —
+    # lets us still complete a run but flag which ops are sources
+    # of non-determinism.
+    if os.environ.get("LATENTSYNC_DETERMINISTIC", "").lower() in ("1", "true", "yes"):
+        try:
+            torch.use_deterministic_algorithms(True, warn_only=True)
+            log.info("LATENTSYNC_DETERMINISTIC=1 — torch deterministic mode on")
+        except Exception as e:
+            log.warning("couldn't enable deterministic mode (%s)", e)
+
     config = OmegaConf.load(str(_UNET_CONFIG_PATH))
     cross_attn_dim = int(config.model.cross_attention_dim)
     if cross_attn_dim != 384:
