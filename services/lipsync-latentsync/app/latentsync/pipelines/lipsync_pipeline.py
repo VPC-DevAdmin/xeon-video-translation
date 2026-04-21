@@ -307,10 +307,18 @@ class LipsyncPipeline(DiffusionPipeline):
         faces = torch.stack(faces)
         return faces, boxes, affine_matrices
 
-    def restore_video(self, faces: torch.Tensor, video_frames: np.ndarray, boxes: list, affine_matrices: list):
+    def restore_video(
+        self,
+        faces: torch.Tensor,
+        video_frames: np.ndarray,
+        boxes: list,
+        affine_matrices: list,
+        progress_callback=None,  # CPU patch: per-frame progress reporting
+    ):
         video_frames = video_frames[: len(faces)]
         out_frames = []
-        print(f"Restoring {len(faces)} faces...")
+        total = len(faces)
+        print(f"Restoring {total} faces...")
         for index, face in enumerate(tqdm.tqdm(faces)):
             x1, y1, x2, y2 = boxes[index]
             height = int(y2 - y1)
@@ -320,6 +328,14 @@ class LipsyncPipeline(DiffusionPipeline):
             )
             out_frame = self.image_processor.restorer.restore_img(video_frames[index], face, affine_matrices[index])
             out_frames.append(out_frame)
+            # Per-frame progress. Caller gets a 0.0–1.0 fraction over
+            # the restore phase; __call__ maps it into the pipeline's
+            # 0.90–0.98 budget.
+            if progress_callback is not None:
+                try:
+                    progress_callback((index + 1) / total)
+                except Exception:
+                    pass
         return np.stack(out_frames, axis=0)
 
     def loop_video(self, whisper_chunks: list, video_frames: np.ndarray):
@@ -409,6 +425,29 @@ class LipsyncPipeline(DiffusionPipeline):
         # 4. Prepare extra step kwargs.
         extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
 
+        # CPU patch: real-progress reporting. When the caller supplies a
+        # `progress_callback`, we call it at phase boundaries and within
+        # the denoise/restore loops. The driver wires this through to a
+        # JSON file on the shared /jobs volume that the backend's
+        # orchestrator polls. Replaces the backend's time-based-elapsed-
+        # divided-by-estimated-ETA heuristic which consistently hit 98%
+        # two minutes into a run and plateaued there for hours.
+        #
+        # Budget: face_detect 0–0.25, denoise 0.25–0.90, restore 0.90–0.98,
+        # mux 0.98–1.00. Tuned to observed wall-clock proportions at
+        # 1080p / bf16 / DeepCache (denoise dominates by a wide margin).
+        progress_callback = kwargs.get("progress_callback")
+        def _emit_progress(phase: str, pct: float) -> None:
+            if progress_callback is None:
+                return
+            try:
+                progress_callback(phase, float(max(0.0, min(1.0, pct))))
+            except Exception:
+                # Progress reporting must never break the pipeline.
+                pass
+
+        _emit_progress("face_detect", 0.01)
+
         # Resume support (CPU patch): try to load a post-denoise checkpoint.
         # Saves the expensive half of the pipeline (face detection +
         # denoising loop, typically 20+ minutes) on retries. Keyed by a
@@ -436,6 +475,8 @@ class LipsyncPipeline(DiffusionPipeline):
                     f"Resume: skipping denoise "
                     f"({synced_video_frames_tensor.shape[0]} frames from cache)",
                 )
+                # Cache hit — skip face_detect + denoise budget entirely.
+                _emit_progress("denoise", 0.90)
             except Exception as e:
                 print(f"Checkpoint load failed ({e}); running full pipeline")
                 synced_video_frames_tensor = None
@@ -448,6 +489,8 @@ class LipsyncPipeline(DiffusionPipeline):
             video_frames = read_video(video_path, use_decord=False)
 
             video_frames, faces, boxes, affine_matrices = self.loop_video(whisper_chunks, video_frames)
+            # Face detection + affine transform is done at this point.
+            _emit_progress("face_detect", 0.25)
 
             synced_video_frames = []
 
@@ -530,6 +573,17 @@ class LipsyncPipeline(DiffusionPipeline):
                             if callback is not None and j % callback_steps == 0:
                                 callback(j, t, latents)
 
+                        # Real-progress emit (every step). Progress within
+                        # the denoise budget (0.25 -> 0.90) linearly tracks
+                        # total-steps-done / total-steps. "Total" here =
+                        # num_inferences * num_inference_steps.
+                        _total_steps = num_inferences * num_inference_steps
+                        _done_steps = i * num_inference_steps + (j + 1)
+                        _emit_progress(
+                            "denoise",
+                            0.25 + 0.65 * (_done_steps / _total_steps),
+                        )
+
                 # Recover the pixel values
                 decoded_latents = self.decode_latents(latents)
                 decoded_latents = self.paste_surrounding_pixels_back(
@@ -579,7 +633,15 @@ class LipsyncPipeline(DiffusionPipeline):
                 f"(window={_smooth_window}) to reduce face-jitter."
             )
 
-        synced_video_frames = self.restore_video(synced_video_frames_tensor, video_frames, boxes, affine_matrices)
+        _emit_progress("restore", 0.90)
+        synced_video_frames = self.restore_video(
+            synced_video_frames_tensor, video_frames, boxes, affine_matrices,
+            progress_callback=(
+                lambda frame_pct: _emit_progress(
+                    "restore", 0.90 + 0.08 * frame_pct,
+                )
+            ),
+        )
 
         audio_samples_remain_length = int(synced_video_frames.shape[0] / video_fps * audio_sample_rate)
         audio_samples = audio_samples[:audio_samples_remain_length].cpu().numpy()
@@ -591,9 +653,11 @@ class LipsyncPipeline(DiffusionPipeline):
             shutil.rmtree(temp_dir)
         os.makedirs(temp_dir, exist_ok=True)
 
+        _emit_progress("mux", 0.98)
         write_video(os.path.join(temp_dir, "video.mp4"), synced_video_frames, fps=video_fps)
 
         sf.write(os.path.join(temp_dir, "audio.wav"), audio_samples, audio_sample_rate)
 
         command = f"ffmpeg -y -loglevel error -nostdin -i {os.path.join(temp_dir, 'video.mp4')} -i {os.path.join(temp_dir, 'audio.wav')} -c:v libx264 -crf 18 -c:a aac -q:v 0 -q:a 0 {video_out_path}"
         subprocess.run(command, shell=True)
+        _emit_progress("done", 1.0)

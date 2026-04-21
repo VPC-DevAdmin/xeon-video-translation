@@ -648,8 +648,25 @@ async def _run_stage_lipsync(
     # the entire 30+ minute LatentSync run. The ticker estimates from
     # elapsed vs eta and calls the monotonic progress_cb; real progress
     # from wav2lip still dominates when it flows (higher values win).
+    # Path the lipsync service writes real per-phase progress to (when
+    # it supports it — currently latentsync does, musetalk and wav2lip
+    # don't). Ticker prefers real progress over time-based estimate.
+    progress_file = storage.job_artifact_path(state.job_id, "latentsync_progress.json")
+    # Clear any stale progress file from a previous run.
+    try:
+        progress_file.unlink()
+    except FileNotFoundError:
+        pass
+    except Exception:
+        pass
+
     ticker = asyncio.create_task(
-        _tick_lipsync_progress(progress_cb, stage.eta_seconds, started)
+        _tick_lipsync_progress(
+            progress_cb,
+            stage.eta_seconds,
+            started,
+            progress_file=progress_file,
+        )
     )
 
     try:
@@ -689,39 +706,67 @@ async def _tick_lipsync_progress(
     eta_seconds: float | None,
     started_at: float,
     *,
-    interval_s: float = 15.0,
-    cap: float = 0.98,
+    progress_file: Path | None = None,
+    interval_s: float = 5.0,
+    cap: float = 0.99,
 ) -> None:
-    """Emit time-based progress estimates every `interval_s` seconds.
+    """Emit progress updates at regular intervals during lipsync.
 
-    This is a fallback for lipsync backends that don't stream real
-    per-step progress (musetalk, latentsync). Without it, the bar sits
-    at 0.05 for the full run and users think the job is stuck.
+    Priority order for the value reported:
 
-    The estimate is naive: ``min(cap, elapsed / eta_seconds)``. It caps
-    at `cap` (default 0.98) so the final 2% is reserved for the actual
-    completion signal — users see a clear "done" transition at the end
-    rather than the bar silently sitting at 100% for a beat.
+      1. Real phase-level progress written by the service to
+         `progress_file` (currently only latentsync does this). When
+         present, the ticker forwards that value directly — the bar
+         reflects actual work done, not "elapsed vs. guessed ETA".
+
+      2. Time-based estimate: ``min(cap, elapsed / eta_seconds)``.
+         Used when the service doesn't write progress (wav2lip,
+         musetalk today) or when its first write hasn't happened yet.
+
+    The ticker shortened its polling interval from 15 s to 5 s because
+    real progress is much cheaper to read than to compute — just a
+    JSON file read. And the `cap` raised from 0.98 to 0.99 to let real
+    progress climb closer to the "done" transition before the ticker
+    starts holding it back.
 
     Calls go through the same monotonic ``progress_cb`` that real
-    backend progress uses, so if a backend *does* stream (wav2lip) the
-    higher real value wins and this ticker becomes a no-op for that
-    run. No flag or backend-specific branching needed.
-
-    No-op when we don't have an ETA. Better to show nothing than to
-    report fake progress against an unknown denominator.
+    backend progress uses, so wav2lip's in-process per-batch callbacks
+    still dominate when they flow (higher values win; the callback
+    enforces monotonicity).
     """
-    if not eta_seconds or eta_seconds <= 0:
+    import json as _json
+
+    # No ETA and no progress file means we can't report anything
+    # meaningful. Stay silent.
+    if (not eta_seconds or eta_seconds <= 0) and progress_file is None:
         return
+
     try:
         while True:
             await asyncio.sleep(interval_s)
-            elapsed = time.perf_counter() - started_at
-            p = min(cap, elapsed / eta_seconds)
-            progress_cb(p)
+
+            # 1) Prefer real progress from the service.
+            real_pct: float | None = None
+            if progress_file is not None and progress_file.exists():
+                try:
+                    data = _json.loads(progress_file.read_text())
+                    real_pct = float(data.get("percent"))
+                except Exception:
+                    real_pct = None
+
+            if real_pct is not None:
+                # Cap at `cap` so the true "done" transition (1.0)
+                # only fires from the completion handler, not mid-run.
+                progress_cb(min(cap, real_pct))
+                continue
+
+            # 2) Fall back to time-based estimate.
+            if eta_seconds and eta_seconds > 0:
+                elapsed = time.perf_counter() - started_at
+                p = min(cap, elapsed / eta_seconds)
+                progress_cb(p)
     except asyncio.CancelledError:
-        # Normal termination when the stage completes. Swallow so the
-        # finally-block in the caller doesn't have to special-case it.
+        # Normal termination when the stage completes.
         pass
 
 

@@ -425,6 +425,40 @@ def run(
             checkpoint_path.name,
         )
 
+    # --- Real-progress reporting -------------------------------------
+    # Write a small JSON file on the shared /jobs volume that the
+    # backend's orchestrator polls every 5 s. Replaces the "elapsed
+    # vs estimated ETA" heuristic that consistently hit 98% two
+    # minutes into a run and plateaued for hours.
+    #
+    # File location mirrors the output path's parent, so each job gets
+    # its own progress file. Stale files from prior failed runs are
+    # overwritten on the first emit. The backend tolerates a missing
+    # file (falls back to the time-based estimate).
+    import json as _json
+    progress_file = output_path.parent / "latentsync_progress.json"
+    # Clear any stale content from a previous attempt before the first
+    # emit — otherwise the backend could briefly see 100%-from-a-past-
+    # run while this run is at step 0.
+    try:
+        progress_file.unlink()
+    except FileNotFoundError:
+        pass
+    except Exception as _e:
+        log.warning("couldn't clear stale progress file (%s); continuing", _e)
+
+    def _write_progress(phase: str, percent: float) -> None:
+        # Best-effort: a progress write failure must never break the
+        # inference run.
+        try:
+            progress_file.write_text(_json.dumps({
+                "phase": phase,
+                "percent": percent,
+                "timestamp": time.time(),
+            }))
+        except Exception:
+            pass
+
     # Wrap the pipeline call in CPU autocast when bf16 is requested.
     # autocast's allowlist keeps BatchNorm / LayerNorm / Softmax at
     # fp32 for numerical stability; Conv / Linear / etc. run at bf16.
@@ -459,6 +493,7 @@ def run(
             denoise_checkpoint_path=(
                 str(checkpoint_path) if checkpoint_path is not None else None
             ),
+            progress_callback=_write_progress,
         )
     elapsed = time.perf_counter() - started
     log.info("latentsync inference finished in %.1fs", elapsed)
