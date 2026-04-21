@@ -91,6 +91,12 @@ def _compute_content_hash(
     Reads the video and audio bytes through a streaming hash so we don't
     pull large files into memory. Keyed on the knobs that affect the
     denoising output — a change in any of them forces a fresh run.
+
+    Also keys on the UNet config name, because caches generated against
+    one config (e.g. stage2.yaml at 256 res) are dimensionally
+    incompatible with another (stage2_512.yaml at 512 res). Without this
+    key component, switching configs would silently hit old incompatible
+    caches and produce either crashes or degraded output.
     """
     h = hashlib.sha256()
     for p in (video_path, audio_path):
@@ -100,7 +106,10 @@ def _compute_content_hash(
                 if not chunk:
                     break
                 h.update(chunk)
-    h.update(f"|steps={steps}|guidance={guidance:.4f}|seed={seed}".encode())
+    h.update(
+        f"|steps={steps}|guidance={guidance:.4f}"
+        f"|seed={seed}|config={_UNET_CONFIG_NAME}".encode()
+    )
     return h.hexdigest()[:16]
 
 
@@ -119,8 +128,17 @@ def _resolve_checkpoint_path(
 
 # Path to the vendored configs dir (app/configs/). Resolved at import
 # time so stacktraces make the layout obvious when a file is missing.
+#
+# We use stage2_512.yaml specifically because that's what the official
+# LatentSync gradio_app.py loads for the released LatentSync-1.6
+# checkpoint. The checkpoint was trained at 512x512 canonical resolution
+# — running it against stage2.yaml (256x256) loads cleanly (architecture
+# matches) but produces degraded structural outputs because the model is
+# operating at half its intended working resolution. Configurable via
+# LATENTSYNC_UNET_CONFIG in case future releases add another variant.
 _CONFIGS_DIR = Path(__file__).resolve().parent.parent / "configs"
-_UNET_CONFIG_PATH = _CONFIGS_DIR / "unet" / "stage2.yaml"
+_UNET_CONFIG_NAME = os.environ.get("LATENTSYNC_UNET_CONFIG", "stage2_512.yaml")
+_UNET_CONFIG_PATH = _CONFIGS_DIR / "unet" / _UNET_CONFIG_NAME
 
 
 def _ipex_dtype():
@@ -297,7 +315,7 @@ def run(
         raise RuntimeError(
             f"unexpected config.model.cross_attention_dim={cross_attn_dim}; "
             f"only 384 (whisper tiny) is supported in this PR. "
-            f"Check app/configs/unet/stage2.yaml vs the weight release."
+            f"Check app/configs/unet/{_UNET_CONFIG_NAME} vs the weight release."
         )
 
     # --- Scheduler ------------------------------------------------------
