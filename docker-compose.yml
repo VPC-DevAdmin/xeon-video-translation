@@ -168,6 +168,17 @@ services:
       # Set to 1 to disable; larger values smooth more aggressively but
       # can lag real head motion on fast turns.
       LATENTSYNC_AFFINE_SMOOTH_WINDOW: ${LATENTSYNC_AFFINE_SMOOTH_WINDOW:-9}
+      # Diagnostic bypasses for jitter bisection (see
+      # scripts/latentsync_debug/DEBUG_PLAN.md). Both default to off.
+      #   LATENTSYNC_BYPASS_UNET=1  — skip denoise + VAE decode entirely,
+      #     pass reference face crops through to restore. Isolates
+      #     geometric pipeline jitter from UNet/VAE numerical jitter.
+      #   LATENTSYNC_BYPASS_MASK=1  — use the hard erosion mask for
+      #     compositing instead of the Gaussian-blurred soft mask. Tests
+      #     whether frame-to-frame soft-mask-radius fluctuation is
+      #     adding jitter at the face boundary.
+      LATENTSYNC_BYPASS_UNET: ${LATENTSYNC_BYPASS_UNET:-0}
+      LATENTSYNC_BYPASS_MASK: ${LATENTSYNC_BYPASS_MASK:-0}
       # Intel OpenMP thread affinity — pins threads to cores so they
       # don't bounce, improves cache locality on math-heavy loops.
       KMP_AFFINITY: granularity=fine,compact,1,0
