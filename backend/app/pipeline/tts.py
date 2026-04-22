@@ -778,7 +778,10 @@ def _trim_to_speech(audio_path: Path) -> None:
 
 def _ffmpeg_atrim(src: Path, dst: Path, start: float, end: float) -> None:
     """Write `src[start:end]` to `dst`. In-place safe (uses a temp path)."""
-    tmp = dst.with_suffix(dst.suffix + ".trim")
+    # Keep the real extension (.wav) so ffmpeg can infer the output format.
+    # `.with_suffix(suffix + ".trim")` produced "foo.wav.trim", which ffmpeg
+    # refuses because .trim isn't a known format.
+    tmp = dst.parent / f"{dst.stem}.trim{dst.suffix}"
     cmd = [
         "ffmpeg", "-v", "error", "-y",
         "-i", str(src),
@@ -1042,7 +1045,7 @@ def _maybe_time_stretch(audio_path: Path, target_duration: float) -> None:
         )
         return
 
-    tmp = audio_path.with_suffix(audio_path.suffix + ".stretch")
+    tmp = audio_path.parent / f"{audio_path.stem}.stretch{audio_path.suffix}"
     cmd = [
         "rubberband",
         "--time", f"{ratio:.4f}",
@@ -1097,7 +1100,7 @@ def _prepend_silence(audio_path: Path, seconds: float) -> None:
             elif k == "channels":
                 ch = int(v)
 
-    tmp = audio_path.with_suffix(audio_path.suffix + ".pad")
+    tmp = audio_path.parent / f"{audio_path.stem}.pad{audio_path.suffix}"
     channel_layout = "mono" if ch == 1 else "stereo"
     cmd = [
         "ffmpeg", "-v", "error", "-y",
@@ -1133,7 +1136,7 @@ _LOUDNORM_TARGET_LRA = 11.0      # loudness range
 
 def _loudnorm(audio_path: Path) -> None:
     """Apply EBU R128 loudnorm to `audio_path` in place."""
-    tmp = audio_path.with_suffix(audio_path.suffix + ".lnorm")
+    tmp = audio_path.parent / f"{audio_path.stem}.lnorm{audio_path.suffix}"
     cmd = [
         "ffmpeg", "-v", "error", "-y",
         "-i", str(audio_path),
