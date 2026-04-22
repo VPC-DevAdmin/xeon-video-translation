@@ -31,6 +31,13 @@ services:
       ENABLE_VIDEO_STABILIZATION: ${ENABLE_VIDEO_STABILIZATION:-false}
       STABILIZE_SMOOTHING: ${STABILIZE_SMOOTHING:-10}
       STABILIZE_SHAKINESS: ${STABILIZE_SHAKINESS:-5}
+      # Post-stabilization: stabilize the lipsynced video before mux.
+      # Catches any jitter from the lipsync pipeline itself (affine
+      # residual, VAE precision, etc.) that pre-stabilization can't
+      # address. Independent of ENABLE_VIDEO_STABILIZATION — they can
+      # stack or be used independently. Off by default; same tuning
+      # (STABILIZE_SMOOTHING / STABILIZE_SHAKINESS) applies to both.
+      ENABLE_OUTPUT_STABILIZATION: ${ENABLE_OUTPUT_STABILIZATION:-false}
     volumes:
       - models:/models
       - jobs:/jobs
