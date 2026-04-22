@@ -1,5 +1,7 @@
 # Adapted from https://github.com/guanjz20/StyleSync/blob/main/utils.py
 
+import os
+
 import numpy as np
 import cv2
 import torch
@@ -93,6 +95,20 @@ class AlignRestore(object):
             inv_mask_center, (blur_size, blur_size), (sigma, sigma)
         ).squeeze(0)
         inv_soft_mask_3d = inv_soft_mask.expand_as(inv_face)
+
+        # CPU patch — soft-mask bypass for jitter bisection. The soft
+        # mask goes through a chain of kernel-size-dependent ops
+        # (erode → erode(w_edge) → gaussian_blur(blur_size, sigma)) whose
+        # parameters are all functions of `total_face_area`. When the
+        # warped face area fluctuates frame-to-frame (by 1–2 px at the
+        # mask boundary) the blur radius flips between even integers and
+        # the feather thickness visibly snaps. Setting this env var uses
+        # the hard erosion mask directly — composite is no longer soft,
+        # but frame-to-frame mask stability is guaranteed. See
+        # scripts/latentsync_debug/DEBUG_PLAN.md Step 2c.
+        if os.environ.get("LATENTSYNC_BYPASS_MASK", "0") == "1":
+            inv_soft_mask_3d = inv_mask_erosion_t
+
         img_back = inv_soft_mask_3d * pasted_face + (1 - inv_soft_mask_3d) * input_img
 
         # Debug dump: four critical intermediates from the restore step.

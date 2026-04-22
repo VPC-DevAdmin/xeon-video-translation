@@ -632,6 +632,20 @@ class LipsyncPipeline(DiffusionPipeline):
                 generator,
             )
 
+            # CPU patch — UNet bypass for jitter bisection. When this env
+            # var is set, we skip the denoise loop + VAE decode entirely
+            # and pass the reference face crop straight through to the
+            # restore/composite stage. Isolates geometric pipeline jitter
+            # (affine warp + soft-mask compositing) from anything the
+            # UNet / VAE numerical path introduces. See
+            # scripts/latentsync_debug/DEBUG_PLAN.md Step 2b.
+            bypass_unet = os.environ.get("LATENTSYNC_BYPASS_UNET", "0") == "1"
+            if bypass_unet:
+                print(
+                    "LATENTSYNC_BYPASS_UNET=1: skipping denoise + VAE decode; "
+                    "reference face crops will be passed through unchanged."
+                )
+
             num_inferences = math.ceil(len(whisper_chunks) / num_frames)
             for i in tqdm.tqdm(range(num_inferences), desc="Doing inference..."):
                 if self.unet.add_audio_layer:
@@ -647,6 +661,24 @@ class LipsyncPipeline(DiffusionPipeline):
                 ref_pixel_values, masked_pixel_values, masks = self.image_processor.prepare_masks_and_masked_images(
                     inference_faces, affine_transform=False
                 )
+
+                if bypass_unet:
+                    # Short-circuit: use the reference face crop as the
+                    # "generated" output. Skips denoise+VAE entirely. The
+                    # shape of ref_pixel_values matches what decode_latents
+                    # would return (both are in pixel space after VAE-round-trip
+                    # normalization), so the downstream paste + restore
+                    # pipeline treats it identically.
+                    decoded_latents = ref_pixel_values.to(dtype=weight_dtype)
+                    decoded_latents = self.paste_surrounding_pixels_back(
+                        decoded_latents, ref_pixel_values, 1 - masks, device, weight_dtype
+                    )
+                    synced_video_frames.append(decoded_latents)
+                    # Emit the same progress signal we would have from the
+                    # denoise loop so the backend's progress bar still moves.
+                    _total = num_inferences
+                    _emit_progress("denoise", 0.25 + 0.65 * ((i + 1) / _total))
+                    continue
 
                 # 7. Prepare mask latent variables
                 mask_latents, masked_image_latents = self.prepare_mask_latents(
