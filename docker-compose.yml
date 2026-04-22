@@ -179,6 +179,11 @@ services:
       # Bind-mount scripts/ so fixes to download_models.sh etc. don't
       # require an image rebuild — matches the backend service's pattern.
       - ./services/lipsync-latentsync/scripts:/app/scripts:ro
+      # Expose the repo-level scripts/ dir (separate from the service's
+      # own scripts/) at /app/repo_scripts so diagnostic tools under
+      # scripts/latentsync_debug/ can run inside the service where
+      # torch / insightface / etc. are available. Read-only.
+      - ./scripts:/app/repo_scripts:ro
     ports:
       # Host-exposed for debugging. Backend talks to the service over
       # Docker DNS. 8090 by default to keep it clear of 8089 (MuseTalk).
