@@ -193,6 +193,21 @@ def synthesize(
         raise TTSError(f"{chosen} produced no output")
 
     # --- Shared post-processing (both backends) --------------------------- #
+    # Whisper-based tail trim. On short utterances XTTS tends to keep
+    # generating past the real translation — hallucinated phonemes /
+    # repeated syllables at speech level, which `silencedetect` can't
+    # catch because it *is* speech energy. Running the expected text
+    # through faster-whisper on the TTS output gives us word-level
+    # timestamps we can align against; everything past the last real
+    # word is tail we can safely remove. Hard-truncate at source
+    # duration below is the backstop if this doesn't fire.
+    try:
+        _trim_tail_via_whisper(
+            output_path, target_language=tgt, expected_text=text,
+        )
+    except Exception as e:
+        log.warning("whisper tail-trim failed (%s); continuing", e)
+
     # Optional speed-up: fit assembled audio into remaining source window.
     if source_duration_seconds is not None:
         target = source_duration_seconds - (first_speech_seconds or 0.0)
@@ -201,6 +216,14 @@ def synthesize(
                 _maybe_time_stretch(output_path, target_duration=target)
             except Exception as e:
                 log.warning("time-stretch failed (%s); keeping untouched TTS", e)
+
+        # Hard safety net: if even after tail-trim + (optional) stretch
+        # the audio is still longer than the source video window, cut it.
+        # Better to crop a final syllable than to let `loop_video` fire.
+        try:
+            _hard_truncate(output_path, max_duration=source_duration_seconds)
+        except Exception as e:
+            log.warning("hard-truncate failed (%s); loop_video may fire", e)
 
     # Align to source: prepend silence so TTS first-frame lines up.
     if first_speech_seconds and first_speech_seconds > 0.01:
@@ -713,6 +736,16 @@ _MIN_SILENCE_SECONDS = 0.10     # how long a quiet stretch needs to be to count
 _HEADROOM_SECONDS = 0.05        # pad on either side of the kept span
 _MIN_SPEECH_SECONDS = 0.30      # below this, assume detection failed and skip
 
+# Whisper-based tail trim. XTTS on short inputs tends to over-generate —
+# finishing the real translation and then continuing with hallucinated
+# phonemes / repeated syllables / mumbling at roughly speech level.
+# `silencedetect`-based trimming can't spot this because the tail IS
+# speech-energy; only a transcription can. We reuse the faster-whisper
+# singleton from the transcribe stage, align its word output against
+# the expected translation text, and cut after the last real word.
+_WHISPER_TRIM_HEADROOM = 0.08   # keep a little of the word's decay
+_WHISPER_TRIM_MIN_GAIN = 0.10   # don't bother if we'd save less than this
+
 
 def _trim_to_speech(audio_path: Path) -> None:
     """Trim `audio_path` in place to the longest non-silent span.
@@ -805,6 +838,172 @@ def _non_silent_spans(path: Path) -> list[tuple[float, float]]:
     if cursor < duration:
         spans.append((cursor, duration))
     return spans
+
+
+def _normalize_word(s: str) -> str:
+    """Lowercase and strip to alphanumerics for cross-language comparison."""
+    return "".join(c for c in s.lower() if c.isalnum())
+
+
+def _find_last_real_word_end(
+    expected_text: str, transcribed_words: list[tuple[float, str]],
+) -> float | None:
+    """Walk Whisper's transcribed word stream against the expected
+    translation text. Return the `end` timestamp of the last word we're
+    confident was part of the real translation.
+
+    The XTTS hallucination problem looks like this in Whisper output:
+
+        expected: "Hola, me llamo Carlos"
+        whisper:  [Hola, me, llamo, Carlos, me, lla, a, la, ...]
+                                            ^^^^^^^^^^^^^^^ tail
+
+    Strategy: sequential best-match. Walk Whisper's words; for each one
+    that matches the next expected token (or is close — XTTS sometimes
+    splits a word across two Whisper tokens), advance the expected
+    pointer. Stop advancing once we've consumed the whole expected text
+    — everything after is hallucination.
+
+    Tolerates two insertions between matches (Whisper sometimes inserts
+    spurious short tokens inside real speech). Returns None if we
+    never matched enough to be useful.
+    """
+    expected_tokens = [_normalize_word(w) for w in expected_text.split()]
+    expected_tokens = [t for t in expected_tokens if t]
+    if not expected_tokens or not transcribed_words:
+        return None
+
+    ei = 0                      # index into expected
+    consecutive_misses = 0
+    last_matched_end: float | None = None
+    for end_ts, raw in transcribed_words:
+        if ei >= len(expected_tokens):
+            break
+        norm = _normalize_word(raw)
+        if not norm:
+            continue
+        expected = expected_tokens[ei]
+        # Match if normalized forms are equal, or one is a prefix of the
+        # other with a shared 3+ char stem (handles XTTS phoneme splits
+        # and Whisper's occasional partial word tokens).
+        is_match = (
+            norm == expected
+            or (len(norm) >= 3 and expected.startswith(norm))
+            or (len(expected) >= 3 and norm.startswith(expected))
+        )
+        if is_match:
+            last_matched_end = end_ts
+            ei += 1
+            consecutive_misses = 0
+        else:
+            consecutive_misses += 1
+            # If Whisper emits 3+ unrelated tokens in a row, we're
+            # probably in the hallucinated tail. Stop here.
+            if consecutive_misses >= 3 and last_matched_end is not None:
+                break
+
+    return last_matched_end
+
+
+def _trim_tail_via_whisper(
+    audio_path: Path, target_language: str, expected_text: str,
+) -> None:
+    """Trim audio past the last real translated word.
+
+    Runs the faster-whisper singleton on the TTS output, aligns the
+    transcribed words against `expected_text`, and cuts after the last
+    word we matched. This catches the specific XTTS failure mode
+    `silencedetect` misses: continuous speech-level tail energy
+    (mumbled phonemes, repeated words) past the actual translation.
+
+    No-op if Whisper fails, returns no words, or we don't get a
+    confident match — `_hard_truncate` at source_duration is the
+    downstream safety net.
+    """
+    if not expected_text.strip():
+        return
+
+    try:
+        from .transcribe import _get_model
+        model = _get_model()
+    except Exception as e:
+        log.warning("whisper-trim: model load failed (%s); skipping", e)
+        return
+
+    try:
+        segments_iter, _info = model.transcribe(
+            str(audio_path),
+            language=target_language or None,
+            beam_size=1,   # speed > accuracy for a tail-find job
+            word_timestamps=True,
+            vad_filter=True,
+            # 300 ms splits real speech from hallucinated tail more
+            # reliably than the 500 ms we use on source transcription.
+            vad_parameters={"min_silence_duration_ms": 300},
+            # Seed Whisper's decoder with the expected text — it biases
+            # the model toward transcribing what we actually generated
+            # and makes hallucinated tails easier to distinguish.
+            initial_prompt=expected_text,
+        )
+        # Flatten (end_timestamp, text) for the matcher.
+        transcribed: list[tuple[float, str]] = []
+        for seg in segments_iter:
+            for w in getattr(seg, "words", None) or []:
+                if w.end is None:
+                    continue
+                transcribed.append((float(w.end), str(w.word)))
+    except Exception as e:
+        log.warning("whisper-trim: transcribe failed (%s); skipping", e)
+        return
+
+    if not transcribed:
+        log.info("whisper-trim: no words detected; skipping")
+        return
+
+    last_real_end = _find_last_real_word_end(expected_text, transcribed)
+    if last_real_end is None:
+        log.info(
+            "whisper-trim: couldn't align %d Whisper words to expected text; skipping",
+            len(transcribed),
+        )
+        return
+
+    current = _probe_duration(audio_path)
+    trim_to = min(current, last_real_end + _WHISPER_TRIM_HEADROOM)
+    if current - trim_to < _WHISPER_TRIM_MIN_GAIN:
+        log.info(
+            "whisper-trim %s: last real word at %.2fs, already close to end (%.2fs); skipping",
+            audio_path.name, last_real_end, current,
+        )
+        return
+
+    _ffmpeg_atrim(audio_path, audio_path, 0.0, trim_to)
+    log.info(
+        "whisper-trim %s: %.2fs -> %.2fs (last real word end=%.2fs, cut %.2fs of tail)",
+        audio_path.name, current, trim_to, last_real_end, current - trim_to,
+    )
+
+
+def _hard_truncate(audio_path: Path, max_duration: float) -> None:
+    """Last-resort truncate `audio_path` to `max_duration` seconds.
+
+    Used as a safety net when `_trim_to_speech` + `_trim_tail_via_whisper`
+    + `_maybe_time_stretch` still leave the audio longer than the source
+    video. Without this, LatentSync's `loop_video` reverses frames to
+    cover the gap and introduces a visible jitter spike.
+
+    A hard cut at max_duration risks cropping the very last syllable —
+    worse than ideal but strictly better than a reversed-frame boom at
+    the end of every generated clip.
+    """
+    current = _probe_duration(audio_path)
+    if current <= max_duration + 0.02:
+        return
+    log.warning(
+        "hard-truncating %s: %.2fs -> %.2fs (fits source; prevents loop_video)",
+        audio_path.name, current, max_duration,
+    )
+    _ffmpeg_atrim(audio_path, audio_path, 0.0, max_duration)
 
 
 # --------------------------------------------------------------------------- #
