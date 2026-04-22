@@ -65,12 +65,30 @@ WORKDIR /app
 #
 # setuptools 81 dropped pkg_resources; insightface + onnx + various HF
 # paths still import it. Pin to <81 like the other services.
+#
+# triton 3.1.x is pinned because torch 2.6's `_inductor.runtime.hints`
+# imports `AttrsDescriptor` from `triton.compiler.compiler`, a symbol
+# triton 3.2+ removed. When pip resolves the IPEX install (below, via
+# pyproject) it's free to pull a newer triton transitively, and the
+# newer triton breaks `import intel_extension_for_pytorch` at startup
+# with a long import cascade ending in
+#   ImportError: cannot import name 'AttrsDescriptor'
+#     from 'triton.compiler.compiler'
+# IPEX then fails silently (we log + continue without optimization),
+# meaning `LATENTSYNC_IPEX_DTYPE=bf16` becomes a no-op — UNet + VAE
+# run fp32 through the normal torch path instead. 2–4× slowdown, and
+# the flag quietly lies about what's running.
+#
+# Pinning triton here (before IPEX) locks the version pip's resolver
+# sees, so IPEX's install step won't upgrade it. 3.1.0 is the version
+# torch 2.6.0 was released against; 3.1.x is the compatible range.
 RUN pip install --upgrade pip wheel \
     && pip install "setuptools>=68,<81" \
     && pip install \
        --extra-index-url https://download.pytorch.org/whl/cpu \
        "torch>=2.6,<2.7" \
-       "torchvision>=0.21,<0.22"
+       "torchvision>=0.21,<0.22" \
+       "triton>=3.1,<3.2"
 
 COPY pyproject.toml ./
 RUN pip install -e .
