@@ -26,7 +26,7 @@ Before any debugging, lock down what's actually running:
 
 ```bash
 docker compose exec -T lipsync-latentsync \
-    python /app/scripts/environment_audit.py > /tmp/env_before.json
+    python /app/repo_scripts/latentsync_debug/environment_audit.py > /tmp/env_before.json
 cat /tmp/env_before.json | jq '.torch.deterministic_algorithms, .torch.version, .env.LATENTSYNC_IPEX_DTYPE, .env.LATENTSYNC_ENABLE_DEEPCACHE, .env.LATENTSYNC_AFFINE_SMOOTH_WINDOW'
 ```
 
@@ -40,11 +40,11 @@ Measure landmark jitter on the **source** and **current output**:
 ```bash
 # Source — this is our noise floor. How much did the subject / camera actually move?
 docker compose exec -T lipsync-latentsync \
-    python /app/scripts/latentsync_debug/stability_metric.py /jobs/<latest>/input.mov
+    python /app/repo_scripts/latentsync_debug/stability_metric.py /jobs/<latest>/input.mov
 
 # Current output
 docker compose exec -T lipsync-latentsync \
-    python /app/scripts/latentsync_debug/stability_metric.py /jobs/<latest>/final.mp4
+    python /app/repo_scripts/latentsync_debug/stability_metric.py /jobs/<latest>/final.mp4
 ```
 
 Interpret:
@@ -162,7 +162,7 @@ Don't call it done until the stability metric confirms:
 
 ```bash
 docker compose exec -T lipsync-latentsync \
-    python /app/scripts/latentsync_debug/stability_metric.py /jobs/<new>/final.mp4
+    python /app/repo_scripts/latentsync_debug/stability_metric.py /jobs/<new>/final.mp4
 ```
 
 Target: output mean disp ≤ source mean disp + 0.5 px.

@@ -12,11 +12,14 @@ Run on any of:
 
 Then A/B test fixes against the number instead of squinting at frames.
 
-Usage (inside the lipsync-latentsync container):
-    python /app/scripts/latentsync_debug/stability_metric.py /path/to/video.mp4
+Usage (from repo root):
+    docker compose exec -T lipsync-latentsync \\
+        python /app/repo_scripts/latentsync_debug/stability_metric.py \\
+        /jobs/<job-id>/input.MOV
 
-Or directly outside the container, if the host has the deps (not
-likely unless you've installed them; the container is the easier path).
+The repo-level scripts/ dir is bind-mounted at /app/repo_scripts:ro
+in docker-compose.yml so this can run inside the service where
+insightface is available.
 """
 
 from __future__ import annotations

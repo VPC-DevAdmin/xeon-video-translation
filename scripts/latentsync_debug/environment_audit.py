@@ -13,11 +13,12 @@ baseline — subtle dependency drift is a real source of "same code,
 different numbers."
 
 Usage (from repo root):
-    docker compose exec -T lipsync-latentsync python /app/scripts/environment_audit.py
-
-Or equivalently (if the script is bind-mounted at /app/scripts):
     docker compose exec -T lipsync-latentsync \\
-        python /app/app/latentsync_driver/../../../scripts/environment_audit.py
+        python /app/repo_scripts/latentsync_debug/environment_audit.py
+
+The repo-level scripts/ dir is bind-mounted at /app/repo_scripts:ro
+in docker-compose.yml so diagnostic tools can run inside the
+service where torch / insightface / etc. are available.
 
 No dependencies beyond what the service already has.
 """
