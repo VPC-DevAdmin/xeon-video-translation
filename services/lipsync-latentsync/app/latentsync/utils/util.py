@@ -49,8 +49,26 @@ def read_video(video_path: str, change_fps=True, use_decord=True):
         if os.path.exists(temp_dir):
             shutil.rmtree(temp_dir)
         os.makedirs(temp_dir, exist_ok=True)
+
+        # CPU patch — diagnostic env var to force a mathematically
+        # lossless re-encode at this step. Upstream uses `-crf 18`
+        # (visually lossless) which still produces I/P-frame decode
+        # artifacts and ~0.1 px landmark noise that feeds the
+        # SVD-derived affine and amplifies into output jitter. When
+        # LATENTSYNC_LOSSLESS_READ=1, swap to `-qp 0` for a truly
+        # bit-identical intermediate. Quality is unchanged downstream;
+        # file size balloons (~4-8x) but the temp file is short-lived.
+        # See scripts/latentsync_debug/DEBUG_PLAN.md final-jitter step.
+        if os.environ.get("LATENTSYNC_LOSSLESS_READ", "0") == "1":
+            # -qp 0 = true lossless; -preset veryslow keeps x264 from
+            # making bad decisions that could still alter pixels.
+            enc_args = "-c:v libx264 -qp 0 -preset veryslow -pix_fmt yuv420p"
+            print("LATENTSYNC_LOSSLESS_READ=1: using -qp 0 for read_video re-encode")
+        else:
+            enc_args = "-crf 18"
         command = (
-            f"ffmpeg -loglevel error -y -nostdin -i {video_path} -r 25 -crf 18 {os.path.join(temp_dir, 'video.mp4')}"
+            f"ffmpeg -loglevel error -y -nostdin -i {video_path} "
+            f"-r 25 {enc_args} {os.path.join(temp_dir, 'video.mp4')}"
         )
         subprocess.run(command, shell=True)
         target_video_path = os.path.join(temp_dir, "video.mp4")
