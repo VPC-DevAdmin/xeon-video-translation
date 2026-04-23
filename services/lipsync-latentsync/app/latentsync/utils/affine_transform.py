@@ -29,8 +29,34 @@ class AlignRestore(object):
             self.mask = torch.ones((1, 1, self.face_size[1], self.face_size[0]), device=device, dtype=dtype)
 
     def align_warp_face(self, img, landmarks3, smooth=True):
+        # CPU patch — disable upstream's built-in IIR bias smoother.
+        #
+        # The `smooth=True` branch of `transformation_from_points`
+        # applies a 0.2/0.8 IIR filter to a per-frame "bias" term
+        # derived from one landmark's residual, and persists its state
+        # (`p_bias`) on `self` across every frame of the clip. On
+        # static-ish input this filter amplifies small landmark
+        # perturbations (sub-pixel face-detection noise) through the
+        # SVD-derived scale+rotation, then applies a lagged correction
+        # to the translation — producing discrete "jumps" in the
+        # affine matrix every few frames (observed: bit-identical for
+        # frames 0-2, +4 px for frames 3-25, +8 px for frame 26+ on
+        # a literally-static source).
+        #
+        # We already run our own, more principled affine smoother
+        # downstream (`_smooth_affine_sequence`, SG filter in
+        # similarity-parameter space with log-scale and angular-mean
+        # handling). Running upstream's cruder smoother first on the
+        # raw-numerics input and then layering ours on top means our
+        # smoothing is operating on an already-corrupted signal.
+        #
+        # Forcing `smooth=False` here makes the raw similarity
+        # transform from SVD pass through directly, and our post-smoother
+        # becomes the sole smoothing stage. Confirmed via
+        # scripts/latentsync_debug/analyze_affines.py to eliminate
+        # the frame-to-frame drift on static input.
         affine_matrix, self.p_bias = self.transformation_from_points(
-            landmarks3, self.face_template, smooth, self.p_bias
+            landmarks3, self.face_template, smooth=False, p_bias=None,
         )
 
         img = rearrange(torch.from_numpy(img).to(device=self.device, dtype=self.dtype), "h w c -> c h w").unsqueeze(0)
