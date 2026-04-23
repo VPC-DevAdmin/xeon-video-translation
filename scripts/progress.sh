@@ -76,9 +76,60 @@ fetch_job() {
   curl -sS --fail "$API_BASE/jobs/$JOB_ID" 2>/dev/null
 }
 
+# Observed-rate ETA. The static `eta_seconds` from the backend is
+# `source_duration * realtime_factor` — that factor is a fixed guess
+# in orchestrator.py that can be off by 2× or more for LatentSync on
+# varying CPUs, resolutions, and feature-flag combinations. Instead
+# we time how long the current running stage took to reach its
+# current progress and linearly extrapolate remaining work:
+#   remaining ≈ elapsed * (1 - p) / p
+# Only kicks in once progress > 2% AND elapsed > 3s, so we don't
+# divide by near-zero and produce a nonsense ETA in the first couple
+# of ticks. Falls back to the static estimate until then.
+_RUN_STAGE_NAME=""
+_RUN_STAGE_STARTED_AT=""
+
+# Compute observed-remaining in seconds (or "null" for "no observation yet").
+# Emits ALWAYS as valid JSON so jq --argjson can consume it.
+compute_observed_remaining() {
+  local json="$1"
+  local now running_stage progress elapsed
+  now=$(date +%s)
+  running_stage=$(echo "$json" | jq -r '(.stages[] | select(.status=="running") | .name) // empty' | head -1)
+  progress=$(echo "$json" | jq -r '(.stages[] | select(.status=="running") | .progress) // 0' | head -1)
+
+  # Stage changed (or no stage running) — reset the anchor.
+  if [ "$running_stage" != "$_RUN_STAGE_NAME" ]; then
+    _RUN_STAGE_NAME="$running_stage"
+    _RUN_STAGE_STARTED_AT="$now"
+  fi
+
+  if [ -z "$running_stage" ] || [ -z "$_RUN_STAGE_STARTED_AT" ]; then
+    echo "null"
+    return
+  fi
+
+  elapsed=$((now - _RUN_STAGE_STARTED_AT))
+  # Only trust the observation once we have enough signal.
+  if [ "$elapsed" -lt 3 ]; then
+    echo "null"
+    return
+  fi
+  awk -v p="$progress" -v e="$elapsed" '
+    BEGIN {
+      if (p + 0 > 0.02) {
+        printf "%.0f", (1 - p) * e / p;
+      } else {
+        print "null";
+      }
+    }'
+}
+
 render_report() {
   local json="$1"
-  echo "$json" | jq -r '
+  local observed="${2:-null}"
+  local running_name="${3:-}"
+  echo "$json" | jq -r --argjson obs "$observed" --arg running "$running_name" '
     def pad(s; n): (s | tostring) as $x | $x + (" " * (n - ($x | length)));
     def icon(st):
       if   st == "done"     then "✓"
@@ -101,25 +152,34 @@ render_report() {
         "[" + ("█" * $f) + ("░" * (width - $f)) + "] " +
         ((p * 100) | floor | tostring) + "%"
       end;
-    # Running-stage ETA = time REMAINING, not total estimate. We
-    # compute it from the stage's progress against its original total
-    # duration estimate (s.eta_seconds): remaining ≈ eta * (1 - p).
-    # Without this, LatentSync (where the total estimate can be ~1900s
-    # on CPU) would show the same "~1908s ETA" string the entire run
-    # regardless of how much had completed — see docs/lipsync.md.
-    # Falls back to the total when we have no progress signal yet.
+    # Running-stage ETA. Three-tier fallback:
+    #
+    #   1. Observed rate (preferred): $obs is computed in shell from
+    #      elapsed-since-stage-started vs. live progress; linear
+    #      extrapolation of remaining work. Only available after ~3s
+    #      and >2% progress (see compute_observed_remaining).
+    #   2. Static estimate * (1 - p): the backend's guess-factor
+    #      `eta_seconds` is the stage's total — show the remaining
+    #      portion of it until observed data kicks in.
+    #   3. Raw total `eta_seconds`: when progress is 0 or null.
+    #
+    # $obs is a single number for the current running stage only (the
+    # caller knows which one via $running), so we gate on s.name
+    # matching before using it.
     def stage_right(s):
       if   s.status == "done" and s.duration_ms then
         ((s.duration_ms / 1000) | floor | tostring) + "s"
       elif s.status == "running" then
         (bar(s.progress; 16)) +
-        (if s.eta_seconds and s.eta_seconds > 0 then
+        (if $obs != null and s.name == $running then
+           "  ~" + ($obs | tostring) + "s left"
+         elif s.eta_seconds and s.eta_seconds > 0 then
            (if (s.progress // 0) > 0 then
               ((s.eta_seconds * (1 - (s.progress // 0))) | floor) as $rem |
               (if $rem < 0 then 0 else $rem end) as $rem |
-              "  ~" + ($rem | tostring) + "s left"
+              "  ~" + ($rem | tostring) + "s left*"
             else
-              "  ~" + (s.eta_seconds | floor | tostring) + "s ETA"
+              "  ~" + (s.eta_seconds | floor | tostring) + "s ETA*"
             end)
          else "" end)
       elif s.status == "pending" and s.eta_seconds then
@@ -147,7 +207,8 @@ render_report() {
 
 if [ "$WATCH" = "0" ]; then
   json="$(fetch_job)" || { echo "job not found: $JOB_ID" >&2; exit 1; }
-  render_report "$json"
+  # One-shot: no history, so no observed rate available.
+  render_report "$json" "null" ""
   status=$(echo "$json" | jq -r '.status')
   [ "$status" = "failed" ] && exit 1 || exit 0
 fi
@@ -158,8 +219,9 @@ tput civis 2>/dev/null || true
 
 while :; do
   json="$(fetch_job)" || { echo "job not found: $JOB_ID" >&2; exit 1; }
+  observed="$(compute_observed_remaining "$json")"
   clear
-  render_report "$json"
+  render_report "$json" "$observed" "$_RUN_STAGE_NAME"
   status=$(echo "$json" | jq -r '.status')
   if [ "$status" = "completed" ] || [ "$status" = "failed" ]; then
     break
