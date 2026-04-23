@@ -101,12 +101,27 @@ render_report() {
         "[" + ("█" * $f) + ("░" * (width - $f)) + "] " +
         ((p * 100) | floor | tostring) + "%"
       end;
+    # Running-stage ETA = time REMAINING, not total estimate. We
+    # compute it from the stage's progress against its original total
+    # duration estimate (s.eta_seconds): remaining ≈ eta * (1 - p).
+    # Without this, LatentSync (where the total estimate can be ~1900s
+    # on CPU) would show the same "~1908s ETA" string the entire run
+    # regardless of how much had completed — see docs/lipsync.md.
+    # Falls back to the total when we have no progress signal yet.
     def stage_right(s):
       if   s.status == "done" and s.duration_ms then
         ((s.duration_ms / 1000) | floor | tostring) + "s"
       elif s.status == "running" then
         (bar(s.progress; 16)) +
-        (if s.eta_seconds then "  ~" + (s.eta_seconds | floor | tostring) + "s ETA" else "" end)
+        (if s.eta_seconds and s.eta_seconds > 0 then
+           (if (s.progress // 0) > 0 then
+              ((s.eta_seconds * (1 - (s.progress // 0))) | floor) as $rem |
+              (if $rem < 0 then 0 else $rem end) as $rem |
+              "  ~" + ($rem | tostring) + "s left"
+            else
+              "  ~" + (s.eta_seconds | floor | tostring) + "s ETA"
+            end)
+         else "" end)
       elif s.status == "pending" and s.eta_seconds then
         "~" + (s.eta_seconds | floor | tostring) + "s ETA"
       else "" end;
