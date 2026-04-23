@@ -185,6 +185,12 @@ services:
       # scripts/latentsync_debug/analyze_affines.py. Default off.
       LATENTSYNC_DUMP_AFFINES: ${LATENTSYNC_DUMP_AFFINES:-0}
       LATENTSYNC_DUMP_AFFINES_DIR: ${LATENTSYNC_DUMP_AFFINES_DIR:-/jobs/affine_debug}
+      # Force LatentSync's read_video re-encode to be mathematically
+      # lossless (-qp 0 instead of -crf 18). Diagnostic only — upstream's
+      # crf 18 is "visually lossless" but still adds ~0.1 px landmark
+      # noise that feeds the SVD affine and amplifies into output jitter.
+      # Off by default; temp file is ~4-8x larger when on.
+      LATENTSYNC_LOSSLESS_READ: ${LATENTSYNC_LOSSLESS_READ:-0}
       # Intel OpenMP thread affinity — pins threads to cores so they
       # don't bounce, improves cache locality on math-heavy loops.
       KMP_AFFINITY: granularity=fine,compact,1,0
