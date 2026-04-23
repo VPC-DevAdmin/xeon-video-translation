@@ -158,10 +158,10 @@ render_report() {
     #      elapsed-since-stage-started vs. live progress; linear
     #      extrapolation of remaining work. Only available after ~3s
     #      and >2% progress (see compute_observed_remaining).
-    #   2. Static estimate * (1 - p): the backend's guess-factor
-    #      `eta_seconds` is the stage's total — show the remaining
+    #   2. Static estimate * (1 - p): the backend guess-factor
+    #      eta_seconds is the stage total — show the remaining
     #      portion of it until observed data kicks in.
-    #   3. Raw total `eta_seconds`: when progress is 0 or null.
+    #   3. Raw total eta_seconds: when progress is 0 or null.
     #
     # $obs is a single number for the current running stage only (the
     # caller knows which one via $running), so we gate on s.name
