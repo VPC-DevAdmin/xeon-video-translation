@@ -209,6 +209,58 @@ def _smooth_affine_sequence(
     return smoothed_mats, smoothed_boxes
 
 
+def _smooth_landmarks_sequence(
+    landmarks_per_frame: list,
+    window: int,
+) -> list:
+    """CPU patch: temporal smoothing on the 3-point landmark array used
+    to derive each frame's affine-to-canonical warp.
+
+    Operates upstream of `transformation_from_points` — the SVD-based
+    affine estimator that, through `(s2/s1) * R` amplification, turns
+    sub-pixel landmark noise (0.1–0.5 px, common on lossy H.264 input)
+    into pixel-scale translation and rotation drift in the per-frame
+    affine matrix. Our existing `_smooth_affine_sequence` runs *after*
+    that amplification; smoothing landmarks *before* the SVD prevents
+    the noise from ever entering the affine.
+
+    Each of the 3 landmarks (left eye, right eye, nose) has its x and
+    y coordinate smoothed independently across the clip with a
+    Savitzky-Golay filter (polyorder=2). That preserves real motion
+    (the subject turning their head) while damping per-frame detection
+    noise.
+
+    Edge handling uses scipy's `mode='interp'` — a polynomial is fit
+    to the first/last window and evaluated at the boundary, so the
+    first and last few frames aren't left as untreated.
+
+    Returns the smoothed sequence in the same Python list-of-(3,2)-array
+    form as the input so the caller can slot it in without reshaping.
+    """
+    if window <= 1 or len(landmarks_per_frame) < 2:
+        return landmarks_per_frame
+
+    from scipy.signal import savgol_filter
+
+    arr = np.stack(landmarks_per_frame, axis=0)  # (N, 3, 2)
+    n = arr.shape[0]
+
+    polyorder = 2
+    eff_window = min(int(window), n)
+    if eff_window % 2 == 0:
+        eff_window -= 1
+    if eff_window <= polyorder:
+        return landmarks_per_frame
+
+    # Smooth each of the 6 coordinate tracks (3 points × 2 dims) along
+    # the time axis. axis=0 applies SG per-column of the flattened (N, 6).
+    flat = arr.reshape(n, -1)                     # (N, 6)
+    flat_s = savgol_filter(flat, eff_window, polyorder, axis=0, mode="interp")
+    smoothed = flat_s.reshape(n, 3, 2)
+
+    return [smoothed[i] for i in range(n)]
+
+
 class LipsyncPipeline(DiffusionPipeline):
     _optional_components = []
 
@@ -419,12 +471,68 @@ class LipsyncPipeline(DiffusionPipeline):
         return images
 
     def affine_transform_video(self, video_frames: np.ndarray):
+        # CPU patch — two-pass landmark-smoothed affine.
+        #
+        # Upstream did detection + affine in a single per-frame call,
+        # which meant sub-pixel landmark noise (0.1–0.5 px from libx264
+        # re-encodes and similar) got amplified through the SVD-derived
+        # `(s2/s1) * R` scale in `transformation_from_points` into
+        # pixel-scale drift in the affine matrix — and visible
+        # face-bouncing in the output. See the full bisection in
+        # scripts/latentsync_debug/DEBUG_PLAN.md.
+        #
+        # We now do two passes:
+        #   1) Extract per-frame 3-point landmarks across the whole clip.
+        #   2) Temporally smooth each landmark's (x, y) trajectory with
+        #      a Savitzky-Golay filter (see _smooth_landmarks_sequence).
+        #   3) Compute the per-frame affine from the smoothed landmarks.
+        #
+        # Smoothing landmarks *before* the SVD prevents the noise from
+        # entering the affine at all. Our existing affine-matrix smoother
+        # (`_smooth_affine_sequence`) still runs afterwards for belt-and-
+        # suspenders, but is largely redundant with noise-free inputs.
+        #
+        # Window default 5 (0.2 s at 25 fps) is a conservative floor —
+        # large enough to damp high-frequency detection noise, small
+        # enough not to lag head turns. Set LATENTSYNC_LANDMARK_SMOOTH_WINDOW
+        # to 1 (or 0) to disable; larger values (7, 9) smooth more aggressively.
+        landmark_window = int(
+            os.environ.get("LATENTSYNC_LANDMARK_SMOOTH_WINDOW", "5"),
+        )
+
+        # Pass 1: extract landmarks per frame (this is what detection
+        # actually costs; tqdm shows the expected 1 s/frame wall clock).
+        print(f"Extracting landmarks from {len(video_frames)} frames...")
+        per_frame_landmarks = []
+        for frame in tqdm.tqdm(video_frames, desc="detect"):
+            per_frame_landmarks.append(
+                self.image_processor.extract_landmarks3(frame),
+            )
+
+        # Temporal smoothing.
+        if landmark_window > 1 and len(per_frame_landmarks) > 1:
+            per_frame_landmarks = _smooth_landmarks_sequence(
+                per_frame_landmarks, window=landmark_window,
+            )
+            print(
+                f"Smoothed {len(per_frame_landmarks)} landmark trajectories "
+                f"(window={landmark_window}) — damps sub-pixel noise before the SVD."
+            )
+
+        # Pass 2: compute affine + canonical face crop per frame using
+        # the smoothed landmarks.
         faces = []
         boxes = []
         affine_matrices = []
         print(f"Affine transforming {len(video_frames)} faces...")
-        for frame in tqdm.tqdm(video_frames):
-            face, box, affine_matrix = self.image_processor.affine_transform(frame)
+        for frame, landmarks3 in tqdm.tqdm(
+            zip(video_frames, per_frame_landmarks),
+            total=len(video_frames),
+            desc="warp",
+        ):
+            face, box, affine_matrix = self.image_processor.affine_transform(
+                frame, landmarks3=landmarks3,
+            )
             faces.append(face)
             boxes.append(box)
             affine_matrices.append(affine_matrix)

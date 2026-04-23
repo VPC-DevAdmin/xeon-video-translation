@@ -53,18 +53,44 @@ class ImageProcessor:
         # wrong for us. Always initialize.
         self.face_detector = FaceDetector(device=device)
 
-    def affine_transform(self, image: torch.Tensor) -> np.ndarray:
-        # (Removed the `self.face_detector is None` guard — see patch
-        # note above. FaceDetector now works on CPU.)
+    def extract_landmarks3(self, image) -> np.ndarray:
+        """Return the 3 anchor landmarks (left-eye / right-eye / nose)
+        this pipeline uses for its affine-to-canonical warp.
+
+        Factored out so callers that want to temporally smooth
+        landmarks across frames can do so before feeding the affine
+        step — see lipsync_pipeline.affine_transform_video().
+        """
         bbox, landmark_2d_106 = self.face_detector(image)
         if bbox is None:
             raise RuntimeError("Face not detected")
 
-        pt_left_eye = np.mean(landmark_2d_106[[43, 48, 49, 51, 50]], axis=0)  # left eyebrow center
-        pt_right_eye = np.mean(landmark_2d_106[101:106], axis=0)  # right eyebrow center
-        pt_nose = np.mean(landmark_2d_106[[74, 77, 83, 86]], axis=0)  # nose center
+        pt_left_eye = np.mean(landmark_2d_106[[43, 48, 49, 51, 50]], axis=0)
+        pt_right_eye = np.mean(landmark_2d_106[101:106], axis=0)
+        pt_nose = np.mean(landmark_2d_106[[74, 77, 83, 86]], axis=0)
 
-        landmarks3 = np.round([pt_left_eye, pt_right_eye, pt_nose])
+        return np.array([pt_left_eye, pt_right_eye, pt_nose], dtype=np.float64)
+
+    def affine_transform(
+        self,
+        image: torch.Tensor,
+        landmarks3: np.ndarray | None = None,
+    ) -> np.ndarray:
+        # CPU patch — allow callers to pass pre-extracted, temporally
+        # smoothed landmarks. When `landmarks3` is None (upstream's
+        # default behavior), we detect + extract per-frame as before.
+        # When provided, we skip detection and use the supplied points
+        # directly — enabling the two-pass landmark-smoothing flow
+        # in lipsync_pipeline.affine_transform_video().
+        #
+        # Upstream applied `np.round` to quantize to integer pixels.
+        # That's a per-frame noise amplifier when raw landmark values
+        # jitter across fractional pixel positions (e.g. 37.4, 37.5,
+        # 37.4 → 37, 38, 37), so we skip rounding in the pre-computed
+        # path; the smoother's job is already to hand us stable
+        # sub-pixel values.
+        if landmarks3 is None:
+            landmarks3 = np.round(self.extract_landmarks3(image))
 
         face, affine_matrix = self.restorer.align_warp_face(image.copy(), landmarks3=landmarks3, smooth=True)
         box = [0, 0, face.shape[1], face.shape[0]]  # x1, y1, x2, y2

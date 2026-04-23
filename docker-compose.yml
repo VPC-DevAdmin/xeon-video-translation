@@ -168,6 +168,13 @@ services:
       # Set to 1 to disable; larger values smooth more aggressively but
       # can lag real head motion on fast turns.
       LATENTSYNC_AFFINE_SMOOTH_WINDOW: ${LATENTSYNC_AFFINE_SMOOTH_WINDOW:-9}
+      # Temporal smoothing window for per-frame 3-point landmarks, applied
+      # *before* the SVD-based affine estimator. Prevents sub-pixel
+      # landmark noise (common on lossy H.264 input) from amplifying into
+      # pixel-scale affine drift. Default 5 (0.2s at 25fps) is a
+      # conservative floor; 7 or 9 smooths more aggressively. Set to 1 to
+      # disable.
+      LATENTSYNC_LANDMARK_SMOOTH_WINDOW: ${LATENTSYNC_LANDMARK_SMOOTH_WINDOW:-5}
       # Diagnostic bypasses for jitter bisection (see
       # scripts/latentsync_debug/DEBUG_PLAN.md). Both default to off.
       #   LATENTSYNC_BYPASS_UNET=1  — skip denoise + VAE decode entirely,
