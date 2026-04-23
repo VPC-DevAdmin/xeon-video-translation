@@ -789,6 +789,33 @@ class LipsyncPipeline(DiffusionPipeline):
         #
         # Set LATENTSYNC_AFFINE_SMOOTH_WINDOW=1 (or 0) to disable.
         _smooth_window = int(os.environ.get("LATENTSYNC_AFFINE_SMOOTH_WINDOW", "9"))
+
+        # CPU patch — diagnostic dump of affine matrices + boxes, before
+        # and after smoothing. Gated by env var so it costs nothing in
+        # production. Used to verify whether affine matrices are
+        # bit-identical across frames on static input (which should
+        # follow from deterministic face detection) or drift by a small
+        # epsilon that would explain pipeline-introduced jitter.
+        # See scripts/latentsync_debug/DEBUG_PLAN.md Step 3.
+        if os.environ.get("LATENTSYNC_DUMP_AFFINES", "0") == "1":
+            try:
+                import numpy as np
+                dump_dir = os.environ.get(
+                    "LATENTSYNC_DUMP_AFFINES_DIR", "/jobs/affine_debug",
+                )
+                os.makedirs(dump_dir, exist_ok=True)
+                _to_np = lambda m: m if isinstance(m, np.ndarray) else m.cpu().numpy()
+                pre = np.stack([_to_np(m) for m in affine_matrices], axis=0)
+                pre_boxes = np.array(boxes)
+                np.save(os.path.join(dump_dir, "affines_pre_smooth.npy"), pre)
+                np.save(os.path.join(dump_dir, "boxes_pre_smooth.npy"), pre_boxes)
+                print(
+                    f"LATENTSYNC_DUMP_AFFINES=1: wrote pre-smooth affines "
+                    f"({pre.shape}) + boxes ({pre_boxes.shape}) to {dump_dir}"
+                )
+            except Exception as _e:
+                print(f"affine dump (pre-smooth) failed: {_e}")
+
         if _smooth_window > 1 and len(affine_matrices) > 1:
             affine_matrices, boxes = _smooth_affine_sequence(
                 affine_matrices, boxes, window=_smooth_window,
@@ -797,6 +824,24 @@ class LipsyncPipeline(DiffusionPipeline):
                 f"Smoothed {len(affine_matrices)} affine matrices + boxes "
                 f"(window={_smooth_window}) to reduce face-jitter."
             )
+
+        if os.environ.get("LATENTSYNC_DUMP_AFFINES", "0") == "1":
+            try:
+                import numpy as np
+                dump_dir = os.environ.get(
+                    "LATENTSYNC_DUMP_AFFINES_DIR", "/jobs/affine_debug",
+                )
+                _to_np = lambda m: m if isinstance(m, np.ndarray) else m.cpu().numpy()
+                post = np.stack([_to_np(m) for m in affine_matrices], axis=0)
+                post_boxes = np.array(boxes)
+                np.save(os.path.join(dump_dir, "affines_post_smooth.npy"), post)
+                np.save(os.path.join(dump_dir, "boxes_post_smooth.npy"), post_boxes)
+                print(
+                    f"LATENTSYNC_DUMP_AFFINES=1: wrote post-smooth affines "
+                    f"({post.shape}) to {dump_dir}"
+                )
+            except Exception as _e:
+                print(f"affine dump (post-smooth) failed: {_e}")
 
         _emit_progress("restore", 0.90)
         synced_video_frames = self.restore_video(
