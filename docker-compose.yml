@@ -179,6 +179,12 @@ services:
       #     adding jitter at the face boundary.
       LATENTSYNC_BYPASS_UNET: ${LATENTSYNC_BYPASS_UNET:-0}
       LATENTSYNC_BYPASS_MASK: ${LATENTSYNC_BYPASS_MASK:-0}
+      # Affine dump for jitter bisection. Writes pre/post-smooth affine
+      # matrices + boxes to LATENTSYNC_DUMP_AFFINES_DIR (default
+      # /jobs/affine_debug) for offline analysis with
+      # scripts/latentsync_debug/analyze_affines.py. Default off.
+      LATENTSYNC_DUMP_AFFINES: ${LATENTSYNC_DUMP_AFFINES:-0}
+      LATENTSYNC_DUMP_AFFINES_DIR: ${LATENTSYNC_DUMP_AFFINES_DIR:-/jobs/affine_debug}
       # Intel OpenMP thread affinity — pins threads to cores so they
       # don't bounce, improves cache locality on math-heavy loops.
       KMP_AFFINITY: granularity=fine,compact,1,0
