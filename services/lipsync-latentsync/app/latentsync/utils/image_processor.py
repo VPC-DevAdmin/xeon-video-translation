@@ -53,23 +53,49 @@ class ImageProcessor:
         # wrong for us. Always initialize.
         self.face_detector = FaceDetector(device=device)
 
+    def _landmarks3_from_detection(self, landmark_2d_106) -> np.ndarray:
+        """Project the 106-point detection output to our 3 anchor points
+        (left-eye / right-eye / nose centers) in the shape our affine
+        warp expects.
+        """
+        pt_left_eye = np.mean(landmark_2d_106[[43, 48, 49, 51, 50]], axis=0)
+        pt_right_eye = np.mean(landmark_2d_106[101:106], axis=0)
+        pt_nose = np.mean(landmark_2d_106[[74, 77, 83, 86]], axis=0)
+        return np.array([pt_left_eye, pt_right_eye, pt_nose], dtype=np.float64)
+
     def extract_landmarks3(self, image) -> np.ndarray:
         """Return the 3 anchor landmarks (left-eye / right-eye / nose)
         this pipeline uses for its affine-to-canonical warp.
 
-        Factored out so callers that want to temporally smooth
-        landmarks across frames can do so before feeding the affine
-        step — see lipsync_pipeline.affine_transform_video().
+        Raises RuntimeError on detection failure. Use `try_extract_landmarks3`
+        for a no-raise variant that returns None — appropriate when
+        the caller wants to gap-fill across frames.
         """
         bbox, landmark_2d_106 = self.face_detector(image)
         if bbox is None:
             raise RuntimeError("Face not detected")
+        return self._landmarks3_from_detection(landmark_2d_106)
 
-        pt_left_eye = np.mean(landmark_2d_106[[43, 48, 49, 51, 50]], axis=0)
-        pt_right_eye = np.mean(landmark_2d_106[101:106], axis=0)
-        pt_nose = np.mean(landmark_2d_106[[74, 77, 83, 86]], axis=0)
+    def try_extract_landmarks3(self, image) -> np.ndarray | None:
+        """Non-raising variant of `extract_landmarks3`.
 
-        return np.array([pt_left_eye, pt_right_eye, pt_nose], dtype=np.float64)
+        Returns the 3-anchor array on detection success, or None when
+        no face was found on this frame. Used by the video-pass code
+        (`lipsync_pipeline.affine_transform_video`) to carry landmarks
+        forward across frames with no detected face, rather than
+        failing the whole clip on a single bad frame (eyes closed,
+        motion blur, partial occlusion, a cut to a non-face insert).
+        """
+        try:
+            bbox, landmark_2d_106 = self.face_detector(image)
+        except Exception:
+            # Detector raised (ONNX runtime glitch, unexpected input
+            # shape, etc.). Treat like a missed detection; the caller
+            # handles the None-gap.
+            return None
+        if bbox is None:
+            return None
+        return self._landmarks3_from_detection(landmark_2d_106)
 
     def affine_transform(
         self,
