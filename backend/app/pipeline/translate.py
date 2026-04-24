@@ -22,9 +22,15 @@ from typing import Any
 from ..config import settings
 
 
-# BCP-47 -> NLLB FLORES-200 codes. Covers the languages listed in the demo UI.
-# NLLB uses ISO 639-3 + script tags (e.g. "spa_Latn"), not BCP-47.
+# BCP-47 -> NLLB FLORES-200 codes. NLLB-200 supports all 200 FLORES
+# targets; the list here is the subset we've validated end-to-end
+# (translate + TTS backend coverage). Add a row any time a new TTS
+# backend is integrated so the translate stage can feed it.
+#
+# Format note: NLLB uses ISO 639-3 + script tag (e.g. "spa_Latn"),
+# not BCP-47.
 NLLB_LANG_CODES: dict[str, str] = {
+    # Originally covered
     "en": "eng_Latn",
     "es": "spa_Latn",
     "fr": "fra_Latn",
@@ -41,6 +47,19 @@ NLLB_LANG_CODES: dict[str, str] = {
     "tr": "tur_Latn",
     "pl": "pol_Latn",
     "vi": "vie_Latn",
+    # Indic languages (added alongside IndicF5 TTS backend, PR #74).
+    # IndicF5 produces native speech on these; without NLLB coverage
+    # the pipeline failed at translate before reaching TTS.
+    "bn": "ben_Beng",  # Bengali
+    "ta": "tam_Taml",  # Tamil
+    "te": "tel_Telu",  # Telugu
+    "mr": "mar_Deva",  # Marathi
+    "gu": "guj_Gujr",  # Gujarati
+    "kn": "kan_Knda",  # Kannada
+    "ml": "mal_Mlym",  # Malayalam
+    "pa": "pan_Guru",  # Punjabi (Gurmukhi script)
+    "or": "ory_Orya",  # Odia
+    "as": "asm_Beng",  # Assamese
 }
 
 # Human-readable names for prompt templating (Ollama backend).
@@ -49,6 +68,10 @@ LANG_NAMES: dict[str, str] = {
     "it": "Italian", "pt": "Portuguese", "nl": "Dutch", "ru": "Russian",
     "ja": "Japanese", "zh": "Mandarin Chinese", "hi": "Hindi", "ar": "Arabic",
     "ko": "Korean", "tr": "Turkish", "pl": "Polish", "vi": "Vietnamese",
+    # Indic
+    "bn": "Bengali", "ta": "Tamil", "te": "Telugu", "mr": "Marathi",
+    "gu": "Gujarati", "kn": "Kannada", "ml": "Malayalam",
+    "pa": "Punjabi", "or": "Odia", "as": "Assamese",
 }
 
 

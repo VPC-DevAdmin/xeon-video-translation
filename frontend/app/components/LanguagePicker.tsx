@@ -7,6 +7,8 @@ interface Lang {
 }
 
 // Codes here must exist in backend/app/pipeline/translate.py NLLB_LANG_CODES.
+// Indic languages at the end are the IndicF5-supported set (TTS backend
+// #74 routes these to IndicF5 via tts_backend=auto).
 export const LANGUAGES: Lang[] = [
   { code: "es", name: "Spanish", flag: "🇪🇸" },
   { code: "fr", name: "French", flag: "🇫🇷" },
@@ -17,6 +19,14 @@ export const LANGUAGES: Lang[] = [
   { code: "pt", name: "Portuguese", flag: "🇵🇹" },
   { code: "it", name: "Italian", flag: "🇮🇹" },
   { code: "ko", name: "Korean", flag: "🇰🇷" },
+  { code: "bn", name: "Bengali", flag: "🇧🇩" },
+  { code: "ta", name: "Tamil", flag: "🇮🇳" },
+  { code: "te", name: "Telugu", flag: "🇮🇳" },
+  { code: "mr", name: "Marathi", flag: "🇮🇳" },
+  { code: "gu", name: "Gujarati", flag: "🇮🇳" },
+  { code: "kn", name: "Kannada", flag: "🇮🇳" },
+  { code: "ml", name: "Malayalam", flag: "🇮🇳" },
+  { code: "pa", name: "Punjabi", flag: "🇮🇳" },
 ];
 
 export function LanguagePicker({
