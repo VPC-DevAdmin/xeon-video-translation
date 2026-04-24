@@ -59,7 +59,7 @@ best-available backend with a WARNING log pointing at the tracking PR.
 
 | Target language(s)                        | Preferred backend        | Status as of 2026-04 |
 | ----------------------------------------- | ------------------------ | -------------------- |
-| Hindi, Bengali, Tamil, Telugu, Marathi, Gujarati, Kannada, Malayalam, Punjabi, Oriya, Assamese | IndicF5 | ⏳ not integrated (PR #73) — falls back to XTTS with quality warning |
+| Hindi, Bengali, Tamil, Telugu, Marathi, Gujarati, Kannada, Malayalam, Punjabi, Oriya, Assamese | IndicF5 | ✅ integrated (PR #73) |
 | Mandarin, Cantonese (zh, zh-cn)           | F5-TTS (base)            | ✅ integrated |
 | English (testing path)                    | F5-TTS (base)            | ✅ integrated |
 | Japanese                                  | StyleTTS2-JP or MeloTTS  | ⏳ not integrated (PRs #74/#75) — falls back to XTTS |
@@ -160,6 +160,57 @@ commercial-use caveat as the XTTS weights; review before shipping.
 ```bash
 make models-f5tts
 ```
+
+### IndicF5 (Indic languages)
+
+**IndicF5** (`ai4bharat/IndicF5`). F5-TTS architecture fine-tuned on
+IndicVoices-R by AI4Bharat. Handles Indic languages natively — the
+right backend for Hindi, Bengali, Tamil, Telugu, Marathi, Gujarati,
+Kannada, Malayalam, Punjabi, Odia, and Assamese.
+
+Added in PR #73 because XTTS-v2 on Devanagari targets degraded to
+phoneme-level approximations (a 19 s Hindi dub produced 0.5 s of
+unintelligible audio — see PR #71 / #72 discussions).
+
+- ~1.5 GB on disk. First call downloads via `transformers.AutoModel`
+  with `trust_remote_code=True` into `$MODEL_CACHE_DIR/huggingface/`.
+- ~0.4–0.8× realtime on a 16-core Xeon; similar order to F5-TTS.
+- **Needs a reference WAV + transcript.** We feed the Whisper transcript
+  from Stage 2; a source-language reference (e.g. English speaker)
+  is acceptable — IndicF5 adapts the voice color to the target
+  phoneme set. For best quality, supply a native-language reference
+  clip if you have one.
+- **Supported languages** (ISO 639-1 / BCP-47 codes):
+
+  | Code | Language  |
+  |------|-----------|
+  | `hi` | Hindi     |
+  | `bn` | Bengali   |
+  | `ta` | Tamil     |
+  | `te` | Telugu    |
+  | `mr` | Marathi   |
+  | `gu` | Gujarati  |
+  | `kn` | Kannada   |
+  | `ml` | Malayalam |
+  | `pa` | Punjabi   |
+  | `or` | Odia      |
+  | `as` | Assamese  |
+
+**Usage**: `tts_backend=indicf5` on job submit, or let `auto` route
+to it (the default target-language routing picks IndicF5 for any
+language in the table above).
+
+**Override repo** — `INDICF5_MODEL=ai4bharat/IndicF5@<sha>` to pin a
+specific commit if the inference API drifts.
+
+**Integration status**: single-shot only (no per-segment synthesis
+yet). Inference signature `model(text, ref_audio_path=..., ref_text=...)`
+is what the HF model card documents and the community uses; if
+AI4Bharat changes the API, the backend raises a clear TTSError with
+the pinned-commit workaround.
+
+**License**: Follows the IndicF5 model card — check before shipping
+commercial output.
 
 ## Stages 5–6 (not yet wired up)
 
