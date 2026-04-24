@@ -145,12 +145,19 @@ services:
       # Set LATENTSYNC_DRY_RUN=1 in .env, rebuild, re-run.
       LATENTSYNC_DRY_RUN: ${LATENTSYNC_DRY_RUN:-0}
       # --- Performance knobs (added in the 1c perf follow-up) --------- #
-      # IPEX compute dtype. `bf16` enables torch.autocast around the
-      # UNet forward on AMX-capable Xeon (Sapphire Rapids+) — 2–4×
-      # faster at essentially imperceptible quality loss. `fp32` is
-      # the conservative default on older hosts; set to bf16 in .env
-      # after one successful bf16 run shows no visible drift.
-      LATENTSYNC_IPEX_DTYPE: ${LATENTSYNC_IPEX_DTYPE:-bf16}
+      # IPEX compute dtype. `fp32` is the default — bf16 was the
+      # original default but a jitter bisection traced a visible
+      # "quantized bouncing between 4 X/Y values" artifact on
+      # near-static subjects to bf16's 8-bit mantissa snapping
+      # intermediate sums to a small set of representable values
+      # (ΔSTD 31% between bf16 and fp32 measured on IMG_7228.MOV,
+      # see scripts/latentsync_debug/DEBUG_PLAN.md). bf16 remains
+      # available as an opt-in speed mode — ~3× faster on AMX-capable
+      # Xeon (Sapphire Rapids+) at the cost of that artifact, which
+      # is noticeable on static/near-static subjects and acceptable
+      # on active talking heads. Set LATENTSYNC_IPEX_DTYPE=bf16 in
+      # .env for the speed mode.
+      LATENTSYNC_IPEX_DTYPE: ${LATENTSYNC_IPEX_DTYPE:-fp32}
       # DeepCache — caches early denoising-step tensors and reuses
       # them later. ~1.3× speedup at negligible quality cost on SD 1.5.
       # Set to 0 if it ever causes an artifact you can't explain.
@@ -160,21 +167,25 @@ services:
       # where the pipeline is going wrong. Rate-limited per stage.
       LATENTSYNC_DEBUG_DUMP: ${LATENTSYNC_DEBUG_DUMP:-0}
       LATENTSYNC_DEBUG_FRAME_LIMIT: ${LATENTSYNC_DEBUG_FRAME_LIMIT:-3}
-      # Temporal smoothing window for per-frame affine matrices + bboxes.
-      # Decomposes each affine into (tx, ty, rotation, scale) and
-      # smooths each independently with a centered moving average over
-      # this many frames. Default 9 (0.36 s at 25 fps) handles the
-      # translation/rotation/zoom jitter that 5 was too short for.
-      # Set to 1 to disable; larger values smooth more aggressively but
-      # can lag real head motion on fast turns.
-      LATENTSYNC_AFFINE_SMOOTH_WINDOW: ${LATENTSYNC_AFFINE_SMOOTH_WINDOW:-9}
       # Temporal smoothing window for per-frame 3-point landmarks, applied
-      # *before* the SVD-based affine estimator. Prevents sub-pixel
-      # landmark noise (common on lossy H.264 input) from amplifying into
-      # pixel-scale affine drift. Default 5 (0.2s at 25fps) is a
-      # conservative floor; 7 or 9 smooths more aggressively. Set to 1 to
-      # disable.
+      # *before* the SVD-based affine estimator. This is the PRIMARY
+      # smoother in the pipeline — prevents sub-pixel landmark noise
+      # (common on lossy H.264 input) from amplifying into pixel-scale
+      # affine drift through (s2/s1)*R in transformation_from_points.
+      # Default 5 (0.2s at 25fps) is a conservative floor; 7 or 9
+      # smooths more aggressively. Set to 1 to disable.
       LATENTSYNC_LANDMARK_SMOOTH_WINDOW: ${LATENTSYNC_LANDMARK_SMOOTH_WINDOW:-5}
+      # Secondary (affine-matrix) smoother — decomposes each per-frame
+      # affine into (tx, ty, rotation, scale) and SG-filters each
+      # component. Runs downstream of the landmark smoother above.
+      # DEFAULT 1 (disabled) — cascading two SG filters can produce
+      # lagged-oscillatory step responses, and the landmark smoother
+      # now handles the job directly at the source. Available as an
+      # opt-in belt-and-suspenders for clips where the landmark
+      # smoother alone leaves residual jitter (e.g. very aggressive
+      # head turns at small clip lengths where the landmark window
+      # can't resolve noise from motion). Typical opt-in value: 9.
+      LATENTSYNC_AFFINE_SMOOTH_WINDOW: ${LATENTSYNC_AFFINE_SMOOTH_WINDOW:-1}
       # Diagnostic bypasses for jitter bisection (see
       # scripts/latentsync_debug/DEBUG_PLAN.md). Both default to off.
       #   LATENTSYNC_BYPASS_UNET=1  — skip denoise + VAE decode entirely,
