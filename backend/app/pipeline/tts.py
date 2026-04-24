@@ -203,7 +203,14 @@ def synthesize(
     # duration below is the backstop if this doesn't fire.
     try:
         _trim_tail_via_whisper(
-            output_path, target_language=tgt, expected_text=text,
+            output_path,
+            target_language=tgt,
+            expected_text=text,
+            # Source duration powers Tier 3's "don't cut below
+            # source × 0.5" sanity floor — catches the Hindi case
+            # where word-alignment matches one token and bails,
+            # truncating 8s of real speech to 0.24s on a 19s source.
+            source_duration_seconds=source_duration_seconds,
         )
     except Exception as e:
         log.warning("whisper tail-trim failed (%s); continuing", e)
@@ -746,6 +753,24 @@ _MIN_SPEECH_SECONDS = 0.30      # below this, assume detection failed and skip
 _WHISPER_TRIM_HEADROOM = 0.08   # keep a little of the word's decay
 _WHISPER_TRIM_MIN_GAIN = 0.10   # don't bother if we'd save less than this
 
+# Confidence floor for the word-by-word alignment in
+# `_find_last_real_word_end`. Below this fraction-of-expected-tokens
+# matched, we treat the alignment as untrustworthy (almost certainly
+# the case for non-Latin-script targets like Hindi where Whisper's
+# tokenization disagrees with NLLB's translation tokenization). When
+# the floor isn't met we fall back to Whisper's VAD-based last-segment
+# end, then to no-trim, rather than cutting off real speech mid-word.
+_WHISPER_TRIM_MIN_MATCH_RATIO = 0.5
+
+# When the source video duration is known, refuse trims that cut the
+# audio below this fraction of source duration. The translation is a
+# *dub* — output should be roughly the same length as the source clip.
+# A trim that drops audio to 5% of source is almost always an
+# alignment failure, not a real "we discovered the speech ended early"
+# signal. Caught the Hindi case where the trim truncated 8 s of real
+# Hindi to 0.24 s on a 19 s source clip.
+_WHISPER_TRIM_MIN_RATIO_OF_SOURCE = 0.5
+
 
 def _trim_to_speech(audio_path: Path) -> None:
     """Trim `audio_path` in place to the longest non-silent span.
@@ -850,10 +875,12 @@ def _normalize_word(s: str) -> str:
 
 def _find_last_real_word_end(
     expected_text: str, transcribed_words: list[tuple[float, str]],
-) -> float | None:
+) -> tuple[float | None, int, int]:
     """Walk Whisper's transcribed word stream against the expected
-    translation text. Return the `end` timestamp of the last word we're
-    confident was part of the real translation.
+    translation text. Return the `end` timestamp of the last word we
+    matched, plus the (matched_count, expected_count) so the caller
+    can compute alignment confidence and decide whether to trust the
+    result.
 
     The XTTS hallucination problem looks like this in Whisper output:
 
@@ -865,18 +892,27 @@ def _find_last_real_word_end(
     that matches the next expected token (or is close — XTTS sometimes
     splits a word across two Whisper tokens), advance the expected
     pointer. Stop advancing once we've consumed the whole expected text
-    — everything after is hallucination.
+    — everything after is hallucination. After 3 consecutive non-matches
+    (probably in the hallucinated tail), break.
 
-    Tolerates two insertions between matches (Whisper sometimes inserts
-    spurious short tokens inside real speech). Returns None if we
-    never matched enough to be useful.
+    Returns (last_matched_end, matched_count, expected_count). The
+    timestamp is None when nothing matched at all. The counts are
+    always returned; the caller divides them for confidence.
+
+    Why returning confidence matters: on non-Latin-script targets
+    (Hindi, Arabic, Chinese) Whisper's tokenization frequently
+    disagrees with NLLB's, so we match the first 1–2 words and then
+    bail — leaving last_matched_end pointing at 0.16 s on a 19 s clip.
+    The caller uses (matched / expected) to decide when to trust the
+    timestamp vs fall back to VAD or skip the trim entirely.
     """
     expected_tokens = [_normalize_word(w) for w in expected_text.split()]
     expected_tokens = [t for t in expected_tokens if t]
     if not expected_tokens or not transcribed_words:
-        return None
+        return None, 0, len(expected_tokens)
 
     ei = 0                      # index into expected
+    matched_count = 0
     consecutive_misses = 0
     last_matched_end: float | None = None
     for end_ts, raw in transcribed_words:
@@ -896,6 +932,7 @@ def _find_last_real_word_end(
         )
         if is_match:
             last_matched_end = end_ts
+            matched_count += 1
             ei += 1
             consecutive_misses = 0
         else:
@@ -905,23 +942,47 @@ def _find_last_real_word_end(
             if consecutive_misses >= 3 and last_matched_end is not None:
                 break
 
-    return last_matched_end
+    return last_matched_end, matched_count, len(expected_tokens)
 
 
 def _trim_tail_via_whisper(
-    audio_path: Path, target_language: str, expected_text: str,
+    audio_path: Path,
+    target_language: str,
+    expected_text: str,
+    source_duration_seconds: float | None = None,
 ) -> None:
-    """Trim audio past the last real translated word.
+    """Trim audio past the last real translated word — tiered approach.
 
-    Runs the faster-whisper singleton on the TTS output, aligns the
-    transcribed words against `expected_text`, and cuts after the last
-    word we matched. This catches the specific XTTS failure mode
-    `silencedetect` misses: continuous speech-level tail energy
-    (mumbled phonemes, repeated words) past the actual translation.
+    XTTS on short utterances tends to over-generate, producing
+    hallucinated phonemes / repeated syllables / mumbling past the
+    actual translation. `silencedetect` can't catch this because the
+    tail IS speech energy. Whisper transcription can — for languages
+    where its tokenization aligns with our translator's.
 
-    No-op if Whisper fails, returns no words, or we don't get a
-    confident match — `_hard_truncate` at source_duration is the
-    downstream safety net.
+    Three tiers, falling back when each fails. None of them ever
+    produces a trim_to value we can't justify:
+
+    Tier 1 (preferred) — sequential word alignment of Whisper's output
+        against `expected_text`. Confidence = matched / expected. If
+        confidence ≥ `_WHISPER_TRIM_MIN_MATCH_RATIO` (default 0.5),
+        accept the timestamp of the last matched word. Strong on
+        Spanish/English/etc.
+
+    Tier 2 (fallback) — Whisper's last VAD-detected speech-segment
+        end. Doesn't depend on word identity, so works for any
+        language. Misses the case where hallucinated speech is
+        contiguous with real speech (no VAD-level silence between
+        them), but combined with Tier 3 still produces safe behavior.
+
+    Tier 3 (sanity floor) — if `source_duration_seconds` is known,
+        refuse trims that cut below `source × _WHISPER_TRIM_MIN_RATIO_OF_SOURCE`
+        (default 0.5). The pipeline is dubbing — output should be
+        roughly the same duration as the source clip. A trim to 5%
+        is almost always an alignment failure (the Hindi case that
+        motivated this PR).
+
+    If all tiers fail/refuse, no trim. `_hard_truncate(source_duration)`
+    downstream is the structural backstop against `loop_video`.
     """
     if not expected_text.strip():
         return
@@ -948,9 +1009,11 @@ def _trim_tail_via_whisper(
             # and makes hallucinated tails easier to distinguish.
             initial_prompt=expected_text,
         )
-        # Flatten (end_timestamp, text) for the matcher.
+        # Materialize segments once; we need both word stream (Tier 1)
+        # and segment-end (Tier 2) from the same iteration.
+        segments = list(segments_iter)
         transcribed: list[tuple[float, str]] = []
-        for seg in segments_iter:
+        for seg in segments:
             for w in getattr(seg, "words", None) or []:
                 if w.end is None:
                     continue
@@ -963,27 +1026,70 @@ def _trim_tail_via_whisper(
         log.info("whisper-trim: no words detected; skipping")
         return
 
-    last_real_end = _find_last_real_word_end(expected_text, transcribed)
-    if last_real_end is None:
+    # ---- Tier 1: word-by-word alignment with confidence floor -------- #
+    word_end, matched, expected_n = _find_last_real_word_end(
+        expected_text, transcribed,
+    )
+    confidence = matched / max(1, expected_n)
+    tier1_end: float | None = None
+    if word_end is not None and confidence >= _WHISPER_TRIM_MIN_MATCH_RATIO:
+        tier1_end = word_end
+
+    # ---- Tier 2: VAD-based last-segment end (any language) ----------- #
+    tier2_end: float | None = None
+    valid_seg_ends = [
+        float(s.end) for s in segments
+        if getattr(s, "end", None) is not None
+    ]
+    if valid_seg_ends:
+        tier2_end = max(valid_seg_ends)
+
+    # Pick the latest available endpoint (most generous; a smaller
+    # candidate would risk cutting real speech).
+    candidates = [t for t in (tier1_end, tier2_end) if t is not None]
+    if not candidates:
         log.info(
-            "whisper-trim: couldn't align %d Whisper words to expected text; skipping",
-            len(transcribed),
+            "whisper-trim: no usable endpoint (alignment confidence=%.2f, "
+            "expected=%d, no VAD segments); skipping",
+            confidence, expected_n,
         )
         return
+    chosen_end = max(candidates)
+    chosen_tier = "word-align" if chosen_end == tier1_end else "vad-segment"
 
     current = _probe_duration(audio_path)
-    trim_to = min(current, last_real_end + _WHISPER_TRIM_HEADROOM)
+    trim_to = min(current, chosen_end + _WHISPER_TRIM_HEADROOM)
+
+    # ---- Tier 3: source-duration sanity floor ------------------------ #
+    if source_duration_seconds is not None and source_duration_seconds > 0:
+        floor = source_duration_seconds * _WHISPER_TRIM_MIN_RATIO_OF_SOURCE
+        if trim_to < floor:
+            log.warning(
+                "whisper-trim %s: would cut %.2fs -> %.2fs but source is "
+                "%.2fs (floor %.2fs at ratio %.2f). Likely alignment failure "
+                "(tier=%s, word-align confidence=%.2f); skipping. "
+                "Hard-truncate will still cap at source duration.",
+                audio_path.name, current, trim_to,
+                source_duration_seconds, floor,
+                _WHISPER_TRIM_MIN_RATIO_OF_SOURCE,
+                chosen_tier, confidence,
+            )
+            return
+
     if current - trim_to < _WHISPER_TRIM_MIN_GAIN:
         log.info(
-            "whisper-trim %s: last real word at %.2fs, already close to end (%.2fs); skipping",
-            audio_path.name, last_real_end, current,
+            "whisper-trim %s: chosen end %.2fs already close to current "
+            "%.2fs (tier=%s, confidence=%.2f); skipping",
+            audio_path.name, chosen_end, current, chosen_tier, confidence,
         )
         return
 
     _ffmpeg_atrim(audio_path, audio_path, 0.0, trim_to)
     log.info(
-        "whisper-trim %s: %.2fs -> %.2fs (last real word end=%.2fs, cut %.2fs of tail)",
-        audio_path.name, current, trim_to, last_real_end, current - trim_to,
+        "whisper-trim %s: %.2fs -> %.2fs (tier=%s, end=%.2fs, "
+        "confidence=%.2f, cut %.2fs of tail)",
+        audio_path.name, current, trim_to, chosen_tier,
+        chosen_end, confidence, current - trim_to,
     )
 
 
