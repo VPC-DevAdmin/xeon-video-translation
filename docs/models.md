@@ -37,13 +37,45 @@ you see numerical artifacts on a particular clip.
 
 ## Stage 4 — Voice cloning / TTS
 
-Two backends, selectable per-request via `tts_backend` on `POST /jobs` or
-the `TTS_BACKEND` env default.
+Selectable per-request via `tts_backend` on `POST /jobs` or the
+`TTS_BACKEND` env default.
 
 | Backend | Default? | Languages                            | Wall-clock (CPU)       | License of weights |
 | ------- | -------- | ------------------------------------ | ---------------------- | ------------------ |
 | `xtts`  | yes      | 16 (see below)                       | ~0.3–0.7× realtime     | CPML (non-commercial) |
 | `f5tts` | no       | EN, ZH (base); others via fine-tunes | ~0.4–0.8× realtime     | CC-BY-NC 4.0       |
+| `auto`  | no       | picks per-target-language (see below) | varies                 | follows chosen backend |
+
+### TTS backend by target language (`tts_backend=auto`)
+
+Different TTS models have different language competencies. XTTS-v2 is
+multilingual in theory (16 languages) but its training corpus is
+Latin-script-heavy; on Devanagari (Hindi, Bengali, etc.) and CJK
+(Japanese, Korean) it produces phoneme-level approximations rather
+than coherent native speech. Setting `tts_backend=auto` activates
+language-aware routing per the table below. When the preferred
+backend isn't integrated yet, the pipeline falls back to the
+best-available backend with a WARNING log pointing at the tracking PR.
+
+| Target language(s)                        | Preferred backend        | Status as of 2026-04 |
+| ----------------------------------------- | ------------------------ | -------------------- |
+| Hindi, Bengali, Tamil, Telugu, Marathi, Gujarati, Kannada, Malayalam, Punjabi, Oriya, Assamese | IndicF5 | ⏳ not integrated (PR #73) — falls back to XTTS with quality warning |
+| Mandarin, Cantonese (zh, zh-cn)           | F5-TTS (base)            | ✅ integrated |
+| English (testing path)                    | F5-TTS (base)            | ✅ integrated |
+| Japanese                                  | StyleTTS2-JP or MeloTTS  | ⏳ not integrated (PRs #74/#75) — falls back to XTTS |
+| Korean                                    | MeloTTS or StyleTTS2-KO  | ⏳ not integrated (PRs #74/#75) — falls back to XTTS |
+| Spanish, Portuguese, Italian, German, Dutch, Polish, Czech, Russian, Turkish, Arabic, Hungarian | XTTS-v2 | ✅ integrated |
+| French                                    | XTTS-v2 or F5-TTS        | ✅ integrated (XTTS preferred) |
+
+`tts_backend=auto` also serves as **documentation-via-runtime** —
+users who pick `auto` for an unsupported language get an immediate
+WARNING in logs rather than discovering the quality problem only
+after a 4-hour lipsync run (see the Hindi XTTS case that motivated
+this table).
+
+When you know which backend to use, setting `tts_backend` explicitly
+(e.g. `tts_backend=xtts` for Hindi despite the warning) silences the
+routing log.
 
 ### XTTS-v2
 
