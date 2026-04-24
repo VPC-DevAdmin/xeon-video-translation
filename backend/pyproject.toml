@@ -33,6 +33,13 @@ dependencies = [
   # License: CPML — see docs/models.md. Demo use only.
   "coqui-tts>=0.24",
 
+  # IndicF5 (PR #74) loads its inference code via HuggingFace
+  # `trust_remote_code=True`. That code imports `pydub` for audio I/O —
+  # a tiny ffmpeg-wrapping library that we don't otherwise need. Listed
+  # here so the import doesn't surface as a runtime TTSError. ffmpeg
+  # itself is already present in the backend image.
+  "pydub>=0.25",
+
   # Stage 5 (lipsync) + Stage 6 (mux). opencv-headless avoids pulling X11;
   # librosa/scipy are needed for Wav2Lip's mel spectrogram preprocessing.
   "opencv-python-headless>=4.9",
