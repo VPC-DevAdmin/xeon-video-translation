@@ -302,6 +302,11 @@ live-demo territory on any current-gen CPU.
 overnight is acceptable (archival, research, accessibility), that's
 reasonable; for a demo booth, use `LIPSYNC=musetalk` or `LIPSYNC=none`.
 
+**For the full internals** — stage-by-stage data flow, every tunable
+with measured impact, the 2026 jitter bisection case study, and a
+debugging playbook — see [`docs/latentsync-pipeline.md`](./latentsync-pipeline.md).
+The sections below are a brief orientation; that doc is the reference.
+
 ### State as of PR-LS-1c (this PR)
 
 **Inference is live.** The vendored LatentSync package
