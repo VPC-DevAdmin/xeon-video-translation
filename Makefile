@@ -144,18 +144,14 @@ models-all: models-wav2lip models-musetalk models-f5tts  ## All models (Wav2Lip 
 
 run:  ## Run smoke test with current $(LIPSYNC) / $(TARGET) / $(TTS) / $(FIXTURE) / $(QUALITY)
 	@test -f "$(FIXTURE)" || { echo "FIXTURE not found: $(FIXTURE)"; echo "Set FIXTURE=... or put a clip under artifacts/inputs/."; exit 1; }
-	@echo "QUALITY=$(QUALITY) — $(_QUALITY_LABEL)"
-	@echo "TTS=$(TTS)"
+	@echo "Backend:  lipsync=$(LIPSYNC)  tts=$(TTS)  target=$(TARGET)"
+	$(if $(filter musetalk,$(LIPSYNC)),@echo "MuseTalk quality:  QUALITY=$(QUALITY) — $(_QUALITY_LABEL)",)
 	API_BASE=$(API_BASE) \
 	  FIXTURE=$(FIXTURE) \
 	  TARGET=$(TARGET) \
 	  LIPSYNC=$(LIPSYNC) \
 	  TTS_BACKEND=$(TTS) \
-	  MUSETALK_BLEND_MODE=$(_Q_BLEND_MODE) \
-	  MUSETALK_BLEND_FEATHER=$(_Q_BLEND_FEATHER) \
-	  MUSETALK_FACE_RESTORE=$(_Q_FACE_RESTORE) \
-	  MUSETALK_FACE_RESTORE_FIDELITY=$(_Q_FACE_RESTORE_FIDEL) \
-	  MUSETALK_FACE_RESTORE_BLEND=$(_Q_FACE_RESTORE_BLEND) \
+	  $(if $(filter musetalk,$(LIPSYNC)),MUSETALK_BLEND_MODE=$(_Q_BLEND_MODE) MUSETALK_BLEND_FEATHER=$(_Q_BLEND_FEATHER) MUSETALK_FACE_RESTORE=$(_Q_FACE_RESTORE) MUSETALK_FACE_RESTORE_FIDELITY=$(_Q_FACE_RESTORE_FIDEL) MUSETALK_FACE_RESTORE_BLEND=$(_Q_FACE_RESTORE_BLEND) ,) \
 	  ./scripts/smoke_test.sh
 
 run-none: LIPSYNC=none
@@ -189,6 +185,27 @@ run-latentsync-adaptive:  ## LatentSync with auto memory escalation on OOM (48g 
 	  TTS_BACKEND=$(TTS) \
 	  CONTAINER=polyglot-lipsync-latentsync \
 	  ./scripts/run_latentsync_adaptive.sh
+
+# --- Job control --------------------------------------------------------------
+.PHONY: cancel reconnect
+
+cancel:  ## Cancel a running job (JOB=<id-or-prefix>). Frees the queue slot.
+	@test -n "$(JOB)" || { echo "Usage: make cancel JOB=<job-id-or-prefix>"; exit 2; }
+	@full_id=$$(curl -sS "$(API_BASE)/jobs?limit=200" \
+	    | jq -r --arg p "$(JOB)" '.jobs[] | select(.job_id | startswith($$p)) | .job_id' \
+	    | head -1); \
+	if [ -z "$$full_id" ]; then echo "no job matches prefix '$(JOB)'"; exit 1; fi; \
+	echo "cancelling $$full_id"; \
+	curl -sS -X POST "$(API_BASE)/jobs/$$full_id/cancel" | jq .
+
+reconnect:  ## Reconnect to a running job without submitting a new one (JOB=<id-or-prefix>)
+	@test -n "$(JOB)" || { echo "Usage: make reconnect JOB=<job-id-or-prefix>"; exit 2; }
+	@full_id=$$(curl -sS "$(API_BASE)/jobs?limit=200" \
+	    | jq -r --arg p "$(JOB)" '.jobs[] | select(.job_id | startswith($$p)) | .job_id' \
+	    | head -1); \
+	if [ -z "$$full_id" ]; then echo "no job matches prefix '$(JOB)'"; exit 1; fi; \
+	echo "reconnecting to $$full_id"; \
+	API_BASE=$(API_BASE) ./scripts/smoke_test.sh --reconnect $$full_id
 
 # --- Artifacts ----------------------------------------------------------------
 .PHONY: list fetch progress progress-report watch inputs clean-jobs

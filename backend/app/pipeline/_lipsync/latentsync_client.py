@@ -77,10 +77,15 @@ def run(
         method="POST",
     )
 
+    # timeout=None → use the global default socket timeout, which is
+    # unset by default, i.e. urlopen blocks indefinitely. That's the
+    # right behavior for a batch job whose duration we can't predict
+    # up front; per-stage progress gets reported over a side channel
+    # (the shared JSON file on the /jobs volume) so callers can still
+    # tell whether the run is alive. See config.py note.
+    urlopen_timeout = settings.latentsync_timeout_seconds
     try:
-        with urllib.request.urlopen(
-            req, timeout=settings.latentsync_timeout_seconds,
-        ) as resp:
+        with urllib.request.urlopen(req, timeout=urlopen_timeout) as resp:
             resp_json = json.loads(resp.read().decode("utf-8"))
             log.info("latentsync responded: %s", resp_json.get("status"))
     except urllib.error.HTTPError as e:

@@ -62,7 +62,13 @@ class Settings(BaseSettings):
     # for the eventual inference path — LatentSync on CPU is a batch
     # workflow (~10 min per second of source video), not a live one.
     latentsync_service_url: str = "http://lipsync-latentsync:8000"
-    latentsync_timeout_seconds: int = 14400  # 4 hours — batch job territory
+    # LatentSync is a batch job. At fp32 defaults (PR #67) a 30-second
+    # clip already takes ~5 hours, so any fixed ceiling becomes a landmine
+    # that kills legitimate runs. Default to None = no client-side
+    # ceiling; let the service finish or crash on its own (we still have
+    # per-stage progress reporting via the shared JSON file). Override
+    # with a positive int only if you want urlopen to bail after N seconds.
+    latentsync_timeout_seconds: int | None = None
     # Watermark text drawn on the output video. Respect responsible-use guidance.
     watermark_text: str = "AI-translated"
 

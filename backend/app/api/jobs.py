@@ -11,7 +11,13 @@ from fastapi.responses import FileResponse
 
 from .. import storage
 from ..config import settings
-from ..pipeline.orchestrator import JobState, get_job, register_job, run_pipeline
+from ..pipeline.orchestrator import (
+    JobState,
+    cancel_job,
+    get_job,
+    register_job,
+    run_pipeline,
+)
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
@@ -221,6 +227,34 @@ async def get_job_status(job_id: str) -> dict:
                 payload["result_url"] = f"/jobs/{job_id}/artifacts/{name}"
                 break
     return payload
+
+
+@router.post("/{job_id}/cancel", status_code=status.HTTP_200_OK)
+async def cancel(job_id: str) -> dict:
+    """Request cancellation of an in-flight pipeline.
+
+    Frees the MAX_CONCURRENT_JOBS semaphore slot immediately so queued
+    jobs can proceed. The underlying lipsync service continues chewing
+    on whatever HTTP request was already in-flight (we can't interrupt
+    blocking I/O from asyncio) but its result is discarded.
+
+    Returns 404 if the job_id is unknown or the job was never running
+    in this process. 409 if the job is already in a terminal state.
+    """
+    # 404 first — get_job returns a reconstructed state for completed
+    # jobs, so we check that before cancel_job which only knows about
+    # in-process state.
+    if get_job(job_id) is None:
+        raise HTTPException(404, "job not found")
+    ok, reason = cancel_job(job_id)
+    if not ok:
+        if reason == "already-terminal":
+            raise HTTPException(409, "job is already in a terminal state")
+        # "unknown" means the job isn't in the live task registry —
+        # probably completed/failed before cancel reached us, or was
+        # reconstructed from disk for an old job_id.
+        raise HTTPException(404, "job is not currently running")
+    return {"job_id": job_id, "status": "cancelled"}
 
 
 @router.get("/{job_id}/artifacts")
