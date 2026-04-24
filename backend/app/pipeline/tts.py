@@ -72,6 +72,29 @@ XTTS_LANG_CODES: dict[str, str] = {
 F5TTS_BASE_LANGS: set[str] = {"en", "zh"}
 
 
+# IndicF5 — F5-TTS architecture fine-tuned on IndicVoices-R by AI4Bharat.
+# Handles the major Indic languages natively (as opposed to XTTS-v2 which
+# produces phoneme approximations on Devanagari). Model loads ~1.5 GB on
+# first use via transformers + trust_remote_code=True.
+#
+# BCP-47 → IndicF5 language tag. We pass the tag into the model call so
+# it can pick the right phoneme set; the values match what AI4Bharat's
+# inference code expects (see their HF model card).
+INDICF5_LANG_CODES: dict[str, str] = {
+    "hi": "hi",   # Hindi
+    "bn": "bn",   # Bengali
+    "ta": "ta",   # Tamil
+    "te": "te",   # Telugu
+    "mr": "mr",   # Marathi
+    "gu": "gu",   # Gujarati
+    "kn": "kn",   # Kannada
+    "ml": "ml",   # Malayalam
+    "pa": "pa",   # Punjabi
+    "or": "or",   # Odia / Oriya
+    "as": "as",   # Assamese
+}
+
+
 # --------------------------------------------------------------------------- #
 # Language-aware TTS backend selection
 #
@@ -126,12 +149,11 @@ _LANG_TTS_PREFERENCES: list[tuple[set[str], list[str]]] = [
 
 # Backends implemented in the current codebase. Update as new backend
 # PRs land. The selector uses this as the "is this installed?" check.
-_INTEGRATED_BACKENDS: set[str] = {"xtts", "f5tts"}
+_INTEGRATED_BACKENDS: set[str] = {"xtts", "f5tts", "indicf5"}
 
 # Follow-up PR tracker so the warning log points users at where the
 # missing backend is coming from. Keep in sync as integration PRs land.
 _PENDING_BACKEND_PRS: dict[str, str] = {
-    "indicf5": "#73 (IndicF5 for Indic languages)",
     "styletts2-jp": "#75 (StyleTTS2-JP)",
     "styletts2-ko": "#75 (StyleTTS2-KO)",
     "melotts": "#74 (MeloTTS for JA/KO)",
@@ -246,9 +268,10 @@ def synthesize(
     translated text. F5-TTS currently only runs single-shot regardless.
     """
     chosen = (backend or settings.tts_backend).lower()
-    if chosen not in ("xtts", "f5tts", "auto"):
+    if chosen not in ("xtts", "f5tts", "indicf5", "auto"):
         raise TTSError(
-            f"unknown tts backend: {chosen!r}. Supported: xtts, f5tts, auto"
+            f"unknown tts backend: {chosen!r}. "
+            f"Supported: xtts, f5tts, indicf5, auto"
         )
 
     tgt = translation.get("target_language", "").lower()
@@ -280,6 +303,13 @@ def synthesize(
             f"back to tts_backend=xtts for a multilingual model. "
             f"See docs/models.md for the honest language support matrix."
         )
+    if chosen == "indicf5" and tgt not in INDICF5_LANG_CODES:
+        raise TTSError(
+            f"IndicF5 does not support target language {tgt!r}. "
+            f"Supported: {sorted(INDICF5_LANG_CODES)}. "
+            f"Use tts_backend=xtts for other languages, or "
+            f"tts_backend=auto for automatic per-language selection."
+        )
 
     text = (translation.get("text") or "").strip()
     if not text:
@@ -293,6 +323,14 @@ def synthesize(
     if chosen == "xtts":
         result = _synthesize_xtts_full(
             translation=translation,
+            text=text,
+            target_language=tgt,
+            reference_audio=reference_audio,
+            output_path=output_path,
+            transcript_segments=transcript_segments,
+        )
+    elif chosen == "indicf5":
+        result = _synthesize_indicf5_single_shot(
             text=text,
             target_language=tgt,
             reference_audio=reference_audio,
@@ -471,6 +509,9 @@ def _synthesize_xtts_full(
 _f5tts = None
 _f5tts_lock = Lock()
 
+_indicf5 = None
+_indicf5_lock = Lock()
+
 
 def _get_f5tts():
     """Lazy-load F5-TTS. First call downloads the chosen checkpoint."""
@@ -533,6 +574,193 @@ def _f5tts_reference_text(
         except (OSError, json.JSONDecodeError):
             pass
     return ""
+
+
+def _get_indicf5():
+    """Lazy-load IndicF5. First call downloads ~1.5 GB.
+
+    IndicF5 is distributed through HuggingFace (`ai4bharat/IndicF5`)
+    with `trust_remote_code=True` — the model's custom inference code
+    lives in the HF repo rather than a pip package. That's the path
+    their model card documents and what the community uses.
+
+    We load on CPU; IndicF5 inherits F5-TTS's CPU support. First load
+    takes ~30-60 s plus the download.
+    """
+    global _indicf5
+    if _indicf5 is not None:
+        return _indicf5
+    with _indicf5_lock:
+        if _indicf5 is not None:
+            return _indicf5
+
+        # Cache under MODEL_CACHE_DIR like every other HF model.
+        os.environ.setdefault(
+            "HF_HOME",
+            str(settings.model_cache_dir / "huggingface"),
+        )
+
+        try:
+            from transformers import AutoModel
+        except ImportError as e:
+            raise TTSError(
+                "transformers is required for IndicF5 but isn't importable. "
+                "Rebuild the backend image. Original error: " + str(e),
+            ) from e
+
+        repo = os.environ.get("INDICF5_MODEL", "ai4bharat/IndicF5")
+        log.info(
+            "loading IndicF5 from %s (first call: ~1.5 GB download + ~30-60s init)",
+            repo,
+        )
+        try:
+            model = AutoModel.from_pretrained(repo, trust_remote_code=True)
+        except Exception as e:
+            raise TTSError(
+                f"IndicF5 load failed from {repo!r}: {e}. "
+                f"Check that (a) the model repo is reachable, "
+                f"(b) transformers + accelerate + einops are up to date, "
+                f"(c) disk at $HF_HOME has enough free space (~2 GB). "
+                f"Override with INDICF5_MODEL=<alternate-repo-id> if needed."
+            ) from e
+        # Explicit CPU placement + eval mode. Belt-and-suspenders:
+        # our container already has CUDA_VISIBLE_DEVICES="" but if
+        # someone runs this on a CUDA box we don't want surprise GPU
+        # work without opting in.
+        try:
+            model = model.to("cpu")
+        except Exception:
+            pass  # model may not be a nn.Module; ignore if .to() fails
+        try:
+            model.eval()
+        except Exception:
+            pass
+        _indicf5 = model
+        return _indicf5
+
+
+def _synthesize_indicf5_single_shot(
+    text: str,
+    target_language: str,
+    reference_audio: Path,
+    output_path: Path,
+    transcript_segments: list[dict] | None,
+) -> TTSResult:
+    """Single-shot IndicF5 synthesis.
+
+    IndicF5's inference signature (per the HF model card):
+
+        audio = model(text, ref_audio_path=..., ref_text=...)
+
+    Returns a numpy (or torch) array at 24000 Hz. We normalize to
+    float32 + peak-limit and write as a WAV, then run the same
+    silence trim / loudness stack as the other backends.
+
+    Reference audio: we pass the source-language (e.g. English)
+    reference from the pipeline. IndicF5 adapts the voice color to
+    the target phoneme set; it does not require a native-language
+    reference. If quality suffers on specific speaker-target pairs,
+    users can override by supplying a native-language reference clip.
+    """
+    model = _get_indicf5()
+    ref_text = _f5tts_reference_text(reference_audio, transcript_segments)
+    if not ref_text:
+        # IndicF5 needs a reference transcript; without it the model
+        # has nothing to condition voice color against. Don't try to
+        # guess — fail clearly so the user rewinds to transcribe.
+        raise TTSError(
+            "IndicF5 requires a reference transcript but none was found. "
+            "The pipeline normally provides the Whisper transcript from "
+            "Stage 2. Check that transcribe.py ran successfully and that "
+            "transcript_segments is populated on the job."
+        )
+
+    # Defensive: we don't know the exact IndicF5 API version. Catch
+    # TypeError (arg-name changes) and report clearly so the user can
+    # pin to a known-good commit.
+    try:
+        import torch as _torch
+        with _torch.no_grad():
+            audio = model(
+                text,
+                ref_audio_path=str(reference_audio),
+                ref_text=ref_text,
+            )
+    except TypeError as e:
+        raise TTSError(
+            f"IndicF5 call signature mismatch ({e}). The model's "
+            f"inference API may have changed. Pin a known-good commit "
+            f"via INDICF5_MODEL=ai4bharat/IndicF5@<sha> or check the "
+            f"model card for the current signature."
+        ) from e
+    except Exception as e:
+        raise TTSError(f"IndicF5 inference failed: {e}") from e
+
+    # IndicF5 sample rate per the F5-TTS lineage.
+    _INDICF5_SAMPLE_RATE = 24000
+
+    # Accept a few reasonable return shapes:
+    #   - numpy array (1D waveform)
+    #   - torch tensor
+    #   - tuple (audio, sample_rate)
+    #   - dict {"audio": ..., "sampling_rate": ...}
+    import numpy as _np
+    sr = _INDICF5_SAMPLE_RATE
+    if isinstance(audio, dict):
+        sr = int(audio.get("sampling_rate", sr))
+        audio = audio.get("audio", audio.get("waveform"))
+    if isinstance(audio, tuple):
+        audio, sr_candidate = audio[0], audio[1] if len(audio) > 1 else sr
+        try:
+            sr = int(sr_candidate)
+        except Exception:
+            pass
+    if hasattr(audio, "detach"):   # torch tensor
+        audio = audio.detach().cpu().numpy()
+    audio = _np.asarray(audio, dtype=_np.float32)
+    # Drop leading batch / channel dim if 2-D with a unit axis.
+    while audio.ndim > 1 and 1 in audio.shape:
+        audio = audio.squeeze(
+            next(i for i, d in enumerate(audio.shape) if d == 1),
+        )
+    if audio.ndim != 1:
+        raise TTSError(
+            f"IndicF5 returned an unexpected audio shape {audio.shape!r}; "
+            f"expected a 1-D waveform (or reducible to one)."
+        )
+
+    # Peak-limit to 0.95 if model over-ranges (rare but cheap to guard).
+    peak = float(_np.abs(audio).max()) if audio.size else 0.0
+    if peak > 1.0:
+        audio = audio / peak * 0.95
+
+    try:
+        import soundfile as _sf
+    except ImportError as e:
+        raise TTSError(
+            "soundfile is required to write IndicF5 output. "
+            "This is a pipeline dep — rebuild the backend image. "
+            f"Original: {e}",
+        ) from e
+    _sf.write(str(output_path), audio, sr)
+
+    # Same post-processing as F5-TTS — IndicF5 also emits short leading
+    # click / trailing silence.
+    try:
+        _trim_to_speech(output_path)
+    except Exception as e:
+        log.warning(
+            "silence trim failed (%s); keeping untrimmed IndicF5 output", e,
+        )
+
+    return TTSResult(
+        backend="indicf5",
+        language=target_language,
+        reference_audio=reference_audio.name,
+        output_path=output_path.name,
+        per_segment=False,
+        segments_synthesized=1,
+    )
 
 
 def _synthesize_f5tts_single_shot(

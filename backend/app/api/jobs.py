@@ -30,7 +30,7 @@ _ALLOWED_LIPSYNC = {"none", "wav2lip", "musetalk", "latentsync"}
 
 _ALLOWED_BLEND_MODES = {"raw", "jaw", "mouth", "neck"}
 _ALLOWED_FACE_RESTORE = {"codeformer", "none"}
-_ALLOWED_TTS_BACKENDS = {"xtts", "f5tts", "auto"}
+_ALLOWED_TTS_BACKENDS = {"xtts", "f5tts", "indicf5", "auto"}
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
