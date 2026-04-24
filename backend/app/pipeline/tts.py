@@ -72,6 +72,113 @@ XTTS_LANG_CODES: dict[str, str] = {
 F5TTS_BASE_LANGS: set[str] = {"en", "zh"}
 
 
+# --------------------------------------------------------------------------- #
+# Language-aware TTS backend selection
+#
+# Different TTS models have different language competencies. XTTS-v2 is
+# multilingual in theory (16 languages) but its training corpus is
+# Latin-script-heavy; on Devanagari (Hindi, Bengali, etc.) and CJK
+# (Japanese, Korean) it produces phoneme-level approximations rather
+# than coherent native speech. These preferences encode the empirical
+# quality matrix as of 2026-04:
+#
+# - IndicF5 (ai4bharat/IndicF5): F5-TTS fine-tuned on IndicVoices-R;
+#   handles Hindi/Bengali/Tamil/Telugu/Marathi/etc. natively.
+#   2026-04: NOT YET INTEGRATED. Falls back to XTTS with a warning.
+#
+# - F5-TTS base: strong on EN + ZH.
+#
+# - StyleTTS2 / MeloTTS: best-in-class for Japanese and Korean.
+#   2026-04: NOT YET INTEGRATED.
+#
+# - XTTS-v2: good default for Spanish/Portuguese/Italian/German/French
+#   and usable for ~16 languages overall. The fallback backend.
+#
+# When `tts_backend="auto"` is requested, `_select_tts_backend_for_language`
+# walks the language's preference list and returns the first backend
+# that's actually installed. When a preferred backend is listed but not
+# yet integrated, a WARNING is logged pointing at which follow-up PR
+# will add it; the run continues on the best-available fallback.
+
+# (languages, [backends in preference order]). First match wins.
+_LANG_TTS_PREFERENCES: list[tuple[set[str], list[str]]] = [
+    # Indic languages — IndicF5 preferred
+    (
+        {"hi", "bn", "ta", "te", "mr", "gu", "kn", "ml", "pa", "or", "as"},
+        ["indicf5", "xtts"],
+    ),
+    # Chinese — F5-TTS base is trained on ZH
+    ({"zh", "zh-cn"}, ["f5tts", "xtts"]),
+    # English — F5-TTS base's strongest language; great for testing
+    ({"en"}, ["f5tts", "xtts"]),
+    # Japanese — specialized backends first
+    ({"ja"}, ["styletts2-jp", "melotts", "xtts"]),
+    # Korean
+    ({"ko"}, ["melotts", "styletts2-ko", "xtts"]),
+    # Romance + Germanic + Cyrillic + Arabic + Turkish — XTTS is fine
+    (
+        {"es", "pt", "it", "de", "nl", "pl", "cs", "ru", "tr", "ar", "hu"},
+        ["xtts"],
+    ),
+    # French — either works well
+    ({"fr"}, ["xtts", "f5tts"]),
+]
+
+# Backends implemented in the current codebase. Update as new backend
+# PRs land. The selector uses this as the "is this installed?" check.
+_INTEGRATED_BACKENDS: set[str] = {"xtts", "f5tts"}
+
+# Follow-up PR tracker so the warning log points users at where the
+# missing backend is coming from. Keep in sync as integration PRs land.
+_PENDING_BACKEND_PRS: dict[str, str] = {
+    "indicf5": "#73 (IndicF5 for Indic languages)",
+    "styletts2-jp": "#75 (StyleTTS2-JP)",
+    "styletts2-ko": "#75 (StyleTTS2-KO)",
+    "melotts": "#74 (MeloTTS for JA/KO)",
+}
+
+
+def _select_tts_backend_for_language(lang: str) -> tuple[str, list[str]]:
+    """Return ``(chosen_backend, full_preference_list)`` for the language.
+
+    Walks the language's preference list and returns the first
+    currently-integrated backend. The full preference list is also
+    returned so the caller can log a one-time warning when the
+    ideal backend isn't available.
+
+    Unknown languages default to XTTS (broadest coverage).
+    """
+    lang = (lang or "").lower()
+    for langs, prefs in _LANG_TTS_PREFERENCES:
+        if lang in langs:
+            for b in prefs:
+                if b in _INTEGRATED_BACKENDS:
+                    return b, prefs
+            break
+    return "xtts", ["xtts"]
+
+
+def _warn_if_suboptimal_backend(
+    lang: str, chosen: str, preferences: list[str],
+) -> None:
+    """If `chosen` isn't the first preference for `lang`, log one
+    WARNING explaining what would be better and why it isn't available.
+    """
+    if not preferences:
+        return
+    ideal = preferences[0]
+    if ideal == chosen:
+        return
+    pr_note = _PENDING_BACKEND_PRS.get(ideal, "(no tracking PR)")
+    log.warning(
+        "TTS auto-selection: target_language=%r prefers %r but that "
+        "backend is not yet integrated (expected in %s). Falling back "
+        "to %r — quality may be degraded. Set tts_backend=%s explicitly "
+        "to silence this warning.",
+        lang, ideal, pr_note, chosen, chosen,
+    )
+
+
 class TTSError(RuntimeError):
     pass
 
@@ -117,9 +224,10 @@ def synthesize(
 
     `translation` is the dict written by Stage 3 (see translate.py).
 
-    `backend` selects XTTS-v2 (``"xtts"``) or F5-TTS (``"f5tts"``). When
-    ``None`` we fall back to ``settings.tts_backend`` (env default,
-    currently ``xtts``).
+    `backend` selects XTTS-v2 (``"xtts"``), F5-TTS (``"f5tts"``), or
+    ``"auto"`` for language-aware selection (see
+    ``_select_tts_backend_for_language`` for the quality matrix).
+    When ``None`` we fall back to ``settings.tts_backend`` (env default).
 
     `first_speech_seconds` (from the transcript) lets us prepend a matching
     amount of silence so the TTS first-frame lines up with the source's
@@ -138,15 +246,26 @@ def synthesize(
     translated text. F5-TTS currently only runs single-shot regardless.
     """
     chosen = (backend or settings.tts_backend).lower()
-    if chosen not in ("xtts", "f5tts"):
+    if chosen not in ("xtts", "f5tts", "auto"):
         raise TTSError(
-            f"unknown tts backend: {chosen!r}. Supported: xtts, f5tts"
+            f"unknown tts backend: {chosen!r}. Supported: xtts, f5tts, auto"
+        )
+
+    tgt = translation.get("target_language", "").lower()
+
+    # Auto-selection: resolve `chosen` against the language preference
+    # map. If the ideal backend isn't integrated yet, fall back to the
+    # best-available and log a WARNING pointing at the tracking PR.
+    if chosen == "auto":
+        chosen, prefs = _select_tts_backend_for_language(tgt)
+        _warn_if_suboptimal_backend(tgt, chosen, prefs)
+        log.info(
+            "TTS auto-selected %r for target_language=%r", chosen, tgt,
         )
 
     # Up-front validation, ordered so the clearest error surfaces first:
     # language (per backend) → text → reference file. Matches the
     # pre-dispatch behavior tests in tests/test_tts.py rely on.
-    tgt = translation.get("target_language", "").lower()
     if chosen == "xtts" and tgt not in XTTS_LANG_CODES:
         raise TTSError(
             f"XTTS-v2 does not support target language {tgt!r}. "
