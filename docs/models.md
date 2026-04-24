@@ -168,9 +168,34 @@ IndicVoices-R by AI4Bharat. Handles Indic languages natively — the
 right backend for Hindi, Bengali, Tamil, Telugu, Marathi, Gujarati,
 Kannada, Malayalam, Punjabi, Odia, and Assamese.
 
-Added in PR #73 because XTTS-v2 on Devanagari targets degraded to
+Added in PR #74 because XTTS-v2 on Devanagari targets degraded to
 phoneme-level approximations (a 19 s Hindi dub produced 0.5 s of
 unintelligible audio — see PR #71 / #72 discussions).
+
+**Setup — gated repo**
+
+IndicF5 is a **gated HuggingFace repo**. Before first use:
+
+1. Visit https://huggingface.co/ai4bharat/IndicF5 and click "Request
+   access". Approval is usually instant for legitimate use.
+2. Get an HF token from https://huggingface.co/settings/tokens
+   (Read scope is sufficient).
+3. Add it to `.env`:
+   ```bash
+   echo "HF_TOKEN=hf_REPLACE_ME" >> .env
+   ```
+4. Recreate the backend so the env propagates:
+   ```bash
+   docker compose up -d --force-recreate backend
+   ```
+
+The compose file forwards `HF_TOKEN` (and the older
+`HUGGING_FACE_HUB_TOKEN` spelling) automatically — the token never
+needs to be passed on the command line.
+
+If you see a `gated repo` error after setup, the actionable error
+message in `tts.py` will tell you whether the token is missing or
+present but unauthorized.
 
 - ~1.5 GB on disk. First call downloads via `transformers.AutoModel`
   with `trust_remote_code=True` into `$MODEL_CACHE_DIR/huggingface/`.

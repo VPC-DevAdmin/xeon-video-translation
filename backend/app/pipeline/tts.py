@@ -600,6 +600,34 @@ def _get_indicf5():
             str(settings.model_cache_dir / "huggingface"),
         )
 
+        # IndicF5 is a gated repo on HuggingFace — accessing it requires
+        # an authenticated user that's been granted access at
+        # https://huggingface.co/ai4bharat/IndicF5. Different versions
+        # of huggingface_hub / transformers look at different env-var
+        # names (HF_TOKEN vs HUGGING_FACE_HUB_TOKEN) and `login()` calls
+        # vs file-cached tokens, so we belt-and-suspenders all three:
+        #   1. Pick up a token from either env-var spelling
+        #   2. Call huggingface_hub.login() to set the in-memory token
+        #   3. Write it to $HF_HOME/token so subsequent calls pick it up
+        #      from the file cache too
+        # When no token is set, skip silently — anonymous access still
+        # works for non-gated repos and we'll get a clear 401 from the
+        # actual gated download with our own from_pretrained handler.
+        token = (
+            os.environ.get("HF_TOKEN")
+            or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+        )
+        if token:
+            try:
+                from huggingface_hub import login as _hf_login
+                _hf_login(token=token, add_to_git_credential=False)
+            except Exception as _login_err:
+                log.warning(
+                    "huggingface_hub.login() failed (%s); continuing — "
+                    "from_pretrained will fall back to env-var auth",
+                    _login_err,
+                )
+
         try:
             from transformers import AutoModel
         except ImportError as e:
@@ -616,6 +644,41 @@ def _get_indicf5():
         try:
             model = AutoModel.from_pretrained(repo, trust_remote_code=True)
         except Exception as e:
+            err_str = str(e)
+            # Detect gated-repo / auth failures and produce a more
+            # actionable error than the generic load-failed message.
+            # The HF lib throws several flavors here (GatedRepoError,
+            # OSError wrapping 401, etc.); match on the wording.
+            is_gated = (
+                "gated repo" in err_str.lower()
+                or "401" in err_str
+                or "access" in err_str.lower() and "restricted" in err_str.lower()
+            )
+            if is_gated:
+                token_set = bool(
+                    os.environ.get("HF_TOKEN")
+                    or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+                )
+                token_hint = (
+                    "an HF_TOKEN IS set in this container; the token "
+                    "may not have access yet (check approval status at "
+                    "https://huggingface.co/ai4bharat/IndicF5)"
+                    if token_set
+                    else "no HF_TOKEN found in this container's env. "
+                         "Set HF_TOKEN=hf_... in .env (and "
+                         "`docker compose up -d --force-recreate backend` "
+                         "to pick it up). The compose file forwards "
+                         "HF_TOKEN automatically."
+                )
+                raise TTSError(
+                    f"IndicF5 is a gated HuggingFace repo and the "
+                    f"current container can't authenticate to it.\n"
+                    f"  Status: {token_hint}\n"
+                    f"  Underlying error: {e}\n"
+                    f"  To grant access: visit "
+                    f"https://huggingface.co/{repo} and click "
+                    f"'Request access'. Approval is usually instant."
+                ) from e
             raise TTSError(
                 f"IndicF5 load failed from {repo!r}: {e}. "
                 f"Check that (a) the model repo is reachable, "
