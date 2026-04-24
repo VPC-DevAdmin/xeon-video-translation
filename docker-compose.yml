@@ -16,6 +16,14 @@ services:
       MODEL_CACHE_DIR: /models
       JOB_ARTIFACTS_DIR: /jobs
       HF_HOME: /models/huggingface
+      # HuggingFace auth token — required for gated repos (e.g. IndicF5
+      # at ai4bharat/IndicF5). Set HF_TOKEN in .env. We forward both the
+      # newer (HF_TOKEN) and older (HUGGING_FACE_HUB_TOKEN) name because
+      # different transformers versions look at different env vars; the
+      # fallback chain handles either spelling, and the empty default
+      # keeps anonymous access working for ungated models.
+      HF_TOKEN: ${HF_TOKEN:-}
+      HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-${HF_TOKEN:-}}
       # Avoid CUDA probing on a CPU-only image.
       CUDA_VISIBLE_DEVICES: ""
       # Points at the MuseTalk lipsync microservice. Resolved via Docker DNS.
@@ -75,6 +83,9 @@ services:
       MODEL_CACHE_DIR: /models
       JOB_ARTIFACTS_DIR: /jobs
       HF_HOME: /models/huggingface
+      # HF auth token — see comment in the backend service above.
+      HF_TOKEN: ${HF_TOKEN:-}
+      HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-${HF_TOKEN:-}}
       CUDA_VISIBLE_DEVICES: ""
       # IPEX compute dtype. See .env.example.
       MUSETALK_IPEX_DTYPE: ${MUSETALK_IPEX_DTYPE:-fp32}
@@ -134,6 +145,9 @@ services:
       MODEL_CACHE_DIR: /models
       JOB_ARTIFACTS_DIR: /jobs
       HF_HOME: /models/huggingface
+      # HF auth token — see comment in the backend service above.
+      HF_TOKEN: ${HF_TOKEN:-}
+      HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-${HF_TOKEN:-}}
       CUDA_VISIBLE_DEVICES: ""
       # Per-request quality knobs. Defaults match LatentSync upstream.
       LATENTSYNC_STEPS: ${LATENTSYNC_STEPS:-20}
