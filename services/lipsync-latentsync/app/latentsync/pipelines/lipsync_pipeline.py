@@ -261,6 +261,57 @@ def _smooth_landmarks_sequence(
     return [smoothed[i] for i in range(n)]
 
 
+def _fill_missing_landmarks(
+    per_frame_landmarks: list,
+) -> tuple[list, list[int]]:
+    """Gap-fill None entries in a per-frame landmark sequence.
+
+    Input is the raw output of `try_extract_landmarks3` called across
+    every frame of the clip — a list where each entry is either a
+    (3, 2) array (successful detection) or None (no face detected).
+
+    Strategy:
+      1. Forward-pass: carry the last successful detection forward
+         into each None slot.
+      2. Any leading Nones (frames before the first successful
+         detection) are filled with the first-good detection,
+         backward-extending the clip.
+      3. All-None sequence → return (None, [all indices]); caller
+         must bail because we have no landmarks at all.
+
+    The returned list has no None entries (unless the clip had zero
+    successful detections). Downstream smoothing and affine
+    computation see a continuous trajectory — the result of carrying
+    landmarks forward is usually a small visual stall at the filled
+    frame rather than a full-run failure.
+
+    Returns (filled_sequence, missing_indices). `missing_indices`
+    is a list of frame indices that were None in the input, for
+    logging / diagnostics.
+    """
+    missing_indices = [i for i, l in enumerate(per_frame_landmarks) if l is None]
+    if not missing_indices:
+        return per_frame_landmarks, missing_indices
+
+    # Forward fill.
+    last_good = None
+    filled: list = []
+    for lmk in per_frame_landmarks:
+        if lmk is not None:
+            last_good = lmk
+        filled.append(last_good)
+
+    # Find the first successful detection for backward-fill of any
+    # leading Nones. If there are none, signal with an empty list so
+    # the caller can raise a clear "no faces anywhere" error.
+    first_good = next((l for l in filled if l is not None), None)
+    if first_good is None:
+        return [], missing_indices
+
+    filled = [first_good if l is None else l for l in filled]
+    return filled, missing_indices
+
+
 class LipsyncPipeline(DiffusionPipeline):
     _optional_components = []
 
@@ -500,14 +551,65 @@ class LipsyncPipeline(DiffusionPipeline):
             os.environ.get("LATENTSYNC_LANDMARK_SMOOTH_WINDOW", "5"),
         )
 
+        # Resilience knob. A single frame without a detected face
+        # (eyes closed, motion blur, partial occlusion, cut-to-insert)
+        # used to kill the whole clip with "Face not detected". Now
+        # we carry last-good landmarks forward through gaps and only
+        # bail when the fraction of missing frames exceeds this
+        # threshold — at which point the clip likely has no real
+        # face content and we want to fail fast rather than produce
+        # nonsense output. Default 0.5 = up to half the frames can
+        # legitimately have no detection. Set lower for stricter,
+        # higher for more tolerant. 1.0 means "never fail here"
+        # (the all-None case still errors because there's literally
+        # no geometry to work with).
+        max_miss_ratio = float(
+            os.environ.get("LATENTSYNC_MAX_MISSING_FACE_RATIO", "0.5"),
+        )
+
         # Pass 1: extract landmarks per frame (this is what detection
         # actually costs; tqdm shows the expected 1 s/frame wall clock).
+        # Use the non-raising try_extract so a single bad frame doesn't
+        # fail the whole run. Gaps are filled after the pass completes.
         print(f"Extracting landmarks from {len(video_frames)} frames...")
         per_frame_landmarks = []
         for frame in tqdm.tqdm(video_frames, desc="detect"):
             per_frame_landmarks.append(
-                self.image_processor.extract_landmarks3(frame),
+                self.image_processor.try_extract_landmarks3(frame),
             )
+
+        total_frames = len(per_frame_landmarks)
+        per_frame_landmarks, missing_indices = _fill_missing_landmarks(
+            per_frame_landmarks,
+        )
+        if missing_indices:
+            miss_ratio = len(missing_indices) / total_frames
+            # Log the first few indices so the user can pinpoint bad
+            # frames quickly; a dump of all of them when hundreds are
+            # missing is noisy.
+            preview = missing_indices[:10]
+            ellipsis = " ..." if len(missing_indices) > 10 else ""
+            print(
+                f"Face detection: {len(missing_indices)}/{total_frames} frame(s) "
+                f"had no detectable face ({miss_ratio:.1%}). "
+                f"Carrying last-good landmarks through gaps. "
+                f"Missing indices: {preview}{ellipsis}"
+            )
+            if not per_frame_landmarks:
+                # All-None: nothing to carry forward. Fail cleanly.
+                raise RuntimeError(
+                    f"no face detected in any of {total_frames} frames. "
+                    f"Clip has no usable face content; check the input or "
+                    f"trim to a face-visible range."
+                )
+            if miss_ratio > max_miss_ratio:
+                raise RuntimeError(
+                    f"{len(missing_indices)}/{total_frames} frames "
+                    f"({miss_ratio:.1%}) lack a detected face, exceeding "
+                    f"LATENTSYNC_MAX_MISSING_FACE_RATIO={max_miss_ratio}. "
+                    f"Either raise the threshold or trim the clip to a "
+                    f"face-visible range. First missing indices: {preview}"
+                )
 
         # Temporal smoothing.
         if landmark_window > 1 and len(per_frame_landmarks) > 1:

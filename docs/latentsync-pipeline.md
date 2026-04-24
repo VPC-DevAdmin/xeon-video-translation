@@ -173,6 +173,24 @@ Cascade warning: these two SG filters composed produce a larger
 effective support that can add lagged-oscillatory step responses.
 Unless you need the secondary smoother, leave it off.
 
+### 4.2a Face detection resilience
+
+| Env | Default | What it does |
+|---|---|---|
+| `LATENTSYNC_MAX_MISSING_FACE_RATIO` | `0.5` | Fraction of frames that can lack a detected face before the whole clip fails. Gaps below the threshold are silently filled by carrying the last-good landmarks forward (leading gaps back-fill from the first-good). Set `1.0` to disable; the all-None case still errors. |
+
+When some frames have no detectable face (eyes closed, motion blur,
+occlusion, a hard cut), the pipeline no longer fails the whole run.
+It logs the missing indices, carries landmarks through the gap, and
+continues. If the miss rate crosses the threshold (default 50%), the
+run bails with a clear message — at that point the clip doesn't have
+enough face content to be worth processing anyway.
+
+Leading Nones (the first N frames with no face) are back-filled from
+the first successful detection. Trailing Nones forward-fill from the
+last. Gap handling produces a small visual stall at the filled
+frames rather than a glitch.
+
 ### 4.3 Diagnostics (all default off)
 
 These exist to aid future debugging. None affect production quality

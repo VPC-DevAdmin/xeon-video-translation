@@ -175,6 +175,14 @@ services:
       # Default 5 (0.2s at 25fps) is a conservative floor; 7 or 9
       # smooths more aggressively. Set to 1 to disable.
       LATENTSYNC_LANDMARK_SMOOTH_WINDOW: ${LATENTSYNC_LANDMARK_SMOOTH_WINDOW:-5}
+      # Fraction of frames that can legitimately lack a detected face
+      # before we fail the whole clip. Gaps below this threshold are
+      # filled by carrying last-good landmarks forward (with a leading-
+      # None backward extension). Above it we bail rather than produce
+      # nonsense. Default 0.5 = up to half the frames may miss. Set to
+      # 1.0 to disable the threshold (the all-None case still errors
+      # because there is literally no geometry to work with).
+      LATENTSYNC_MAX_MISSING_FACE_RATIO: ${LATENTSYNC_MAX_MISSING_FACE_RATIO:-0.5}
       # Secondary (affine-matrix) smoother — decomposes each per-frame
       # affine into (tx, ty, rotation, scale) and SG-filters each
       # component. Runs downstream of the landmark smoother above.
