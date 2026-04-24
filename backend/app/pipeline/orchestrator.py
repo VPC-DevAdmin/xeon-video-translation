@@ -48,7 +48,7 @@ class StageResult:
 @dataclass
 class JobState:
     job_id: str
-    status: str = "queued"  # queued | running | completed | failed
+    status: str = "queued"  # queued | running | completed | failed | cancelled
     current_stage: str | None = None
     stages: list[StageResult] = field(default_factory=list)
     target_language: str = "es"
@@ -133,6 +133,10 @@ STAGE_NAMES = [
 _jobs: dict[str, JobState] = {}
 _queues: dict[str, asyncio.Queue[dict[str, Any]]] = {}
 _run_semaphore: asyncio.Semaphore | None = None
+# Registry of in-flight asyncio.Tasks for running pipelines. Populated
+# by run_pipeline; used by cancel_job to free the semaphore slot when
+# a user aborts a long batch run. Pops itself on completion.
+_tasks: dict[str, asyncio.Task] = {}
 
 
 def _get_semaphore() -> asyncio.Semaphore:
@@ -192,6 +196,38 @@ def register_job(state: JobState) -> asyncio.Queue[dict[str, Any]]:
     return q
 
 
+def cancel_job(job_id: str) -> tuple[bool, str]:
+    """Request cancellation of an in-flight pipeline.
+
+    Returns (ok, reason). Semantics:
+
+    - `ok=True`: the pipeline task was in our registry and got cancelled.
+      The async task receives CancelledError, the `run_pipeline` context
+      manager exits, the semaphore slot frees up, and any queued jobs
+      behind this one can start. The background thread that might be
+      blocked in urllib (LatentSync HTTP request) keeps running in the
+      thread pool — we can't interrupt blocking I/O from asyncio — but
+      its result is discarded once the task is cancelled.
+    - `ok=False` with reason `"unknown"`: no task for that job_id. Either
+      the job already completed, or the id doesn't exist.
+    - `ok=False` with reason `"already-terminal"`: the task exists but
+      the job is already in a terminal status.
+    """
+    state = _jobs.get(job_id)
+    if state and state.status in ("completed", "failed", "cancelled"):
+        return False, "already-terminal"
+    task = _tasks.get(job_id)
+    if task is None:
+        return False, "unknown"
+    if state is not None:
+        state.status = "cancelled"
+        state.error = "cancelled by user"
+        state.completed_at = storage.now_iso()
+        _persist(state)
+    task.cancel()
+    return True, "cancelled"
+
+
 def _persist(state: JobState) -> None:
     storage.write_meta(state.job_id, state.to_dict())
 
@@ -208,7 +244,10 @@ async def run_pipeline(
     queue = _queues[state.job_id]
     sem = _get_semaphore()
 
-    async with sem:
+    # Register the current task so cancel_job() can reach us.
+    _tasks[state.job_id] = asyncio.current_task()
+    try:
+      async with sem:
         state.status = "running"
         _persist(state)
         await _emit(queue, "job_started", {"job_id": state.job_id})
@@ -238,6 +277,16 @@ async def run_pipeline(
             state.completed_at = storage.now_iso()
             _persist(state)
             await _emit(queue, "job_completed", {"job_id": state.job_id})
+        except asyncio.CancelledError:
+            # cancel_job() already set status/error + persisted. Just emit
+            # a clean terminal event and re-raise so the task is actually
+            # cancelled (rather than completing normally after swallowing).
+            log.info("pipeline cancelled for job %s", state.job_id)
+            await _emit(queue, "error", {
+                "job_id": state.job_id,
+                "error": "cancelled by user",
+            })
+            raise
         except Exception as e:
             state.status = "failed"
             state.error = f"{type(e).__name__}: {e}"
@@ -251,6 +300,11 @@ async def run_pipeline(
             })
         finally:
             await _emit(queue, "stream_end", {})
+    finally:
+        # Always drop the task registration so cancel_job reports
+        # "unknown" on a subsequent call instead of trying to cancel
+        # a task that has already finished.
+        _tasks.pop(state.job_id, None)
 
 
 # --------------------------------------------------------------------------- #
