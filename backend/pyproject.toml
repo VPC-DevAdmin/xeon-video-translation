@@ -34,24 +34,25 @@ dependencies = [
   "coqui-tts>=0.24",
 
   # IndicF5 (PR #74) loads its inference code via HuggingFace
-  # `trust_remote_code=True`. The custom code is forked from F5-TTS,
-  # which has a long-tail of niche audio / tokenization / model deps
-  # we don't otherwise need. Each one surfaces as a runtime TTSError
-  # on first load until added here.
+  # `trust_remote_code=True`. The custom code is forked from F5-TTS.
+  # The Dockerfile installs `f5-tts` with `--no-deps` (to avoid a
+  # transformers pin fight with coqui-tts), so F5-TTS's own deps don't
+  # come in transitively — they have to be listed somewhere.
   #
-  # Discovery sequence (PRs #77, #78, #79, #80):
-  #   - pydub: ffmpeg-wrapping audio I/O
-  #   - rjieba: Rust-backed Chinese tokenizer (F5-TTS text normalization
-  #     step; imported even on Indic targets via shared code path)
-  #   - torchdiffeq: ODE solvers for F5-TTS flow-matching inference
-  #   - ema-pytorch / x-transformers / vocos: F5-TTS model building blocks
-  #   - wandb: training-time observability that IndicF5's trust_remote_code
-  #     imports unconditionally even at inference. Disabled at runtime via
-  #     WANDB_DISABLED=true in docker-compose.yml so it never phones home.
+  # Rather than discover each missing dep one TTSError at a time
+  # (PRs #77–#80 went through this five times before we caught on),
+  # this list mirrors F5-TTS upstream's published requirements.txt
+  # in full. IndicF5 can't import anything F5-TTS doesn't, so this
+  # closes the discovery loop permanently.
   #
-  # If a future load fails with another `No module named X`, add X
-  # below and rebuild the backend image (`docker compose up -d --build
-  # backend`).
+  # When upstream F5-TTS adds a dep we'll need to refresh this list;
+  # diff against
+  # https://github.com/SWivid/F5-TTS/blob/main/pyproject.toml
+  # if a new module-not-found surfaces.
+  #
+  # `wandb` is also gated at runtime via WANDB_DISABLED=true /
+  # WANDB_MODE=disabled in docker-compose.yml so it stays silent —
+  # it's training-time observability we never want active.
   "pydub>=0.25",
   "rjieba>=0.1.11",
   "torchdiffeq>=0.2.4",
@@ -59,6 +60,15 @@ dependencies = [
   "x-transformers>=1.30",
   "vocos>=0.1.0",
   "wandb>=0.16",
+  # The remaining F5-TTS upstream deps not already covered above
+  # or via coqui-tts's transitive set. Skipped: gradio (UI),
+  # matplotlib (training viz), tensorboard (training).
+  "datasets>=2.18",
+  "click>=8.0",
+  "hydra-core>=1.3",
+  "tomli>=2.0",
+  "cached-path>=1.6",
+  "safetensors>=0.4",
 
   # Stage 5 (lipsync) + Stage 6 (mux). opencv-headless avoids pulling X11;
   # librosa/scipy are needed for Wav2Lip's mel spectrogram preprocessing.
