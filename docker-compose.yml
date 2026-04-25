@@ -24,6 +24,11 @@ services:
       # keeps anonymous access working for ungated models.
       HF_TOKEN: ${HF_TOKEN:-}
       HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-${HF_TOKEN:-}}
+      # IndicF5's trust_remote_code imports wandb at inference time
+      # (it's used at training in upstream). Disable phone-home so it's
+      # silent; we have no use for run logging in this pipeline.
+      WANDB_DISABLED: "true"
+      WANDB_MODE: "disabled"
       # Avoid CUDA probing on a CPU-only image.
       CUDA_VISIBLE_DEVICES: ""
       # Points at the MuseTalk lipsync microservice. Resolved via Docker DNS.
