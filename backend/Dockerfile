@@ -39,8 +39,16 @@ RUN pip install --upgrade pip wheel \
     # internal transformers pin doesn't fight with coqui-tts's — the
     # relevant deps (torch, vocos, accelerate, x-transformers, jieba,
     # pypinyin, librosa) are either already present from `pip install -e .`
-    # above or pulled in below explicitly. If F5-TTS's API surface shifts,
-    # revisit this list.
+    # above or pulled in below explicitly.
+    #
+    # IndicF5 (PR #74) ALSO uses F5-TTS internals via trust_remote_code,
+    # so missing deps here surface as IndicF5 first-load TTSErrors. The
+    # full F5-TTS upstream dep set is mirrored in backend/pyproject.toml
+    # under the IndicF5 comment block — see that file for the canonical
+    # list and the rationale for each entry. If a new `No module named X`
+    # appears, add X to pyproject.toml first; this Dockerfile block is
+    # only for things that need explicit version pinning the resolver
+    # would otherwise get wrong.
     && pip install --no-deps "f5-tts>=1.0,<2.0" \
     && pip install \
        "vocos>=0.1.0" \
