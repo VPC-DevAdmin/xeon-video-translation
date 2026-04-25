@@ -714,6 +714,58 @@ def _get_indicf5():
                 f"INDICF5_REVISION if needed."
             ) from e
 
+        # IndicF5's model.safetensors was saved from a torch.compile()-
+        # wrapped INF5Model containing BOTH ema_model and vocoder.
+        # That gives us state_dict keys like:
+        #   ema_model._orig_mod.transformer.blocks.0.attn.to_q.weight
+        #   vocoder._orig_mod.backbone.convnext.0.dwconv.weight
+        # F5-TTS's load_model wants a checkpoint of just the ema_model
+        # weights without the _orig_mod wrapper. Repack the safetensors
+        # into the shape F5-TTS expects, write a clean copy alongside
+        # the original, and feed the clean path to load_model.
+        #
+        # Cached after first run — the (cleaned) file goes next to the
+        # original in HF_HOME and is reused on subsequent calls.
+        try:
+            from safetensors.torch import load_file, save_file
+        except ImportError as e:
+            raise TTSError(
+                "safetensors is required for IndicF5 weight repack: "
+                + str(e),
+            ) from e
+
+        clean_ckpt_path = ckpt_path.replace(
+            "model.safetensors", "model.f5tts_ready.safetensors",
+        )
+        if not os.path.exists(clean_ckpt_path):
+            log.info(
+                "repacking IndicF5 safetensors → F5-TTS-compatible layout"
+            )
+            raw = load_file(ckpt_path)
+            ema_state = {}
+            for k, v in raw.items():
+                # Keep only ema_model weights, strip both prefixes.
+                # vocoder weights are loaded separately via load_vocoder.
+                if k.startswith("ema_model._orig_mod."):
+                    new_k = k[len("ema_model._orig_mod."):]
+                    ema_state[new_k] = v
+                elif k.startswith("ema_model."):
+                    # Defensive: in case a future revision drops torch.compile
+                    new_k = k[len("ema_model."):]
+                    ema_state[new_k] = v
+            if not ema_state:
+                raise TTSError(
+                    f"IndicF5 safetensors at {ckpt_path} contained no "
+                    f"'ema_model.*' keys to repack. Layout may have "
+                    f"changed upstream — sample of actual keys: "
+                    f"{sorted(raw.keys())[:5]!r}"
+                )
+            save_file(ema_state, clean_ckpt_path)
+            log.info(
+                "wrote %d ema_model weights to %s",
+                len(ema_state), clean_ckpt_path,
+            )
+
         # Now build the model + vocoder via F5-TTS's APIs directly —
         # same calls IndicF5's broken model.py *should* have made.
         try:
@@ -729,11 +781,13 @@ def _get_indicf5():
 
         try:
             # IndicF5's DiT architecture parameters from its model.py.
+            # Use the repacked safetensors (clean_ckpt_path) so F5-TTS's
+            # state-dict loader sees the keys it expects.
             ema_model = load_model(
                 DiT,
                 dict(dim=1024, depth=22, heads=16, ff_mult=2,
                      text_dim=512, conv_layers=4),
-                ckpt_path=ckpt_path,
+                ckpt_path=clean_ckpt_path,
                 mel_spec_type="vocos",
                 vocab_file=vocab_path,
                 device="cpu",
