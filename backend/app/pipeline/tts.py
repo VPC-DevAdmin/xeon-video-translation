@@ -577,15 +577,46 @@ def _f5tts_reference_text(
 
 
 def _get_indicf5():
-    """Lazy-load IndicF5. First call downloads ~1.5 GB.
+    """Lazy-load IndicF5 by calling F5-TTS APIs directly with IndicF5
+    weights + vocab. Returns a dict of components, not a single model
+    object — the synthesis function in `_synthesize_indicf5_single_shot`
+    composes them per-call.
 
-    IndicF5 is distributed through HuggingFace (`ai4bharat/IndicF5`)
-    with `trust_remote_code=True` — the model's custom inference code
-    lives in the HF repo rather than a pip package. That's the path
-    their model card documents and what the community uses.
+    Why this path, not `AutoModel.from_pretrained(..., trust_remote_code=True)`:
 
-    We load on CPU; IndicF5 inherits F5-TTS's CPU support. First load
-    takes ~30-60 s plus the download.
+    The HuggingFace `ai4bharat/IndicF5` repo ships a `model.py` whose
+    `INF5Model.__init__` is upstream-broken in two ways:
+
+    1. The safetensors loading is commented out (lines 46-49):
+            # safetensors_path = hf_hub_download(...)
+            # state_dict = load_file(safetensors_path, ...)
+            # self.ema_model.load_state_dict(state_dict, strict=False)
+
+    2. The `load_model()` call is missing the required `ckpt_path`
+       positional argument (line 52):
+            self.ema_model = load_model(
+                DiT,
+                dict(dim=1024, depth=22, ...),
+                mel_spec_type="vocos",
+                vocab_file=vocab_path,
+                device=device,
+                # ckpt_path missing — F5-TTS sig is (cls, cfg, ckpt_path, ...)
+            )
+
+    Result: `AutoModel.from_pretrained` raises
+        load_model() missing 1 required positional argument: 'ckpt_path'
+
+    Even if we passed the missing arg, the weights are never loaded
+    because the safetensors block is commented out. The trust_remote_code
+    path is dead.
+
+    Our integration replicates what `INF5Model.__init__` *should* do —
+    download weights + vocab via huggingface_hub, call F5-TTS's
+    `load_model` with the IndicF5 DiT config + `ckpt_path` pointing at
+    the safetensors, load the vocoder. About 25 lines vs. vendoring
+    the whole 165-line file. No `trust_remote_code`. Same downloaded
+    artifact (`model.safetensors` + `checkpoints/vocab.txt`) — only the
+    invocation path differs.
     """
     global _indicf5
     if _indicf5 is not None:
@@ -600,19 +631,9 @@ def _get_indicf5():
             str(settings.model_cache_dir / "huggingface"),
         )
 
-        # IndicF5 is a gated repo on HuggingFace — accessing it requires
-        # an authenticated user that's been granted access at
-        # https://huggingface.co/ai4bharat/IndicF5. Different versions
-        # of huggingface_hub / transformers look at different env-var
-        # names (HF_TOKEN vs HUGGING_FACE_HUB_TOKEN) and `login()` calls
-        # vs file-cached tokens, so we belt-and-suspenders all three:
-        #   1. Pick up a token from either env-var spelling
-        #   2. Call huggingface_hub.login() to set the in-memory token
-        #   3. Write it to $HF_HOME/token so subsequent calls pick it up
-        #      from the file cache too
-        # When no token is set, skip silently — anonymous access still
-        # works for non-gated repos and we'll get a clear 401 from the
-        # actual gated download with our own from_pretrained handler.
+        # IndicF5 is gated. Authenticate before any hub call so the
+        # download doesn't 401. See PR #76 for the multi-spelling
+        # token-discovery rationale.
         token = (
             os.environ.get("HF_TOKEN")
             or os.environ.get("HUGGING_FACE_HUB_TOKEN")
@@ -624,41 +645,48 @@ def _get_indicf5():
             except Exception as _login_err:
                 log.warning(
                     "huggingface_hub.login() failed (%s); continuing — "
-                    "from_pretrained will fall back to env-var auth",
+                    "hub calls will fall back to env-var auth",
                     _login_err,
                 )
 
+        # Pin a known-good revision so upstream model.py / config tweaks
+        # can't shift behavior under us. ba85abe... is the revision the
+        # codebase was integrated against (PR #74). Override via env to
+        # test newer revisions.
+        repo = os.environ.get("INDICF5_MODEL", "ai4bharat/IndicF5")
+        revision = os.environ.get(
+            "INDICF5_REVISION", "ba85abedf18dc479a447eaa0eccbd76ab78a47d5",
+        )
+        log.info(
+            "loading IndicF5 from %s@%s (first call: ~1.5 GB download)",
+            repo, revision[:8],
+        )
+
         try:
-            from transformers import AutoModel
+            from huggingface_hub import hf_hub_download
         except ImportError as e:
             raise TTSError(
-                "transformers is required for IndicF5 but isn't importable. "
-                "Rebuild the backend image. Original error: " + str(e),
+                "huggingface_hub is required for IndicF5 but isn't "
+                "importable. Rebuild the backend image. Original error: "
+                + str(e),
             ) from e
 
-        repo = os.environ.get("INDICF5_MODEL", "ai4bharat/IndicF5")
-        log.info(
-            "loading IndicF5 from %s (first call: ~1.5 GB download + ~30-60s init)",
-            repo,
-        )
         try:
-            model = AutoModel.from_pretrained(repo, trust_remote_code=True)
+            ckpt_path = hf_hub_download(
+                repo_id=repo, filename="model.safetensors", revision=revision,
+            )
+            vocab_path = hf_hub_download(
+                repo_id=repo, filename="checkpoints/vocab.txt", revision=revision,
+            )
         except Exception as e:
             err_str = str(e)
-            # Detect gated-repo / auth failures and produce a more
-            # actionable error than the generic load-failed message.
-            # The HF lib throws several flavors here (GatedRepoError,
-            # OSError wrapping 401, etc.); match on the wording.
             is_gated = (
                 "gated repo" in err_str.lower()
                 or "401" in err_str
-                or "access" in err_str.lower() and "restricted" in err_str.lower()
+                or ("access" in err_str.lower() and "restricted" in err_str.lower())
             )
             if is_gated:
-                token_set = bool(
-                    os.environ.get("HF_TOKEN")
-                    or os.environ.get("HUGGING_FACE_HUB_TOKEN")
-                )
+                token_set = bool(token)
                 token_hint = (
                     "an HF_TOKEN IS set in this container; the token "
                     "may not have access yet (check approval status at "
@@ -667,12 +695,11 @@ def _get_indicf5():
                     else "no HF_TOKEN found in this container's env. "
                          "Set HF_TOKEN=hf_... in .env (and "
                          "`docker compose up -d --force-recreate backend` "
-                         "to pick it up). The compose file forwards "
-                         "HF_TOKEN automatically."
+                         "to pick it up)."
                 )
                 raise TTSError(
-                    f"IndicF5 is a gated HuggingFace repo and the "
-                    f"current container can't authenticate to it.\n"
+                    f"IndicF5 weights are gated on HuggingFace and the "
+                    f"current container can't authenticate.\n"
                     f"  Status: {token_hint}\n"
                     f"  Underlying error: {e}\n"
                     f"  To grant access: visit "
@@ -680,25 +707,55 @@ def _get_indicf5():
                     f"'Request access'. Approval is usually instant."
                 ) from e
             raise TTSError(
-                f"IndicF5 load failed from {repo!r}: {e}. "
-                f"Check that (a) the model repo is reachable, "
-                f"(b) transformers + accelerate + einops are up to date, "
-                f"(c) disk at $HF_HOME has enough free space (~2 GB). "
-                f"Override with INDICF5_MODEL=<alternate-repo-id> if needed."
+                f"IndicF5 weight download failed from {repo}@{revision[:8]}: "
+                f"{e}. Check that (a) the model repo is reachable, "
+                f"(b) disk at $HF_HOME has enough free space (~2 GB), "
+                f"(c) the revision exists. Override with INDICF5_MODEL or "
+                f"INDICF5_REVISION if needed."
             ) from e
-        # Explicit CPU placement + eval mode. Belt-and-suspenders:
-        # our container already has CUDA_VISIBLE_DEVICES="" but if
-        # someone runs this on a CUDA box we don't want surprise GPU
-        # work without opting in.
+
+        # Now build the model + vocoder via F5-TTS's APIs directly —
+        # same calls IndicF5's broken model.py *should* have made.
         try:
-            model = model.to("cpu")
-        except Exception:
-            pass  # model may not be a nn.Module; ignore if .to() fails
+            from f5_tts.infer.utils_infer import load_model, load_vocoder
+            from f5_tts.model import DiT
+        except ImportError as e:
+            raise TTSError(
+                "f5-tts package is required for IndicF5 but isn't "
+                "importable. Rebuild the backend image (Dockerfile "
+                "installs f5-tts with --no-deps). Original error: "
+                + str(e),
+            ) from e
+
         try:
-            model.eval()
-        except Exception:
-            pass
-        _indicf5 = model
+            # IndicF5's DiT architecture parameters from its model.py.
+            ema_model = load_model(
+                DiT,
+                dict(dim=1024, depth=22, heads=16, ff_mult=2,
+                     text_dim=512, conv_layers=4),
+                ckpt_path=ckpt_path,
+                mel_spec_type="vocos",
+                vocab_file=vocab_path,
+                device="cpu",
+            )
+            vocoder = load_vocoder(
+                vocoder_name="vocos", is_local=False, device="cpu",
+            )
+        except Exception as e:
+            raise TTSError(
+                f"IndicF5 model construction failed: {e}. This is a "
+                f"f5-tts internals issue. Check that f5-tts version "
+                f"in the backend image is compatible with the IndicF5 "
+                f"DiT config (dim=1024 depth=22 heads=16)."
+            ) from e
+
+        # Wrap as a dict so the synthesis function has typed access.
+        # Eval mode + no_grad are applied per-call in the synth function.
+        _indicf5 = {
+            "ema_model": ema_model,
+            "vocoder": vocoder,
+            "sample_rate": 24000,
+        }
         return _indicf5
 
 
@@ -711,13 +768,11 @@ def _synthesize_indicf5_single_shot(
 ) -> TTSResult:
     """Single-shot IndicF5 synthesis.
 
-    IndicF5's inference signature (per the HF model card):
-
-        audio = model(text, ref_audio_path=..., ref_text=...)
-
-    Returns a numpy (or torch) array at 24000 Hz. We normalize to
-    float32 + peak-limit and write as a WAV, then run the same
-    silence trim / loudness stack as the other backends.
+    Calls F5-TTS's `infer_process` directly with the IndicF5
+    ema_model + vocoder loaded by `_get_indicf5()`. This replicates
+    what `INF5Model.forward` *should* do — IndicF5's HF model.py
+    forward path is fine, we just bypass the broken __init__ that
+    couldn't load weights. Same downstream artifact (24 kHz waveform).
 
     Reference audio: we pass the source-language (e.g. English)
     reference from the pipeline. IndicF5 adapts the voice color to
@@ -725,12 +780,9 @@ def _synthesize_indicf5_single_shot(
     reference. If quality suffers on specific speaker-target pairs,
     users can override by supplying a native-language reference clip.
     """
-    model = _get_indicf5()
+    components = _get_indicf5()
     ref_text = _f5tts_reference_text(reference_audio, transcript_segments)
     if not ref_text:
-        # IndicF5 needs a reference transcript; without it the model
-        # has nothing to condition voice color against. Don't try to
-        # guess — fail clearly so the user rewinds to transcribe.
         raise TTSError(
             "IndicF5 requires a reference transcript but none was found. "
             "The pipeline normally provides the Whisper transcript from "
@@ -738,46 +790,51 @@ def _synthesize_indicf5_single_shot(
             "transcript_segments is populated on the job."
         )
 
-    # Defensive: we don't know the exact IndicF5 API version. Catch
-    # TypeError (arg-name changes) and report clearly so the user can
-    # pin to a known-good commit.
+    try:
+        from f5_tts.infer.utils_infer import (
+            infer_process,
+            preprocess_ref_audio_text,
+        )
+    except ImportError as e:
+        raise TTSError(
+            "f5-tts inference helpers not importable: " + str(e),
+        ) from e
+
     try:
         import torch as _torch
+        # Preprocess (normalize loudness, trim silence, etc.). Returns
+        # the cleaned reference + transcript.
+        ref_audio_clean, ref_text_clean = preprocess_ref_audio_text(
+            str(reference_audio), ref_text,
+        )
         with _torch.no_grad():
-            audio = model(
+            audio, sr_candidate, _ = infer_process(
+                ref_audio_clean,
+                ref_text_clean,
                 text,
-                ref_audio_path=str(reference_audio),
-                ref_text=ref_text,
+                components["ema_model"],
+                components["vocoder"],
+                mel_spec_type="vocos",
+                speed=1.0,
+                device="cpu",
             )
     except TypeError as e:
         raise TTSError(
-            f"IndicF5 call signature mismatch ({e}). The model's "
-            f"inference API may have changed. Pin a known-good commit "
-            f"via INDICF5_MODEL=ai4bharat/IndicF5@<sha> or check the "
-            f"model card for the current signature."
+            f"IndicF5 inference signature mismatch ({e}). The f5-tts "
+            f"infer_process API may have changed; check f5-tts version."
         ) from e
     except Exception as e:
         raise TTSError(f"IndicF5 inference failed: {e}") from e
 
-    # IndicF5 sample rate per the F5-TTS lineage.
-    _INDICF5_SAMPLE_RATE = 24000
-
-    # Accept a few reasonable return shapes:
-    #   - numpy array (1D waveform)
-    #   - torch tensor
-    #   - tuple (audio, sample_rate)
-    #   - dict {"audio": ..., "sampling_rate": ...}
+    # f5-tts.infer_process returns (audio, sample_rate, spectrogram).
+    # We've already destructured the tuple at the call site; sr_candidate
+    # is the sample rate it reports. Fall back to IndicF5's documented
+    # 24 kHz if the value looks bogus.
     import numpy as _np
-    sr = _INDICF5_SAMPLE_RATE
-    if isinstance(audio, dict):
-        sr = int(audio.get("sampling_rate", sr))
-        audio = audio.get("audio", audio.get("waveform"))
-    if isinstance(audio, tuple):
-        audio, sr_candidate = audio[0], audio[1] if len(audio) > 1 else sr
-        try:
-            sr = int(sr_candidate)
-        except Exception:
-            pass
+    try:
+        sr = int(sr_candidate) if sr_candidate else 24000
+    except Exception:
+        sr = 24000
     if hasattr(audio, "detach"):   # torch tensor
         audio = audio.detach().cpu().numpy()
     audio = _np.asarray(audio, dtype=_np.float32)
