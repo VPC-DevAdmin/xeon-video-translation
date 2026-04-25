@@ -34,19 +34,30 @@ dependencies = [
   "coqui-tts>=0.24",
 
   # IndicF5 (PR #74) loads its inference code via HuggingFace
-  # `trust_remote_code=True`. The custom code imports a handful of
-  # niche audio + tokenization libraries that we don't otherwise need.
-  # Each one surfaces as a runtime TTSError on first load until added
-  # here. Discovered iteratively during PR #74 rollout:
-  #   - pydub: ffmpeg-wrapping audio I/O (PR #77)
-  #   - rjieba: Rust-backed Chinese tokenizer used by the F5-TTS
-  #     lineage's text normalization step. Imported even on Indic
-  #     targets because the upstream F5-TTS code path is shared.
+  # `trust_remote_code=True`. The custom code is forked from F5-TTS,
+  # which has a long-tail of niche audio / tokenization / model deps
+  # we don't otherwise need. Each one surfaces as a runtime TTSError
+  # on first load until added here.
+  #
+  # Discovery sequence (PR #77, #78, #79):
+  #   - pydub: ffmpeg-wrapping audio I/O
+  #   - rjieba: Rust-backed Chinese tokenizer (F5-TTS text normalization
+  #     step; imported even on Indic targets via shared code path)
+  #   - torchdiffeq: ODE solvers for F5-TTS flow-matching inference
+  #
+  # Pre-emptively pinning the rest of F5-TTS's typical dep surface
+  # (ema-pytorch, x-transformers, vocos) so a later import doesn't
+  # surface as another iteration here. These are all small.
   #
   # If a future load fails with another `No module named X`, add X
-  # here and rebuild the backend image.
+  # below and rebuild the backend image (`docker compose up -d --build
+  # backend`).
   "pydub>=0.25",
   "rjieba>=0.1.11",
+  "torchdiffeq>=0.2.4",
+  "ema-pytorch>=0.5",
+  "x-transformers>=1.30",
+  "vocos>=0.1.0",
 
   # Stage 5 (lipsync) + Stage 6 (mux). opencv-headless avoids pulling X11;
   # librosa/scipy are needed for Wav2Lip's mel spectrogram preprocessing.
