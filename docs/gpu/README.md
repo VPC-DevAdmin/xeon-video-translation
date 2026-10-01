@@ -79,11 +79,11 @@ Each PR is independently mergeable. Order matters for the first four.
 - **CPU stack stays green.** `DEVICE` defaults to `cpu`; the CPU compose
   file is untouched.
 
-## Open questions for the owner
+## Confirmed by the owner (2026-10-01)
 
-- Which RTX PRO part exactly? The Dockerfile assumes Blackwell (sm_120). An
-  Ada-generation RTX PRO would allow torch 2.6 but nothing else changes.
-- Licensing: XTTS (CPML), F5-TTS (CC-BY-NC), Wav2Lip (CC-BY-NC) are
-  non-commercial. MuseTalk (MIT) and LatentSync (Apache 2.0) are fine. If
-  this is heading beyond demos, G1 should also evaluate a permissively
-  licensed TTS.
+- **Hardware:** RTX PRO 6000 Blackwell. sm_120, so CUDA 12.8+ and torch
+  2.7+ are required; the Dockerfile assumptions hold.
+- **Licensing:** this is a demo. Open-source models are the requirement;
+  non-commercial weights (XTTS CPML, F5-TTS and Wav2Lip CC-BY-NC) and
+  gated repos (IndicF5) are acceptable. No need to swap TTS for licensing
+  reasons; model choice is on quality and speed alone.
