@@ -1,0 +1,120 @@
+# GPU overlay for the Dell XE7740 / 8x RTX PRO box (GPU track).
+#
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
+#   (or `make up-gpu`)
+#
+# Applied on top of docker-compose.yml: same service names, same volumes,
+# same ports. It swaps images to the CUDA builds, hands each service its
+# own GPU(s), and adds the WebRTC ingest service.
+#
+# GPU layout (0-7). Rationale in docs/gpu/README.md, "GPU assignment".
+#   0      backend: whisper + NLLB + TTS. Shares comfortably on 96 GB.
+#   1      lipsync-musetalk (real-time mode)
+#   2-7    lipsync-latentsync workers (batch mode shards 16-frame chunks
+#          across these; until sharding lands only GPU 2 is used)
+#
+# Requires the NVIDIA Container Toolkit on the host. Verify with:
+#   docker run --rm --gpus all nvidia/cuda:12.8.1-base-ubuntu24.04 nvidia-smi
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.gpu
+    image: polyglot-demo/backend:gpu
+    environment:
+      DEVICE: cuda
+      CUDA_VISIBLE_DEVICES: "0"
+      # GPU defaults. Large-v3 in fp16 is ~30x+ realtime on this class of
+      # card, so there is no reason to keep `base`.
+      WHISPER_MODEL: ${WHISPER_MODEL:-large-v3}
+      WHISPER_COMPUTE_TYPE: ${WHISPER_COMPUTE_TYPE:-float16}
+      NLLB_MODEL: ${NLLB_MODEL:-facebook/nllb-200-3.3B}
+      # Several jobs can run at once on GPU; the stage-level semaphore is
+      # still process-global, so keep this modest until the queue lands.
+      MAX_CONCURRENT_JOBS: ${MAX_CONCURRENT_JOBS:-2}
+      MAX_VIDEO_DURATION_SECONDS: ${MAX_VIDEO_DURATION_SECONDS:-600}
+    deploy:
+      resources:
+        limits:
+          cpus: "16.0"
+          memory: 64g
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0"]
+              capabilities: [gpu]
+
+  # The lipsync services still build their CPU images until PR-G2 / PR-G3
+  # land CUDA Dockerfiles for them. The GPU reservation is already wired so
+  # those PRs only need to flip the dockerfile and read DEVICE.
+  lipsync-musetalk:
+    environment:
+      DEVICE: cuda
+      CUDA_VISIBLE_DEVICES: "0"
+    deploy:
+      resources:
+        limits:
+          cpus: "8.0"
+          memory: 32g
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["1"]
+              capabilities: [gpu]
+
+  lipsync-latentsync:
+    environment:
+      DEVICE: cuda
+      CUDA_VISIBLE_DEVICES: "0"
+      # fp16 is upstream's tested GPU path. The CPU bf16 jitter artifact
+      # (docs/latentsync-pipeline.md §5) was specific to CPU bf16 autocast
+      # and does not apply here; re-run the stability metric to confirm.
+      LATENTSYNC_IPEX_DTYPE: fp16
+    deploy:
+      resources:
+        limits:
+          cpus: "8.0"
+          memory: 64g
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["2"]
+              capabilities: [gpu]
+
+  # WebRTC ingest: browser webcam -> this service -> file in /jobs ->
+  # backend job. See services/ingest-webrtc/README.md.
+  ingest-webrtc:
+    build:
+      context: ./services/ingest-webrtc
+      dockerfile: Dockerfile
+    image: polyglot-demo/ingest-webrtc:dev
+    container_name: polyglot-ingest-webrtc
+    restart: unless-stopped
+    environment:
+      JOB_ARTIFACTS_DIR: /jobs
+      # host networking (below) means no Docker DNS: reach the backend
+      # through its published host port.
+      BACKEND_URL: http://localhost:${BACKEND_PORT:-8088}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3030}
+      # Public IP/hostname the browser can reach for ICE. Leave empty on a
+      # single host (host-mode networking handles it); set it when the
+      # browser is on another machine.
+      INGEST_PUBLIC_IP: ${INGEST_PUBLIC_IP:-}
+    volumes:
+      - jobs:/jobs
+      - ./services/ingest-webrtc/app:/app/app
+    # WebRTC media needs UDP ports the browser can reach. host networking
+    # is the simplest correct answer on a single box; the service listens
+    # on INGEST_PORT (default 8091) for the HTTP signalling API.
+    network_mode: host
+    depends_on:
+      - backend
+
+  frontend:
+    build:
+      args:
+        NEXT_PUBLIC_API_BASE_URL: "http://localhost:${BACKEND_PORT:-8088}"
+        NEXT_PUBLIC_INGEST_BASE_URL: "http://localhost:${INGEST_PORT:-8091}"
+    environment:
+      NEXT_PUBLIC_INGEST_BASE_URL: "http://localhost:${INGEST_PORT:-8091}"

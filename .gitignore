@@ -43,3 +43,6 @@ Thumbs.db
 # Logs
 *.log
 repomix-output.xml
+
+# Stray root-level outputs (the documented layout is artifacts/{inputs,jobs,review}/)
+/artifacts/*.mp4

@@ -436,7 +436,7 @@ def _get_xtts():
         model = TTS(
             "tts_models/multilingual/multi-dataset/xtts_v2",
             progress_bar=False,
-        ).to("cpu")
+        ).to(settings.resolved_device)
         _xtts = model
         return _xtts
 
@@ -537,8 +537,9 @@ def _get_f5tts():
                 "Original error: " + str(e),
             ) from e
 
-        # device="cpu" forces the CPU path; F5-TTS auto-picks CUDA otherwise.
-        model = F5TTS(model=settings.f5tts_model, device="cpu")
+        # Pass the device explicitly; F5-TTS would otherwise auto-pick CUDA
+        # even on the CPU build.
+        model = F5TTS(model=settings.f5tts_model, device=settings.resolved_device)
         _f5tts = model
         return _f5tts
 
@@ -790,10 +791,10 @@ def _get_indicf5():
                 ckpt_path=clean_ckpt_path,
                 mel_spec_type="vocos",
                 vocab_file=vocab_path,
-                device="cpu",
+                device=settings.resolved_device,
             )
             vocoder = load_vocoder(
-                vocoder_name="vocos", is_local=False, device="cpu",
+                vocoder_name="vocos", is_local=False, device=settings.resolved_device,
             )
         except Exception as e:
             raise TTSError(
@@ -870,7 +871,7 @@ def _synthesize_indicf5_single_shot(
                 components["vocoder"],
                 mel_spec_type="vocos",
                 speed=1.0,
-                device="cpu",
+                device=settings.resolved_device,
             )
     except TypeError as e:
         raise TTSError(

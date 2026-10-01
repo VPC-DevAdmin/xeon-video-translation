@@ -30,7 +30,7 @@ def _get_model() -> "WhisperModel":
 
         _model = WhisperModel(
             settings.whisper_model,
-            device="cpu",
+            device=settings.resolved_device,
             compute_type=settings.whisper_compute_type,
             download_root=str(settings.model_cache_dir / "faster-whisper"),
         )

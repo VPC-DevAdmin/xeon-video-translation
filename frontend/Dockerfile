@@ -10,6 +10,10 @@ WORKDIR /app
 # real value comes from docker-compose.yml, derived from BACKEND_PORT.
 ARG NEXT_PUBLIC_API_BASE_URL=http://localhost:8088
 ENV NEXT_PUBLIC_API_BASE_URL=${NEXT_PUBLIC_API_BASE_URL}
+# WebRTC ingest service (GPU track, /live page). Only set by
+# docker-compose.gpu.yml; the CPU stack leaves it at the default.
+ARG NEXT_PUBLIC_INGEST_BASE_URL=http://localhost:8091
+ENV NEXT_PUBLIC_INGEST_BASE_URL=${NEXT_PUBLIC_INGEST_BASE_URL}
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN npm run build

@@ -94,6 +94,7 @@ def _load_model():
         sd = {k.replace("module.", ""): v for k, v in sd.items()}
         model.load_state_dict(sd)
         model.eval()
+        model.to(settings.resolved_device)
         _model = model
         return _model
 
@@ -253,10 +254,11 @@ def run(
                     masked = face_arr.copy()
                     masked[:, FACE_SIZE // 2 :] = 0  # bottom half zeroed
                     model_in = np.concatenate([masked, face_arr], axis=3)
-                    model_in = torch.from_numpy(model_in.transpose(0, 3, 1, 2))
+                    device = next(model.parameters()).device
+                    model_in = torch.from_numpy(model_in.transpose(0, 3, 1, 2)).to(device)
                     mel_arr = np.asarray(active_mels).astype(np.float32)
                     mel_arr = mel_arr[:, np.newaxis, :, :]  # (B, 1, 80, 16)
-                    mel_tensor = torch.from_numpy(mel_arr)
+                    mel_tensor = torch.from_numpy(mel_arr).to(device)
 
                     pred = model(mel_tensor, model_in)  # (B, 3, 96, 96)
                     pred_np = (pred.cpu().numpy().transpose(0, 2, 3, 1) * 255.0).astype(

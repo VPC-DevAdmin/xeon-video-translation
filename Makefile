@@ -77,6 +77,23 @@ help:  ## Show this help
 	@printf "  make run-latentsync              # scaffold service returns structured 501 (PR-LS-1a)\n"
 	@printf "  make fetch JOB=b0965\n\n"
 
+# --- GPU track (docs/gpu/README.md) -------------------------------------------
+GPU_COMPOSE := docker compose -f docker-compose.yml -f docker-compose.gpu.yml
+INGEST_PORT ?= 8091
+
+.PHONY: up-gpu down-gpu health-gpu logs-ingest
+up-gpu:  ## Build and start the GPU stack (CUDA images + WebRTC ingest)
+	$(GPU_COMPOSE) up -d --build
+
+down-gpu:  ## Stop the GPU stack
+	$(GPU_COMPOSE) down
+
+health-gpu: health  ## Health on all services + the ingest service
+	@printf "ingest-webrtc: "; curl -fsS http://localhost:$(INGEST_PORT)/health || echo "down"
+
+logs-ingest:  ## Tail WebRTC ingest logs
+	$(GPU_COMPOSE) logs -f ingest-webrtc
+
 # --- Stack lifecycle ----------------------------------------------------------
 .PHONY: up down restart rebuild
 

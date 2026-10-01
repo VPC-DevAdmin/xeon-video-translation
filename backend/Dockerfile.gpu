@@ -1,0 +1,68 @@
+# GPU image for the backend (GPU track — see docs/gpu/README.md).
+#
+# Why a separate Dockerfile rather than an ARG on the CPU one: the two
+# images disagree on base image, torch index, and which deps are optional
+# (bitsandbytes is best-effort on CPU and required-ish here). Keeping them
+# side by side is less error-prone than a branchy single file while the GPU
+# track is still being proven.
+#
+# Blackwell (RTX PRO 6000, sm_120) needs CUDA >= 12.8 and torch >= 2.7.
+# The CPU image pins torch 2.6, which ships no sm_120 kernels and will
+# fail at the first CUDA kernel launch — do not "just" swap the index URL
+# on the CPU Dockerfile.
+FROM nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04 AS base
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_BREAK_SYSTEM_PACKAGES=1 \
+    DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      python3 python3-pip python3-venv \
+      ffmpeg \
+      rubberband-cli \
+      curl \
+      ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY pyproject.toml ./
+
+# torch cu128 line. torchcodec 0.4 matches torch 2.7; bump both together.
+# ctranslate2 (faster-whisper) ships CUDA 12 wheels on PyPI; cuDNN comes
+# from the base image.
+RUN python3 -m pip install --upgrade pip wheel \
+    && python3 -m pip install "setuptools>=68,<81" \
+    && python3 -m pip install \
+       --index-url https://download.pytorch.org/whl/cu128 \
+       "torch>=2.7,<2.9" \
+       "torchaudio>=2.7,<2.9" \
+    && python3 -m pip install "torchcodec>=0.4,<0.6" \
+    && python3 -m pip install -e . \
+    && python3 -m pip install --no-deps "f5-tts>=1.0,<2.0" \
+    && python3 -m pip install \
+       "vocos>=0.1.0" \
+       "x-transformers>=1.31.14" \
+       "accelerate>=0.33.0" \
+       "jieba>=0.42.1" \
+       "pypinyin>=0.50.0" \
+       "cached-path>=1.6.0" \
+       "ema-pytorch>=0.5.2" \
+       "bitsandbytes>=0.45" \
+    && echo "GPU backend deps installed"
+
+# KNOWN RISK (PR-G1 must verify): coqui-tts 0.24 pins transformers <4.47,
+# which predates torch 2.7. It imports fine in most reports but has not
+# been exercised on this stack. If XTTS breaks, the fallback is to drop
+# XTTS from the GPU image and route everything through F5-TTS / IndicF5
+# (see docs/gpu/README.md, TTS section).
+
+COPY app ./app
+COPY tests ./tests
+
+EXPOSE 8000
+
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

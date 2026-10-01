@@ -129,8 +129,19 @@ def _get_nllb_pipeline():
         from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 
         cache_dir = str(settings.model_cache_dir / "huggingface")
+        import torch
+
+        device = settings.resolved_device
         tokenizer = AutoTokenizer.from_pretrained(settings.nllb_model, cache_dir=cache_dir)
-        model = AutoModelForSeq2SeqLM.from_pretrained(settings.nllb_model, cache_dir=cache_dir)
+        model = AutoModelForSeq2SeqLM.from_pretrained(
+            settings.nllb_model,
+            cache_dir=cache_dir,
+            # fp16 on GPU halves memory and roughly doubles throughput for
+            # NLLB with no measurable quality change; CPU stays fp32.
+            torch_dtype=torch.float16 if device == "cuda" else torch.float32,
+        )
+        model.to(device)
+        model.eval()
         _nllb_pipeline = (tokenizer, model)
         return _nllb_pipeline
 
@@ -139,6 +150,7 @@ def _translate_segment_nllb(text: str, src: str, tgt: str) -> str:
     tokenizer, model = _get_nllb_pipeline()
     tokenizer.src_lang = src
     inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=512)
+    inputs = {k: v.to(model.device) for k, v in inputs.items()}
     forced_bos = tokenizer.convert_tokens_to_ids(tgt)
     output_ids = model.generate(
         **inputs,

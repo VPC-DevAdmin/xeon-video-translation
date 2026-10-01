@@ -15,9 +15,18 @@ class Settings(BaseSettings):
         case_sensitive=False,
     )
 
+    # Compute device for the in-process models (whisper, NLLB, TTS, Wav2Lip).
+    #   cpu   — the original Xeon build. Default so the CPU images keep working.
+    #   cuda  — one GPU; pick which with CUDA_VISIBLE_DEVICES on the container.
+    #   auto  — cuda if torch can see one, else cpu.
+    # The lipsync microservices have their own DEVICE env (see
+    # docker-compose.gpu.yml). See docs/gpu/README.md for the GPU track.
+    device: Literal["cpu", "cuda", "auto"] = "cpu"
+
     # Models
     whisper_model: str = "base"
-    whisper_compute_type: Literal["int8", "int8_float32", "float32"] = "int8"
+    # float16 is the GPU default; int8 variants are the CPU defaults.
+    whisper_compute_type: Literal["int8", "int8_float32", "float16", "float32"] = "int8"
 
     translate_backend: Literal["nllb", "ollama"] = "nllb"
     nllb_model: str = "facebook/nllb-200-distilled-600M"
@@ -42,8 +51,8 @@ class Settings(BaseSettings):
     # Backends:
     #   none        — skip lipsync; mux dubs the new audio over the original video
     #   wav2lip     — Wav2Lip (2020); ~30-60s for a 3s clip on a 16-core Xeon
-    #   musetalk    — stubbed in this PR (see docs/lipsync.md)
-    #   latentsync  — stubbed in this PR (see docs/lipsync.md)
+    #   musetalk    — microservice; minutes per clip on CPU (see docs/lipsync.md)
+    #   latentsync  — microservice; hours per clip on CPU (see docs/lipsync.md)
     lipsync_backend: Literal["none", "wav2lip", "musetalk", "latentsync"] = "none"
     # GitHub release mirror of the Wav2Lip checkpoint (CC-BY-NC 4.0 weights).
     # Release assets are immutable, so this URL is stable. If it ever 404s,
@@ -117,6 +126,18 @@ class Settings(BaseSettings):
     # Feature flags
     enable_watermark: bool = True
     enable_c2pa: bool = False
+
+    @property
+    def resolved_device(self) -> str:
+        """`device` with `auto` resolved against the torch runtime."""
+        if self.device != "auto":
+            return self.device
+        try:
+            import torch
+
+            return "cuda" if torch.cuda.is_available() else "cpu"
+        except ImportError:
+            return "cpu"
 
     @property
     def cors_origin_list(self) -> list[str]:
