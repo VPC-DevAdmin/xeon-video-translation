@@ -2,7 +2,7 @@
 
 > An open-source video translation demo: take a short clip of someone speaking, produce a new clip of the same person saying the same thing in another language — with their own voice and (eventually) lip-synced mouth movements. Designed for live conference demos.
 >
-> **This repo targets CPU-only inference on Xeon-class machines.** No GPU required.
+> **Two tracks.** The original build targets CPU-only inference on Xeon-class machines and is what `docker-compose.yml` runs. The **GPU track** (`docker-compose.gpu.yml`, `make up-gpu`) targets an 8x RTX PRO box with webcam ingest over WebRTC and three modes: real-time translation, batch translation, and a live voice avatar. See [docs/gpu/README.md](docs/gpu/README.md). The CPU path was optimised as far as it goes and did not meet the quality and turnaround bar; new work goes to the GPU track.
 
 ---
 
@@ -26,9 +26,10 @@ Milestones implemented:
 - **M1** — Repo skeleton, Docker Compose, FastAPI backend, Next.js frontend, ffmpeg audio extraction.
 - **M2** — Whisper transcription (`faster-whisper`, int8 CPU build) + NLLB-200 translation.
 - **M3** — Voice cloning with XTTS-v2; produces `translated_audio.wav` in the speaker's own voice.
-- **M4** — Selectable lipsync backend (`none` / `wav2lip` / `musetalk`‑stub / `latentsync`‑stub), final mux + watermark, per-stage ETA + live progress over SSE. End-to-end producing a watermarked `final.mp4`.
+- **M4** — Selectable lipsync backend (`none` / `wav2lip` / `musetalk` / `latentsync`), final mux + watermark, per-stage ETA + live progress over SSE. End-to-end producing a watermarked `final.mp4`. MuseTalk and LatentSync run as separate microservices (`services/`); on CPU they are minutes and hours per clip respectively, see [docs/lipsync.md](docs/lipsync.md).
+- **TTS routing** — `tts_backend=auto` picks XTTS-v2, F5-TTS or IndicF5 per target language ([docs/models.md](docs/models.md)). IndicF5 end-to-end synthesis is still unverified.
 
-Still to come: MuseTalk and LatentSync proper integrations (separate PRs); conference-polish milestone (M5).
+CPU track is frozen at this point. Next milestones are on the [GPU track](docs/gpu/README.md).
 
 ---
 
@@ -128,7 +129,9 @@ You will need `ffmpeg` available on `PATH`.
 Video upload ──► Stage 1: audio extract (ffmpeg, 16kHz mono WAV)
               └► Stage 2: transcribe   (faster-whisper int8, CPU)
               └► Stage 3: translate    (NLLB-200 distilled-600M, CPU)
-              └► [stages 4–6: TTS, lipsync, mux — not yet implemented]
+              └► Stage 4: tts          (XTTS-v2 / F5-TTS / IndicF5)
+              └► Stage 5: lipsync      (none / wav2lip / musetalk / latentsync)
+              └► Stage 6: mux + watermark (ffmpeg)
 ```
 
 Each stage writes its output to disk under `jobs/<job_id>/`, so artifacts can be inspected directly and the UI can show intermediate results.
@@ -149,7 +152,7 @@ This fork targets booth/laptop demos on Xeon machines without GPUs. Trade-offs:
 | Lipsync       | `none` (default) / `wav2lip`        | 0s · ~15× source duration               |
 | Mux+wm        | ffmpeg drawtext                     | <1 s                                    |
 
-See [docs/lipsync.md](docs/lipsync.md) for why MuseTalk and LatentSync are stubbed — TL;DR: measured-to-projected CPU latency is impractical.
+See [docs/lipsync.md](docs/lipsync.md) for measured MuseTalk and LatentSync CPU timings — TL;DR: minutes and hours per clip respectively, which is why the project moved to the GPU track.
 
 See [docs/limitations.md](docs/limitations.md) for honest expectations.
 

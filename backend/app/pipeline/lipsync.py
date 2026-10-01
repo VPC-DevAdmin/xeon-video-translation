@@ -11,14 +11,13 @@ Four backends are defined:
                  clip on a 16-core Xeon; quality is mediocre (visible softness
                  around the mouth) but works.
 
-- `musetalk`   — stubbed in this PR. See docs/lipsync.md for why (integration
-                 effort is substantial; deferred to a follow-up).
+- `musetalk`   — microservice (services/musetalk). ~200 s per source second
+                 on CPU at the default quality level; the real-time choice
+                 on GPU. See docs/lipsync.md.
 
-- `latentsync` — microservice scaffold in this PR. The service is reachable
-                 and returns a structured 501 explaining staging; real
-                 inference lands in PR-LS-1c. CPU budget is ~10 min per
-                 second of source video (SD 1.5 latent diffusion per
-                 frame) — batch workflow, not live.
+- `latentsync` — microservice (services/lipsync-latentsync). SD 1.5 latent
+                 diffusion at 512 px; ~90 min per source second on CPU at
+                 fp32. Batch workflow; the quality choice on GPU.
 
 Each backend's ``run`` function signature is:
 
