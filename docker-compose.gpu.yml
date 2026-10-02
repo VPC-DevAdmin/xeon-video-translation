@@ -70,16 +70,21 @@ services:
               device_ids: ["1"]
               capabilities: [gpu]
 
-  # LatentSync still builds its CPU image until PR-G3 lands a CUDA
-  # Dockerfile for it. The GPU reservation is already wired.
   lipsync-latentsync:
+    build:
+      context: ./services/lipsync-latentsync
+      dockerfile: Dockerfile.gpu
+    image: polyglot-demo/lipsync-latentsync:gpu
     environment:
       DEVICE: cuda
       CUDA_VISIBLE_DEVICES: "0"
       # fp16 is upstream's tested GPU path. The CPU bf16 jitter artifact
       # (docs/latentsync-pipeline.md §5) was specific to CPU bf16 autocast
       # and does not apply here; re-run the stability metric to confirm.
-      LATENTSYNC_IPEX_DTYPE: fp16
+      LATENTSYNC_DTYPE: ${LATENTSYNC_DTYPE:-fp16}
+      # CPU-only knobs; harmless but meaningless here.
+      KMP_AFFINITY: ""
+      KMP_BLOCKTIME: ""
     deploy:
       resources:
         limits:

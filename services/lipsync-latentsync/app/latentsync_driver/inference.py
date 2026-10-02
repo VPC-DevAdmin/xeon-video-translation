@@ -155,10 +155,37 @@ def _ipex_dtype():
     """
     import torch
 
-    choice = os.environ.get("LATENTSYNC_IPEX_DTYPE", "bf16").lower()
+    # LATENTSYNC_DTYPE (fp32|fp16|bf16) is the device-neutral knob;
+    # LATENTSYNC_IPEX_DTYPE is honoured as the legacy CPU spelling.
+    # Default: fp16 on CUDA (upstream's tested GPU path), fp32 on CPU
+    # (the CPU bf16 jitter artifact, see docs/latentsync-pipeline.md §5).
+    default = "fp16" if _resolve_device().type == "cuda" else "fp32"
+    choice = (
+        os.environ.get("LATENTSYNC_DTYPE")
+        or os.environ.get("LATENTSYNC_IPEX_DTYPE", default)
+    ).lower()
     if choice in ("bf16", "bfloat16"):
         return torch.bfloat16
+    if choice in ("fp16", "float16", "half"):
+        return torch.float16
     return torch.float32
+
+
+def _resolve_device():
+    """Compute device from the DEVICE env var: cpu (default) | cuda | auto.
+
+    docker-compose.gpu.yml sets DEVICE=cuda and pins the container to one
+    card via CUDA_VISIBLE_DEVICES, so `cuda` is always cuda:0 in-container.
+    """
+    import torch
+
+    choice = os.environ.get("DEVICE", "cpu").lower()
+    if choice == "auto":
+        choice = "cuda" if torch.cuda.is_available() else "cpu"
+    if choice.startswith("cuda") and not torch.cuda.is_available():
+        log.warning("DEVICE=%s requested but CUDA is unavailable; falling back to cpu", choice)
+        choice = "cpu"
+    return torch.device(choice)
 
 
 def _ipex_optimize(model, name: str):
@@ -292,11 +319,17 @@ def run(
     from latentsync.pipelines.lipsync_pipeline import LipsyncPipeline
     from latentsync.whisper.audio2feature import Audio2Feature
 
-    device = "cpu"
-    # Model weights stay fp32 on disk. IPEX handles the bf16 cast
-    # internally when enabled; the pipeline's autocast does the rest.
-    dtype = torch.float32
-    compute_dtype = _ipex_dtype()  # torch.bfloat16 or torch.float32
+    device = _resolve_device()
+    compute_dtype = _ipex_dtype()
+    # CPU: weights stay fp32 and IPEX/autocast handle the reduced-precision
+    # math. CUDA: mirror upstream, which loads VAE + UNet directly in the
+    # compute dtype (fp16) and runs without autocast.
+    dtype = compute_dtype if device.type == "cuda" else torch.float32
+    optimize = _ipex_optimize if device.type == "cpu" else (lambda m, name: m)
+    log.info(
+        "LatentSync device=%s weight_dtype=%s compute_dtype=%s",
+        device, str(dtype).rsplit(".", 1)[-1], str(compute_dtype).rsplit(".", 1)[-1],
+    )
 
     # Seed for reproducibility. accelerate.set_seed seeds torch, numpy,
     # and python random in one call. If no seed is given we just log
@@ -353,16 +386,16 @@ def run(
     )
     vae.config.scaling_factor = 0.18215
     vae.config.shift_factor = 0
-    vae = _ipex_optimize(vae, "vae")
+    vae = optimize(vae, "vae")
 
     # --- UNet ----------------------------------------------------------
     unet, _ = UNet3DConditionModel.from_pretrained(
         OmegaConf.to_container(config.model),
         str(weight_paths.unet),
-        device="cpu",
+        device=str(device),
     )
     unet = unet.to(dtype=dtype)
-    unet = _ipex_optimize(unet, "unet")
+    unet = optimize(unet, "unet")
 
     # --- Pipeline ------------------------------------------------------
     pipeline = LipsyncPipeline(
@@ -476,9 +509,13 @@ def run(
     # autocast's allowlist keeps BatchNorm / LayerNorm / Softmax at
     # fp32 for numerical stability; Conv / Linear / etc. run at bf16.
     # When compute_dtype is fp32, autocast becomes a no-op.
-    autocast_enabled = compute_dtype == torch.bfloat16
+    # On CUDA the weights already carry the compute dtype, so autocast
+    # stays off; on CPU it is the only way to get reduced precision.
+    autocast_enabled = device.type == "cpu" and compute_dtype != torch.float32
     autocast_ctx = torch.autocast(
-        device_type="cpu", dtype=torch.bfloat16, enabled=autocast_enabled,
+        device_type=device.type,
+        dtype=compute_dtype if autocast_enabled else torch.float32,
+        enabled=autocast_enabled,
     )
     log.info(
         "pipeline starting: steps=%d guidance=%.2f compute_dtype=%s autocast=%s",

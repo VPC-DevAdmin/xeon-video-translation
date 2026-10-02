@@ -251,7 +251,10 @@ def health() -> dict:
         # Performance knobs surfaced for debugging: operators can curl
         # /health to confirm the container is running the configuration
         # they intended without having to docker exec and grep env.
-        "ipex_dtype": os.environ.get("LATENTSYNC_IPEX_DTYPE", "bf16"),
+        "device": os.environ.get("DEVICE", "cpu"),
+        "dtype": os.environ.get("LATENTSYNC_DTYPE")
+        or os.environ.get("LATENTSYNC_IPEX_DTYPE", "fp16 on cuda / fp32 on cpu"),
+        "ipex_dtype": os.environ.get("LATENTSYNC_IPEX_DTYPE", "fp32"),
         "deepcache_enabled": os.environ.get("LATENTSYNC_ENABLE_DEEPCACHE", "1"),
         "ld_preload": os.environ.get("LD_PRELOAD", ""),
     }
