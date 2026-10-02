@@ -16,16 +16,20 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1 \
-    PIP_BREAK_SYSTEM_PACKAGES=1 \
     DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      python3 python3-pip python3-venv \
+      python3 python3-venv \
       ffmpeg \
       rubberband-cli \
       curl \
       ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+
+# Ubuntu's system pip is Debian-managed and refuses to upgrade itself, so
+# everything goes into a venv that owns its own pip.
+RUN python3 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
 
 WORKDIR /app
 
@@ -34,16 +38,16 @@ COPY pyproject.toml ./
 # torch cu128 line. torchcodec 0.4 matches torch 2.7; bump both together.
 # ctranslate2 (faster-whisper) ships CUDA 12 wheels on PyPI; cuDNN comes
 # from the base image.
-RUN python3 -m pip install --upgrade pip wheel \
-    && python3 -m pip install "setuptools>=68,<81" \
-    && python3 -m pip install \
+RUN pip install --upgrade pip wheel \
+    && pip install "setuptools>=68,<81" \
+    && pip install \
        --index-url https://download.pytorch.org/whl/cu128 \
        "torch>=2.7,<2.9" \
        "torchaudio>=2.7,<2.9" \
-    && python3 -m pip install "torchcodec>=0.4,<0.6" \
-    && python3 -m pip install -e . \
-    && python3 -m pip install --no-deps "f5-tts>=1.0,<2.0" \
-    && python3 -m pip install \
+    && pip install "torchcodec>=0.4,<0.6" \
+    && pip install -e . \
+    && pip install --no-deps "f5-tts>=1.0,<2.0" \
+    && pip install \
        "vocos>=0.1.0" \
        "x-transformers>=1.31.14" \
        "accelerate>=0.33.0" \

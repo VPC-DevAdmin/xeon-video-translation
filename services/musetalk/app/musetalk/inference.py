@@ -292,17 +292,42 @@ def _save_detection_cache(
 # --------------------------------------------------------------------------- #
 
 
-def _ipex_dtype() -> "torch.dtype":
-    """Resolve the IPEX compute dtype from env.
+def _resolve_device() -> "torch.device":
+    """Compute device from the DEVICE env var: cpu (default) | cuda | auto.
 
-    fp32 is the safe default — pure kernel acceleration, no numerical drift.
-    bf16 is opt-in because the VAE and UNet haven't been validated end-to-end
-    at lower precision and may produce subtle output changes (mouth texture,
-    color shift). Enable with `MUSETALK_IPEX_DTYPE=bf16`.
+    The GPU track (docker-compose.gpu.yml) sets DEVICE=cuda and pins the
+    container to one card via CUDA_VISIBLE_DEVICES, so `cuda` here always
+    means cuda:0 inside the container.
     """
-    choice = os.environ.get("MUSETALK_IPEX_DTYPE", "fp32").lower()
+    choice = os.environ.get("DEVICE", "cpu").lower()
+    if choice == "auto":
+        choice = "cuda" if torch.cuda.is_available() else "cpu"
+    if choice.startswith("cuda") and not torch.cuda.is_available():
+        log.warning("DEVICE=%s requested but CUDA is unavailable; falling back to cpu", choice)
+        choice = "cpu"
+    return torch.device(choice)
+
+
+def _ipex_dtype() -> "torch.dtype":
+    """Resolve the compute dtype from env.
+
+    `MUSETALK_DTYPE` (fp32 | fp16 | bf16) is the device-neutral knob;
+    `MUSETALK_IPEX_DTYPE` is honoured as the legacy CPU spelling.
+
+    fp32 is the safe default — no numerical drift. bf16 is opt-in on CPU
+    because the VAE and UNet haven't been validated end-to-end at lower
+    precision. fp16 is the natural GPU speed mode and is what MuseTalk
+    upstream runs on CUDA; it is still opt-in here until the GPU track has
+    compared outputs against fp32.
+    """
+    choice = (
+        os.environ.get("MUSETALK_DTYPE")
+        or os.environ.get("MUSETALK_IPEX_DTYPE", "fp32")
+    ).lower()
     if choice in ("bf16", "bfloat16"):
         return torch.bfloat16
+    if choice in ("fp16", "float16", "half"):
+        return torch.float16
     return torch.float32
 
 
@@ -388,26 +413,30 @@ _load_lock = Lock()
 def _load(paths: WeightPaths) -> _Loaded:
     from transformers import WhisperModel
 
-    device = torch.device("cpu")
+    device = _resolve_device()
     # `weight_dtype` drives tensor casting in the AudioProcessor + UNet path.
     # IPEX's optimize() can still run fp32 kernels underneath while our own
     # tensors stay in this dtype — they're independent knobs.
     dtype = _ipex_dtype()
+    log.info("MuseTalk compute device=%s dtype=%s", device, str(dtype).rsplit(".", 1)[-1])
+
+    # IPEX is a CPU-only accelerator; on CUDA the vanilla modules are used.
+    optimize = _ipex_optimize if device.type == "cpu" else (lambda m, name: m)
 
     log.info("Loading Whisper encoder from %s", paths.whisper_dir)
     whisper = WhisperModel.from_pretrained(str(paths.whisper_dir)).to(device)
     whisper.eval()
-    whisper = _ipex_optimize(whisper, name="whisper")
+    whisper = optimize(whisper, name="whisper")
 
     audio_processor = AudioProcessor(paths.whisper_dir)
 
     log.info("Loading VAE from %s", paths.vae_dir)
     vae = VAE(paths.vae_dir, device=device)
-    vae.vae = _ipex_optimize(vae.vae, name="sd-vae")
+    vae.vae = optimize(vae.vae, name="sd-vae")
 
     log.info("Loading UNet from %s", paths.unet_weights)
     unet = UNet(str(paths.unet_config), str(paths.unet_weights), device=device)
-    unet.model = _ipex_optimize(unet.model, name="musetalk-unet")
+    unet.model = optimize(unet.model, name="musetalk-unet")
 
     log.info("Loading BiSeNet face parser")
     face_parsing = FaceParsing(
@@ -420,7 +449,7 @@ def _load(paths: WeightPaths) -> _Loaded:
     # Leaving it vanilla.
 
     log.info("Loading SCRFD face detector")
-    aligner = build_aligner(device="cpu")
+    aligner = build_aligner(device=device.type)
 
     return _Loaded(
         audio_processor=audio_processor,
@@ -611,12 +640,15 @@ def run(
     predicted_faces: list[np.ndarray | None] = [None] * n
     timesteps = torch.tensor([0], device=state.device)
 
-    # When running under bf16, wrap the forward in CPU autocast so the mixed
-    # math happens safely (BatchNorm/LayerNorm stays fp32 via autocast's
-    # allowlist). fp32 path is unchanged — autocast becomes a no-op below.
-    autocast_enabled = state.weight_dtype == torch.bfloat16
-    autocast_ctx = (
-        torch.autocast(device_type="cpu", dtype=torch.bfloat16, enabled=autocast_enabled)
+    # When running under a reduced-precision dtype, wrap the forward in
+    # autocast for the active device so the mixed math happens safely
+    # (BatchNorm/LayerNorm stays fp32 via autocast's allowlist). fp32 path
+    # is unchanged — autocast becomes a no-op below.
+    autocast_enabled = state.weight_dtype in (torch.bfloat16, torch.float16)
+    autocast_ctx = torch.autocast(
+        device_type=state.device.type,
+        dtype=state.weight_dtype if autocast_enabled else torch.float32,
+        enabled=autocast_enabled,
     )
 
     with torch.no_grad(), autocast_ctx:

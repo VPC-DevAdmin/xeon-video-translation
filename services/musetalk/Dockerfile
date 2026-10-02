@@ -50,7 +50,8 @@ RUN pip install --upgrade pip wheel \
     && pip install "torchcodec>=0.3,<0.4"
 
 COPY pyproject.toml ./
-RUN pip install -e .
+# `.[cpu]` pulls onnxruntime (CPU) + IPEX; the GPU image uses `.[gpu]`.
+RUN pip install -e ".[cpu]"
 
 # Clear the executable-stack marker from IPEX's native libs. Targeted only
 # at intel_extension_for_pytorch (and intel-openmp in case it ever ships

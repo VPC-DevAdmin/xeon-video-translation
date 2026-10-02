@@ -179,6 +179,8 @@ def health() -> dict:
         "version": VERSION,
         "inference_implemented": INFERENCE_IMPLEMENTED,
         "weights_ready": all_weights_present,
+        "device": os.environ.get("DEVICE", "cpu"),
+        "dtype": os.environ.get("MUSETALK_DTYPE") or os.environ.get("MUSETALK_IPEX_DTYPE", "fp32"),
         "ipex_dtype": os.environ.get("MUSETALK_IPEX_DTYPE", "fp32"),
         "ld_preload": os.environ.get("LD_PRELOAD", ""),
         "blend_mode": os.environ.get("MUSETALK_BLEND_MODE", "jaw"),

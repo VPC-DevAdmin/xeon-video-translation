@@ -45,13 +45,20 @@ services:
               device_ids: ["0"]
               capabilities: [gpu]
 
-  # The lipsync services still build their CPU images until PR-G2 / PR-G3
-  # land CUDA Dockerfiles for them. The GPU reservation is already wired so
-  # those PRs only need to flip the dockerfile and read DEVICE.
   lipsync-musetalk:
+    build:
+      context: ./services/musetalk
+      dockerfile: Dockerfile.gpu
+    image: polyglot-demo/lipsync-musetalk:gpu
     environment:
       DEVICE: cuda
       CUDA_VISIBLE_DEVICES: "0"
+      # fp32 for parity with the CPU build until outputs are compared;
+      # MUSETALK_DTYPE=fp16 is the speed mode (upstream's CUDA default).
+      MUSETALK_DTYPE: ${MUSETALK_DTYPE:-fp32}
+      # CPU-only knobs; harmless but meaningless here.
+      KMP_AFFINITY: ""
+      KMP_BLOCKTIME: ""
     deploy:
       resources:
         limits:
@@ -63,6 +70,8 @@ services:
               device_ids: ["1"]
               capabilities: [gpu]
 
+  # LatentSync still builds its CPU image until PR-G3 lands a CUDA
+  # Dockerfile for it. The GPU reservation is already wired.
   lipsync-latentsync:
     environment:
       DEVICE: cuda
