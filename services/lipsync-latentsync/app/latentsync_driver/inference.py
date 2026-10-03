@@ -384,6 +384,7 @@ def run(
     cache_key = (
         str(device), str(dtype), _UNET_CONFIG_NAME,
         os.environ.get("LATENTSYNC_UNET_REPLICAS", "0"),
+        os.environ.get("LATENTSYNC_SHARD_MODE", "process"),
         os.environ.get("LATENTSYNC_ENABLE_DEEPCACHE", "1"),
         str(weight_paths.unet), str(weight_paths.whisper_tiny),
     )
@@ -438,21 +439,37 @@ def run(
         n_visible = torch.cuda.device_count() if device.type == "cuda" else 1
         want = int(os.environ.get("LATENTSYNC_UNET_REPLICAS", "0") or 0)
         n_replicas = max(1, min(want or n_visible, n_visible))
+        # process (default): one worker process per GPU, each with its own
+        #   interpreter — see shard_workers.py for why threads capped at ~2x.
+        # thread: in-process deep copies of the UNet/VAE driven by threads.
+        shard_mode = os.environ.get("LATENTSYNC_SHARD_MODE", "process").lower()
         unet_replicas = [unet]
-        if n_replicas > 1:
+        vae_replicas = [vae]
+        pipeline.denoise_pool = None
+        if n_replicas > 1 and shard_mode == "process":
+            from .shard_workers import DenoisePool, build_args_for
+
+            t_pool = time.perf_counter()
+            pipeline.denoise_pool = DenoisePool.start(
+                list(range(n_replicas)),
+                build_args_for(OmegaConf.to_container(config.model), weight_paths.unet, _CONFIGS_DIR, dtype),
+            )
+            log.info(
+                "denoise pool: %d worker processes on %s, ready in %.1fs",
+                n_replicas, [torch.cuda.get_device_name(k) for k in range(n_replicas)],
+                time.perf_counter() - t_pool,
+            )
+        elif n_replicas > 1:
             import copy
             for k in range(1, n_replicas):
                 unet_replicas.append(copy.deepcopy(unet).to(torch.device(f"cuda:{k}")))
+                vae_replicas.append(copy.deepcopy(vae).to(torch.device(f"cuda:{k}")))
             log.info(
-                "UNet replicated to %d GPUs: %s",
+                "UNet replicated to %d GPUs (thread mode): %s",
                 n_replicas, [torch.cuda.get_device_name(k) for k in range(n_replicas)],
             )
         pipeline.unet_replicas = unet_replicas
-        # A VAE per replica (~160 MB fp16) lets each worker decode its own
-        # chunks instead of queueing them on the main GPU afterwards.
-        pipeline.vae_replicas = [vae] + [
-            copy.deepcopy(vae).to(torch.device(f"cuda:{k}")) for k in range(1, n_replicas)
-        ] if n_replicas > 1 else [vae]
+        pipeline.vae_replicas = vae_replicas
 
         # --- DeepCache -----------------------------------------------------
         # Caches intermediate UNet feature maps on one denoising step and
@@ -467,12 +484,12 @@ def run(
         deepcache_enabled = os.environ.get(
             "LATENTSYNC_ENABLE_DEEPCACHE", "1",
         ).lower() in ("1", "true", "yes")
-        if deepcache_enabled and len(unet_replicas) > 1:
+        if deepcache_enabled and n_replicas > 1:
             # DeepCacheSDHelper patches `pipeline.unet` with per-call cache
             # state; with replicas running concurrently on other devices that
             # state would be wrong for them and racy for this one. Sharding
             # wins ~Nx, DeepCache ~1.3x, so sharding takes precedence.
-            log.info("DeepCache disabled: %d UNet replicas in use", len(unet_replicas))
+            log.info("DeepCache disabled: denoise sharded over %d GPUs", n_replicas)
             deepcache_enabled = False
         if deepcache_enabled:
             try:

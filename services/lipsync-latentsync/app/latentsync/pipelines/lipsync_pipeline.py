@@ -884,7 +884,16 @@ class LipsyncPipeline(DiffusionPipeline):
             # more than one replica is in play.
             replicas = list(getattr(self, "unet_replicas", None) or [self.unet])
             replica_devices = [next(u.parameters()).device for u in replicas]
-            if len(replicas) > 1:
+            # Process-per-GPU pool (latentsync_driver/shard_workers.py) takes
+            # precedence over in-process thread replicas when the driver
+            # attached one. Each worker owns a UNet + VAE and returns decoded
+            # pixels; this process only conditions and pastes.
+            pool = getattr(self, "denoise_pool", None)
+            use_pool = pool is not None and not bypass_unet
+            if use_pool:
+                print(f"Denoise sharded across {pool.size} worker processes on cuda:{pool.devices}")
+                pool.begin_job(num_inference_steps, guidance_scale, do_classifier_free_guidance, eta)
+            elif len(replicas) > 1:
                 print(f"Denoise sharded across {len(replicas)} UNet replicas on {replica_devices}")
 
             # --- Workers (one per replica) start first and consume chunks
@@ -945,9 +954,11 @@ class LipsyncPipeline(DiffusionPipeline):
                         _emit_progress("denoise", 0.35 + 0.50 * (done_count[0] / max(1, todo_count[0] or num_inferences)))
                     ready[i].set()
 
-            threads = [threading.Thread(target=_worker, args=(k,), daemon=True) for k in range(len(replicas))]
-            for th in threads:
-                th.start()
+            threads = []
+            if not use_pool:
+                threads = [threading.Thread(target=_worker, args=(k,), daemon=True) for k in range(len(replicas))]
+                for th in threads:
+                    th.start()
 
             # --- Phase A: conditioning per chunk (main device) -------------
             chunk_cond: list = []
@@ -1001,27 +1012,39 @@ class LipsyncPipeline(DiffusionPipeline):
                 cond = (latents, mask_latents, masked_image_latents, ref_latents,
                         audio_embeds, ref_pixel_values, masks)
                 chunk_cond.append(cond)
-                ready[i] = threading.Event()
                 todo_count[0] += 1
-                work_queues[next_worker].put((i, cond))
-                next_worker = (next_worker + 1) % len(replicas)
+                if use_pool:
+                    pool.submit(i, tuple(
+                        None if x is None else x.detach().to("cpu")
+                        for x in (latents, mask_latents, masked_image_latents, ref_latents, audio_embeds)
+                    ))
+                else:
+                    ready[i] = threading.Event()
+                    work_queues[next_worker].put((i, cond))
+                    next_worker = (next_worker + 1) % len(replicas)
                 _emit_progress("denoise", 0.25 + 0.10 * ((i + 1) / num_inferences))
 
-            for q in work_queues:
-                q.put(None)
+            if not use_pool:
+                for q in work_queues:
+                    q.put(None)
 
             # --- Phase C: decode + paste, in order, as results land --------
             for i in tqdm.tqdm(range(num_inferences), desc="Decoding chunks..."):
                 if chunk_cond[i] is None:
                     synced_video_frames.append(decoded_by_chunk[i])
                     continue
-                ready[i].wait()
-                if failures:
-                    for th in threads:
-                        th.join(timeout=1)
-                    raise failures[0][1]
                 _, _, _, _, _, ref_pixel_values, masks = chunk_cond[i]
-                kind, payload = denoised.pop(i)
+                if use_pool:
+                    kind, payload = "pixels", pool.result(i).to(device, dtype=weight_dtype)
+                    done_count[0] += 1
+                    _emit_progress("denoise", 0.35 + 0.50 * (done_count[0] / max(1, todo_count[0])))
+                else:
+                    ready[i].wait()
+                    if failures:
+                        for th in threads:
+                            th.join(timeout=1)
+                        raise failures[0][1]
+                    kind, payload = denoised.pop(i)
                 decoded_latents = payload if kind == "pixels" else self.decode_latents(payload)
                 decoded_latents = self.paste_surrounding_pixels_back(
                     decoded_latents, ref_pixel_values, 1 - masks, device, weight_dtype
