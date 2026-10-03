@@ -91,7 +91,9 @@ class Settings(BaseSettings):
     # F5-TTS checkpoint to use. The default multilingual base supports EN/ZH
     # out of the box; community fine-tunes for other languages can be pointed
     # at here once we pre-download them in scripts/download_models.sh.
-    f5tts_model: str = "F5-TTS_v1"
+    # f5-tts >= 1.1 renamed the config from "F5-TTS_v1" to "F5TTS_v1_Base"
+    # (see f5_tts/configs/). The name must match a yaml in that directory.
+    f5tts_model: str = "F5TTS_v1_Base"
 
     # Pre-stabilization (Stage 1.5). Optional pass that runs ffmpeg's
     # vidstab (or deshake fallback) on the source video before the rest
