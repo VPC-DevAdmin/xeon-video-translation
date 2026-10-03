@@ -104,14 +104,60 @@ Frames at t=12 s, mouth region:
   outputs; the CPU compose stack after these changes (device defaults to
   `cpu` and the CPU Dockerfiles only changed their extras).
 
+## Second pass (2026-10-03): sharding and the CPU bookends
+
+Sampled GPU utilization during the first-pass run was the motivation:
+over the 12-minute run our three cards averaged 2%, 5% and 38%; the
+kernels pegged at ~99% when running, everything around them was CPU.
+
+| | first pass | second pass | what changed |
+|---|---|---|---|
+| MuseTalk fast, lipsync stage | 168 s | **96 s** | BiSeNet batched on GPU (20 s for 1538 crops); blend is a crop-local numpy composite across 16 threads (105 s → 4.7 s); output written by one ffmpeg NVENC pass over a pipe (34 s → 7 s) |
+| LatentSync, lipsync stage, warm | 422 s (1 GPU) | **247 s** (4 GPUs) | denoise sharded over one UNet + VAE replica per GPU with overlapped conditioning/decode; pipeline and face detector reused across requests (18 s + 43 s per job gone); checkpoint save off on CUDA (30 s); NVENC for the 25 fps re-encode and the final write |
+| LatentSync, lipsync stage, cold | 422 s | 306 s | first request after a restart pays the ~12 s pipeline build and ONNX session creation |
+
+End to end for the 52 s clip: MuseTalk ~2.0 min, LatentSync ~4.5 min
+(stabilisation off). Output quality unchanged in both cases
+(same-frame comparisons against the first-pass outputs).
+
+### Where the remaining LatentSync time goes (warm, 247 s)
+
+| Phase | Wall | GPUs |
+|---|---|---|
+| read + 25 fps re-encode + detect + warp | 30 s | mostly CPU; detect now ~8 s |
+| conditioning + sharded denoise + decode (overlapped) | 182 s | gpu4 81%, gpu5–7 ~58% |
+| restore + write | 35 s | CPU warp-back per frame; NVENC write |
+
+The denoise phase did not improve between the "overlap" and "worker-side
+decode" iterations, and per-replica utilization stays near 58%: four
+Python threads launching ~hundreds of kernels per UNet step contend for
+the interpreter lock. The replicas are launch-bound, not compute-bound.
+Threads were the cheap first step; the next one is **one process per
+GPU** (torch.multiprocessing with CUDA IPC for the latents), or CUDA
+graphs / `torch.compile` to cut launches per step. Either should get the
+denoise phase near 70 s, where the GPU work actually is.
+
+### Knobs that moved
+
+| Env | Default | Meaning |
+|---|---|---|
+| `LATENTSYNC_GPUS` | `2` | comma list of host GPUs for the LatentSync container (`4,5,6,7` on the XE7740) |
+| `LATENTSYNC_UNET_REPLICAS` | `0` = all visible | cap replica count |
+| `LATENTSYNC_DENOISE_CACHE` | off on CUDA | re-enable the 2 GB resume checkpoint |
+| `LATENTSYNC_VIDEO_ENCODER` | `h264_nvenc` on CUDA | intermediate re-encode and final write; libx264 fallback |
+| `MUSETALK_COMPOSITE_THREADS` | `16` | blend thread pool |
+| `MUSETALK_VIDEO_ENCODER` | `h264_nvenc` on CUDA | final encode; libx264 fallback |
+
+DeepCache is disabled automatically when more than one replica is in
+use (its patched cache state is per-UNet).
+
 ## Follow-ups, in priority order
 
-1. **LatentSync chunk sharding across GPUs (G5).** 8 s per source second
-   on one card is the only thing between mode 2 and "a minute per
-   minute". Six free cards exist when vLLM is not using them.
-2. **MuseTalk compositing and write path.** 68 s of per-frame PIL blend
-   and 27 s of cv2 `mp4v` + re-encode for a 52 s clip. Thread-pool the
-   blend, pipe frames to ffmpeg/NVENC. Target: lipsync ≤ 60 s for 52 s.
+1. **LatentSync denoise workers as processes, not threads** (see second
+   pass). The sharding is in place and correct; the interpreter lock caps
+   it at ~2x on 4 GPUs. Processes or CUDA graphs should reach ~4x.
+2. **LatentSync warp and restore** (~15 s + ~28 s): per-frame kornia
+   warps at 1080p. Batch them with batched affine matrices.
 3. **Post-stabilisation** is 170 s of CPU. Either drop it for LatentSync
    on GPU (jitter not observed) or move vidstab to a wider CPU quota.
 4. **Mode 1 quality.** Evaluate `mouth` blend mode and MuseTalk fp16;

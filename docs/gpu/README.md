@@ -8,8 +8,8 @@ additive and opt-in via `docker-compose.gpu.yml`.
 
 | Mode | Doc | Input | Target | Lipsync | Status |
 |---|---|---|---|---|---|
-| 1. Real-time translation | [mode1-realtime.md](mode1-realtime.md) | webcam (WebRTC) | result within a few minutes of stopping; quality traded for speed | MuseTalk | **running on the XE7740**: 52 s clip in ~3.3 min; lower-face quality is the open issue |
-| 2. Batch translation | [mode2-batch.md](mode2-batch.md) | webcam or upload | best achievable quality; time unconstrained | LatentSync 512, sharded over GPUs | **running on the XE7740**: 52 s clip in ~10.5 min on one GPU; quality is good; sharding (G5) next |
+| 1. Real-time translation | [mode1-realtime.md](mode1-realtime.md) | webcam (WebRTC) | result within a few minutes of stopping; quality traded for speed | MuseTalk | **running on the XE7740**: 52 s clip in ~2 min; lower-face quality is the open issue |
+| 2. Batch translation | [mode2-batch.md](mode2-batch.md) | webcam or upload | best achievable quality; time unconstrained | LatentSync 512, sharded over GPUs | **running on the XE7740**: 52 s clip in ~4.5 min on 4 GPUs (G5 done); quality is good |
 | 3. Real-time voice avatar | [mode3-avatar.md](mode3-avatar.md) | mic + one still image | conversational latency, continuous | image-driven talking head | design only |
 
 Measured numbers, quality notes and the bug list from the first run on
@@ -75,7 +75,7 @@ Each PR is independently mergeable. Order matters for the first four.
 | **G2** ✅ (perf follow-ups open) | MuseTalk CUDA port: Dockerfile.gpu, `DEVICE`, CUDA SCRFD, batched VAE encode, device-sized UNet batch. 168 s for 52 s; compositing + write path still CPU. | mode 1 |
 | **G3** ✅ (metric run owed) | LatentSync CUDA port: fp16 weights, no autocast, CUDA SCRFD. 422 s for 52 s on one GPU. Still rebuilds models per request. | mode 2 |
 | **G4** | Job queue: replace the in-memory registry and `MAX_CONCURRENT_JOBS` semaphore with Redis + per-stage workers so modes 1 and 2 run concurrently without starving each other. | throughput |
-| **G5** | LatentSync chunk sharding across GPUs 2–7 (16-frame chunks are independent given audio features + shared noise). Near-linear speedup. | mode 2 turnaround |
+| **G5** ✅ (threads; ~2x on 4 GPUs) | LatentSync chunk sharding: one UNet + VAE replica per visible GPU, overlapped phases. Interpreter-lock bound; process workers next. | mode 2 turnaround |
 | **G6** | Per-utterance duration fitting: length-aware translation prompt (LLM backend) + TTS speed parameter, replacing the whole-file rubberband stretch. Biggest remaining quality lever for all modes. | modes 1, 3 |
 | **G7** | Mode 3 avatar: live consumer on the ingest track, streaming ASR, LLM turn, streaming TTS, image-driven talking head, WebRTC return path. See mode3-avatar.md. | mode 3 |
 | **G8** | Translation backend upgrade: LLM (70B class fits one card) with context window across segments and length control; keep NLLB as the fast fallback. | quality |
