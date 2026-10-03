@@ -511,6 +511,17 @@ def run(
 
     with _PIPELINE_CACHE_LOCK:
         pipeline = _PIPELINE_CACHE.get(cache_key)
+        pool = getattr(pipeline, "denoise_pool", None) if pipeline is not None else None
+        if pool is not None and not pool.alive():
+            # A worker died (OOM, shm exhaustion, ...). Rebuild rather than
+            # fail every later request until someone restarts the service.
+            log.warning("denoise pool has dead workers; rebuilding pipeline + pool")
+            try:
+                pool.close()
+            except Exception:
+                pass
+            _PIPELINE_CACHE.pop(cache_key, None)
+            pipeline = None
         if pipeline is None:
             t_build = time.perf_counter()
             pipeline = _build_pipeline()

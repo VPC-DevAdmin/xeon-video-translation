@@ -109,6 +109,11 @@ services:
     # build a device_ids list from one env var, so this service uses the
     # nvidia runtime directly and takes a comma list in LATENTSYNC_GPUS.
     runtime: nvidia
+    # The denoise worker processes hand decoded chunks (~25 MB each) back
+    # through torch.multiprocessing shared memory, i.e. /dev/shm. Docker's
+    # default is 64 MB, which killed the workers with "No space left on
+    # device" at the first result. Size for a whole clip in flight.
+    shm_size: "16gb"
     environment:
       DEVICE: cuda
       NVIDIA_VISIBLE_DEVICES: ${LATENTSYNC_GPUS:-2}
