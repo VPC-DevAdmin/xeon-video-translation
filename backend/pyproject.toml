@@ -20,7 +20,7 @@ dependencies = [
   # faster-whisper (through 1.2.1) calls av.open(..., metadata_errors=...),
   # which PyAV removed in 15. An unpinned install on the GPU image pulled
   # av 19 and every transcribe failed with a TypeError.
-  "av>=11,<15",
+  "av==14.2.0",  # 14.3+ ship no cp312 manylinux wheel and fall back to a source build
 
   # NLLB translation. transformers wants torch; we install the CPU wheel.
   # Upper bound is coqui-tts's compat window — `isin_mps_friendly` was added
