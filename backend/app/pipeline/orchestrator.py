@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import storage
+from ..config import settings
 from . import audio, lipsync, stabilize, transcribe, translate, tts, watermark
 
 log = logging.getLogger(__name__)
