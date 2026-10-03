@@ -40,6 +40,21 @@ has been run on the target hardware.
 docker run --rm --gpus all nvidia/cuda:12.8.1-base-ubuntu24.04 nvidia-smi
 ```
 
+## Hugging Face access
+
+Model downloads go through Hugging Face. Some egress IPs (the XE7740's
+included) get anonymous `429 Too Many Requests` on every call, and IndicF5
+is a gated repo, so the GPU stack expects a token. It is read from a file
+mounted at `/run/secrets/hf_token`, never from an env value:
+
+```bash
+# in .env on the GPU host
+HF_TOKEN_FILE=/home/<you>/.cache/huggingface/token
+```
+
+That is where `huggingface-cli login` stores it. Leave it unset for
+anonymous access.
+
 ## GPU assignment
 
 | GPU | Service | Why |
