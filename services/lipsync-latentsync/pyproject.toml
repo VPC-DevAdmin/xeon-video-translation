@@ -97,7 +97,10 @@ cpu = [
 ]
 gpu = [
   # CUDA 12 build; gives insightface's SCRFD the CUDAExecutionProvider.
-  "onnxruntime-gpu>=1.19,<2.0",
+  # <1.23: later wheels link CUDA 13 (libcublasLt.so.13) and the CUDA
+  # provider silently fails to load in a CUDA 12.8 image, so detection
+  # falls back to CPU (~0.9 s/frame on the XE7740).
+  "onnxruntime-gpu>=1.19,<1.23",
 ]
 
 [build-system]
