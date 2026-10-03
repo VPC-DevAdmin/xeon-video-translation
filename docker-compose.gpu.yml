@@ -12,6 +12,10 @@
 #   1      lipsync-musetalk (real-time mode)
 #   2-7    lipsync-latentsync workers (batch mode shards 16-frame chunks
 #          across these; until sharding lands only GPU 2 is used)
+# Override per host with BACKEND_GPU / MUSETALK_GPU / LATENTSYNC_GPU in
+# .env — the XE7740 shares GPUs 1-2 with vLLM containers, so it runs
+# 0 / 3 / 4. Check `nvidia-smi` before picking; an occupied card shows up
+# as a CUDA OOM at the first UNet call, not at startup.
 #
 # Requires the NVIDIA Container Toolkit on the host. Verify with:
 #   docker run --rm --gpus all nvidia/cuda:12.8.1-base-ubuntu24.04 nvidia-smi
@@ -57,7 +61,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["0"]
+              device_ids: ["${BACKEND_GPU:-0}"]
               capabilities: [gpu]
 
   lipsync-musetalk:
@@ -90,7 +94,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["1"]
+              device_ids: ["${MUSETALK_GPU:-1}"]
               capabilities: [gpu]
 
   lipsync-latentsync:
@@ -121,7 +125,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["2"]
+              device_ids: ["${LATENTSYNC_GPU:-2}"]
               capabilities: [gpu]
 
   # WebRTC ingest: browser webcam -> this service -> file in /jobs ->
