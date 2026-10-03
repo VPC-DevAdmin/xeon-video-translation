@@ -740,7 +740,13 @@ class LipsyncPipeline(DiffusionPipeline):
         # `device` (self._execution_device) is already defined on the
         # line above. Use it so CPU execution paths don't crash in
         # ImageProcessor's internal .to("cuda") calls.
-        self.image_processor = ImageProcessor(height, device=str(device), mask_image=mask_image)
+        # GPU patch: reuse the ImageProcessor across requests. Its
+        # FaceDetector builds two onnxruntime CUDA sessions, which took
+        # ~43 s on the XE7740 and ran on every call.
+        ip_key = (int(height), str(device), str(mask_image_path))
+        if getattr(self, "_image_processor_key", None) != ip_key:
+            self.image_processor = ImageProcessor(height, device=str(device), mask_image=mask_image)
+            self._image_processor_key = ip_key
         self.set_progress_bar_config(desc=f"Sample frames: {num_frames}")
 
         # 1. Default height and width to unet
@@ -892,7 +898,9 @@ class LipsyncPipeline(DiffusionPipeline):
             work_queues = [queue.Queue() for _ in replicas]
             failures: list = []
 
-            def _denoise_chunk(unet, dev, cond):
+            vae_replicas = list(getattr(self, "vae_replicas", None) or [])
+
+            def _denoise_chunk(unet, dev, k, cond):
                 latents, mask_latents, masked_image_latents, ref_latents, audio_embeds, _, _ = cond
                 mv = lambda x: None if x is None else x.to(dev)
                 lat, ml, mil, rl, ae = mv(latents), mv(mask_latents), mv(masked_image_latents), mv(ref_latents), mv(audio_embeds)
@@ -906,7 +914,15 @@ class LipsyncPipeline(DiffusionPipeline):
                             noise_pred_uncond, noise_pred_audio = noise_pred.chunk(2)
                             noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_audio - noise_pred_uncond)
                         lat = self.scheduler.step(noise_pred, t, lat, **extra_step_kwargs).prev_sample
-                return lat.to(device)
+                    if k < len(vae_replicas) and vae_replicas[k] is not None:
+                        # Decode here, on this device, so the main GPU is
+                        # not left doing all 78 decodes after the workers
+                        # finish. Returns pixels; Phase C only pastes.
+                        vae = vae_replicas[k]
+                        z = lat / vae.config.scaling_factor + vae.config.shift_factor
+                        z = rearrange(z, "b c f h w -> (b f) c h w")
+                        return ("pixels", vae.decode(z).sample.to(device))
+                return ("latents", lat.to(device))
 
             def _worker(k: int):
                 unet, dev = replicas[k], replica_devices[k]
@@ -917,7 +933,7 @@ class LipsyncPipeline(DiffusionPipeline):
                         return
                     i, cond = item
                     try:
-                        out = _denoise_chunk(unet, dev, cond)
+                        out = _denoise_chunk(unet, dev, k, cond)
                     except Exception as e:  # surface on the main thread
                         with denoise_lock:
                             failures.append((i, e))
@@ -1005,7 +1021,8 @@ class LipsyncPipeline(DiffusionPipeline):
                         th.join(timeout=1)
                     raise failures[0][1]
                 _, _, _, _, _, ref_pixel_values, masks = chunk_cond[i]
-                decoded_latents = self.decode_latents(denoised.pop(i))
+                kind, payload = denoised.pop(i)
+                decoded_latents = payload if kind == "pixels" else self.decode_latents(payload)
                 decoded_latents = self.paste_surrounding_pixels_back(
                     decoded_latents, ref_pixel_values, 1 - masks, device, weight_dtype
                 )

@@ -448,6 +448,11 @@ def run(
                 n_replicas, [torch.cuda.get_device_name(k) for k in range(n_replicas)],
             )
         pipeline.unet_replicas = unet_replicas
+        # A VAE per replica (~160 MB fp16) lets each worker decode its own
+        # chunks instead of queueing them on the main GPU afterwards.
+        pipeline.vae_replicas = [vae] + [
+            copy.deepcopy(vae).to(torch.device(f"cuda:{k}")) for k in range(1, n_replicas)
+        ] if n_replicas > 1 else [vae]
 
         # --- DeepCache -----------------------------------------------------
         # Caches intermediate UNet feature maps on one denoising step and
