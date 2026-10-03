@@ -1055,6 +1055,10 @@ def _select_reference(
 _F5_REF_MAX_SPAN_SECONDS = 10.0  # F5 clips refs at ~12 s internally; stay under
 
 
+def _word_text(w: dict) -> str:
+    return str(w.get("text") or w.get("word") or "").strip()
+
+
 def _select_f5_reference(
     reference_audio: Path,
     transcript_segments: list[dict] | None,
@@ -1077,7 +1081,8 @@ def _select_f5_reference(
     words: list[dict] = []
     for seg in transcript_segments:
         for w in (seg.get("words") or []):
-            if w.get("start") is not None and w.get("end") is not None and (w.get("word") or "").strip():
+            # transcribe.py serialises each word as {start, end, text}.
+            if w.get("start") is not None and w.get("end") is not None and _word_text(w):
                 words.append(w)
     if len(words) < 3:
         return None
@@ -1095,7 +1100,7 @@ def _select_f5_reference(
         return None
     # Cut on the last whole word so the text matches the audio exactly.
     span_end = float(in_span[-1]["end"])
-    ref_text = " ".join((w["word"] or "").strip() for w in in_span).strip()
+    ref_text = " ".join(_word_text(w) for w in in_span).strip()
     trimmed = work_dir / "f5_reference.wav"
     try:
         _ffmpeg_atrim(reference_audio, trimmed, span_start, span_end)
