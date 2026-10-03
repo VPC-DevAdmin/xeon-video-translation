@@ -117,6 +117,8 @@ services:
       CUDA_VISIBLE_DEVICES: "0,1,2,3,4,5,6,7"
       # 0 = one replica per visible GPU.
       LATENTSYNC_UNET_REPLICAS: ${LATENTSYNC_UNET_REPLICAS:-0}
+      # NVENC for the 25 fps re-encode on read and the final write.
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility,video
       # fp16 is upstream's tested GPU path. The CPU bf16 jitter artifact
       # (docs/latentsync-pipeline.md §5) was specific to CPU bf16 autocast
       # and does not apply here; re-run the stability metric to confirm.

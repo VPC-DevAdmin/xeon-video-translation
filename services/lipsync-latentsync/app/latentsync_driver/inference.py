@@ -81,6 +81,11 @@ log = logging.getLogger(__name__)
 
 _DENOISE_CACHE_SUBDIR = "cache/latentsync_denoise"
 
+# Built pipeline reused across requests; see run().
+_PIPELINE_CACHE: dict = {}
+import threading as _threading
+_PIPELINE_CACHE_LOCK = _threading.Lock()
+
 
 def _compute_content_hash(
     video_path: Path, audio_path: Path,
@@ -294,6 +299,13 @@ def run(
         # without waiting ~50 minutes. Catches wiring bugs fast.
         steps = 1
 
+    # Hardware encode for the intermediate re-encode and the final write
+    # when on CUDA (the container needs the `video` driver capability;
+    # util.py falls back to libx264 if ffmpeg rejects NVENC).
+    os.environ.setdefault(
+        "LATENTSYNC_VIDEO_ENCODER",
+        "h264_nvenc" if _resolve_device().type == "cuda" else "libx264",
+    )
     log.info(
         "latentsync inference starting: steps=%d guidance=%.2f seed=%s dry_run=%s",
         steps, guidance, seed, dry_run,
@@ -364,101 +376,127 @@ def run(
             f"Check app/configs/unet/{_UNET_CONFIG_NAME} vs the weight release."
         )
 
-    # --- Scheduler ------------------------------------------------------
-    # DDIMScheduler.from_pretrained wants a directory containing
-    # scheduler_config.json. We point it at app/configs/ directly rather
-    # than the upstream "configs" path.
-    scheduler = DDIMScheduler.from_pretrained(str(_CONFIGS_DIR))
-
-    # --- Audio encoder (Whisper tiny) ----------------------------------
-    audio_encoder = Audio2Feature(
-        model_path=str(weight_paths.whisper_tiny),
-        device=device,
-        num_frames=int(config.data.num_frames),
-        audio_feat_length=list(config.data.audio_feat_length),
+    # Models are expensive to build (~18 s on the XE7740 with four UNet
+    # replicas) and were rebuilt on every request. Cache the finished
+    # pipeline per (device, dtype, config, replica count, deepcache) and
+    # reuse it; the per-request knobs (steps, guidance, seed) are passed
+    # at call time and do not touch the models.
+    cache_key = (
+        str(device), str(dtype), _UNET_CONFIG_NAME,
+        os.environ.get("LATENTSYNC_UNET_REPLICAS", "0"),
+        os.environ.get("LATENTSYNC_ENABLE_DEEPCACHE", "1"),
+        str(weight_paths.unet), str(weight_paths.whisper_tiny),
     )
 
-    # --- VAE (SD 1.5 ft-MSE) -------------------------------------------
-    # Downloaded on-demand from HF to HF_HOME (/models/huggingface).
-    # ~330 MB; first call takes a minute.
-    vae = AutoencoderKL.from_pretrained(
-        "stabilityai/sd-vae-ft-mse", torch_dtype=dtype,
-    )
-    vae.config.scaling_factor = 0.18215
-    vae.config.shift_factor = 0
-    vae = optimize(vae, "vae")
+    def _build_pipeline():
+        # --- Scheduler ------------------------------------------------------
+        # DDIMScheduler.from_pretrained wants a directory containing
+        # scheduler_config.json. We point it at app/configs/ directly rather
+        # than the upstream "configs" path.
+        scheduler = DDIMScheduler.from_pretrained(str(_CONFIGS_DIR))
 
-    # --- UNet ----------------------------------------------------------
-    unet, _ = UNet3DConditionModel.from_pretrained(
-        OmegaConf.to_container(config.model),
-        str(weight_paths.unet),
-        device=str(device),
-    )
-    unet = unet.to(dtype=dtype)
-    unet = optimize(unet, "unet")
-
-    # --- Pipeline ------------------------------------------------------
-    pipeline = LipsyncPipeline(
-        vae=vae,
-        audio_encoder=audio_encoder,
-        unet=unet,
-        scheduler=scheduler,
-    ).to(device)
-
-    # --- UNet replicas for sharded denoise (GPU track, G5) ------------
-    # One UNet copy per visible CUDA device (NVIDIA_VISIBLE_DEVICES in the
-    # compose overlay). The pipeline splits the 16-frame chunks across
-    # them round-robin; everything else stays on cuda:0. ~2.6 GB fp16 per
-    # copy. LATENTSYNC_UNET_REPLICAS caps the count (0 = all visible).
-    n_visible = torch.cuda.device_count() if device.type == "cuda" else 1
-    want = int(os.environ.get("LATENTSYNC_UNET_REPLICAS", "0") or 0)
-    n_replicas = max(1, min(want or n_visible, n_visible))
-    unet_replicas = [unet]
-    if n_replicas > 1:
-        import copy
-        for k in range(1, n_replicas):
-            unet_replicas.append(copy.deepcopy(unet).to(torch.device(f"cuda:{k}")))
-        log.info(
-            "UNet replicated to %d GPUs: %s",
-            n_replicas, [torch.cuda.get_device_name(k) for k in range(n_replicas)],
+        # --- Audio encoder (Whisper tiny) ----------------------------------
+        audio_encoder = Audio2Feature(
+            model_path=str(weight_paths.whisper_tiny),
+            device=device,
+            num_frames=int(config.data.num_frames),
+            audio_feat_length=list(config.data.audio_feat_length),
         )
-    pipeline.unet_replicas = unet_replicas
 
-    # --- DeepCache -----------------------------------------------------
-    # Caches intermediate UNet feature maps on one denoising step and
-    # reuses them on subsequent steps ("skip" steps). Net effect: about
-    # 30% fewer UNet calls for a given num_inference_steps, with
-    # negligible visual drift at cache_interval=3.
-    #
-    # Upstream LatentSync uses exactly these params (scripts/inference.py):
-    #   helper.set_params(cache_interval=3, cache_branch_id=0)
-    # We default them on and expose an env toggle for debugging. IPEX
-    # and DeepCache stack — the speedup is multiplicative, not additive.
-    deepcache_enabled = os.environ.get(
-        "LATENTSYNC_ENABLE_DEEPCACHE", "1",
-    ).lower() in ("1", "true", "yes")
-    if deepcache_enabled and len(unet_replicas) > 1:
-        # DeepCacheSDHelper patches `pipeline.unet` with per-call cache
-        # state; with replicas running concurrently on other devices that
-        # state would be wrong for them and racy for this one. Sharding
-        # wins ~Nx, DeepCache ~1.3x, so sharding takes precedence.
-        log.info("DeepCache disabled: %d UNet replicas in use", len(unet_replicas))
-        deepcache_enabled = False
-    if deepcache_enabled:
-        try:
-            from DeepCache import DeepCacheSDHelper
-            helper = DeepCacheSDHelper(pipe=pipeline)
-            helper.set_params(cache_interval=3, cache_branch_id=0)
-            helper.enable()
-            log.info("DeepCache enabled (cache_interval=3, cache_branch_id=0)")
-        except Exception as e:
-            # DeepCache is a speedup, not a correctness piece. If its
-            # monkey-patching ever bites an upstream diffusers API
-            # change, fall back to vanilla rather than failing the run.
-            log.warning(
-                "DeepCache enable failed (%s); running without it", e,
+        # --- VAE (SD 1.5 ft-MSE) -------------------------------------------
+        # Downloaded on-demand from HF to HF_HOME (/models/huggingface).
+        # ~330 MB; first call takes a minute.
+        vae = AutoencoderKL.from_pretrained(
+            "stabilityai/sd-vae-ft-mse", torch_dtype=dtype,
+        )
+        vae.config.scaling_factor = 0.18215
+        vae.config.shift_factor = 0
+        vae = optimize(vae, "vae")
+
+        # --- UNet ----------------------------------------------------------
+        unet, _ = UNet3DConditionModel.from_pretrained(
+            OmegaConf.to_container(config.model),
+            str(weight_paths.unet),
+            device=str(device),
+        )
+        unet = unet.to(dtype=dtype)
+        unet = optimize(unet, "unet")
+
+        # --- Pipeline ------------------------------------------------------
+        pipeline = LipsyncPipeline(
+            vae=vae,
+            audio_encoder=audio_encoder,
+            unet=unet,
+            scheduler=scheduler,
+        ).to(device)
+
+        # --- UNet replicas for sharded denoise (GPU track, G5) ------------
+        # One UNet copy per visible CUDA device (NVIDIA_VISIBLE_DEVICES in the
+        # compose overlay). The pipeline splits the 16-frame chunks across
+        # them round-robin; everything else stays on cuda:0. ~2.6 GB fp16 per
+        # copy. LATENTSYNC_UNET_REPLICAS caps the count (0 = all visible).
+        n_visible = torch.cuda.device_count() if device.type == "cuda" else 1
+        want = int(os.environ.get("LATENTSYNC_UNET_REPLICAS", "0") or 0)
+        n_replicas = max(1, min(want or n_visible, n_visible))
+        unet_replicas = [unet]
+        if n_replicas > 1:
+            import copy
+            for k in range(1, n_replicas):
+                unet_replicas.append(copy.deepcopy(unet).to(torch.device(f"cuda:{k}")))
+            log.info(
+                "UNet replicated to %d GPUs: %s",
+                n_replicas, [torch.cuda.get_device_name(k) for k in range(n_replicas)],
             )
+        pipeline.unet_replicas = unet_replicas
 
+        # --- DeepCache -----------------------------------------------------
+        # Caches intermediate UNet feature maps on one denoising step and
+        # reuses them on subsequent steps ("skip" steps). Net effect: about
+        # 30% fewer UNet calls for a given num_inference_steps, with
+        # negligible visual drift at cache_interval=3.
+        #
+        # Upstream LatentSync uses exactly these params (scripts/inference.py):
+        #   helper.set_params(cache_interval=3, cache_branch_id=0)
+        # We default them on and expose an env toggle for debugging. IPEX
+        # and DeepCache stack — the speedup is multiplicative, not additive.
+        deepcache_enabled = os.environ.get(
+            "LATENTSYNC_ENABLE_DEEPCACHE", "1",
+        ).lower() in ("1", "true", "yes")
+        if deepcache_enabled and len(unet_replicas) > 1:
+            # DeepCacheSDHelper patches `pipeline.unet` with per-call cache
+            # state; with replicas running concurrently on other devices that
+            # state would be wrong for them and racy for this one. Sharding
+            # wins ~Nx, DeepCache ~1.3x, so sharding takes precedence.
+            log.info("DeepCache disabled: %d UNet replicas in use", len(unet_replicas))
+            deepcache_enabled = False
+        if deepcache_enabled:
+            try:
+                from DeepCache import DeepCacheSDHelper
+                helper = DeepCacheSDHelper(pipe=pipeline)
+                helper.set_params(cache_interval=3, cache_branch_id=0)
+                helper.enable()
+                log.info("DeepCache enabled (cache_interval=3, cache_branch_id=0)")
+            except Exception as e:
+                # DeepCache is a speedup, not a correctness piece. If its
+                # monkey-patching ever bites an upstream diffusers API
+                # change, fall back to vanilla rather than failing the run.
+                log.warning(
+                    "DeepCache enable failed (%s); running without it", e,
+                )
+
+
+        return pipeline
+
+    with _PIPELINE_CACHE_LOCK:
+        pipeline = _PIPELINE_CACHE.get(cache_key)
+        if pipeline is None:
+            t_build = time.perf_counter()
+            pipeline = _build_pipeline()
+            _PIPELINE_CACHE.clear()  # one resident pipeline; configs rarely change
+            _PIPELINE_CACHE[cache_key] = pipeline
+            log.info("pipeline built in %.1fs and cached", time.perf_counter() - t_build)
+        else:
+            log.info("pipeline reused from cache")
     # Bind the mask image path to the vendored asset so the pipeline
     # finds it without depending on the container's working directory.
     mask_image_path = Path(__file__).resolve().parent.parent / "latentsync" / "utils" / "mask.png"
@@ -483,6 +521,17 @@ def run(
     checkpoint_path = _resolve_checkpoint_path(
         model_cache_dir, video_path, audio_path, steps, guidance, seed,
     )
+    if (
+        checkpoint_path is not None
+        and device.type == "cuda"
+        and os.environ.get("LATENTSYNC_DENOISE_CACHE", "0").lower() not in ("1", "true", "yes")
+    ):
+        # The resume cache was a CPU-era necessity (a retry saved hours).
+        # On GPU the torch.save of ~2 GB of frames costs ~30 s per job,
+        # which is a sizeable slice of the whole run. Opt back in with
+        # LATENTSYNC_DENOISE_CACHE=1.
+        log.info("denoise cache: off on CUDA (LATENTSYNC_DENOISE_CACHE=1 to enable)")
+        checkpoint_path = None
     if checkpoint_path is None:
         log.info("denoise cache: disabled (LATENTSYNC_IGNORE_DENOISE_CACHE)")
     elif checkpoint_path.exists():
