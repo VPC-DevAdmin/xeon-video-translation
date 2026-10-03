@@ -40,7 +40,10 @@ dependencies = [
   "scipy>=1.11",
   "numpy<2",
   "opencv-python-headless>=4.9",
-  "insightface>=0.7.3",
+  # Pinned: insightface 2.x pulls CPU onnxruntime as a hard dep, which
+  # shadows onnxruntime-gpu in the GPU image. 0.7.3 is what LatentSync
+  # pins too.
+  "insightface==0.7.3",
   "imageio[ffmpeg]>=2.33",
 
   # Google Drive fetch for the BiSeNet face-parse weights. The weights don't
