@@ -28,12 +28,15 @@ you see numerical artifacts on a particular clip.
 - Quality is solid for major language pairs (EN↔ES/FR/DE/JA/ZH); weaker for
   long-tail languages where the distilled model has less capacity.
 
-**Alternate: Ollama** (`TRANSLATE_BACKEND=ollama`)
+**GPU default: OpenAI-compatible LLM** (`TRANSLATE_BACKEND=llm`)
 
-- Runs whichever model you've pulled into a local Ollama daemon.
-- Llama 3.1 8B at q4 quantization works but takes 10–30 s per segment on CPU —
-  too slow for the live demo. Try a 1B–3B model if you really want LLM-style
-  translations on CPU.
+- Any server speaking the OpenAI chat-completions protocol at `LLM_BASE_URL`.
+  On the XE7740 this is vLLM serving `Qwen/Qwen3-30B-A3B-Instruct-2507`
+  (bf16, 32k context); an Ollama `/v1` endpoint works the same way on a laptop.
+- Translates segment by segment with the preceding two segments as context,
+  the speech-time budget and the job glossary in the prompt. The same client
+  shortens overrunning segments (`REWRITE_OVERRUNS`) and drives avatar replies.
+- ~0.3–0.6 s per segment against vLLM on the host; too slow on CPU for a demo.
 
 ## Stage 4 — Voice cloning / TTS
 

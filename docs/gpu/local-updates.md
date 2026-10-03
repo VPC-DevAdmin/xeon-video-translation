@@ -8,7 +8,7 @@ The local code now exposes three workflows:
 |---|---|---|---|
 | Fast translation | `/live` or upload page, Fast | WebRTC recording → ASR → translation → timed TTS → MuseTalk | Processing begins after Stop; completion within minutes is a target, not a live dubbing guarantee |
 | Quality translation | `/live` or upload page, Quality | Same capture → ASR → translation → timed TTS → LatentSync | Batch processing; compare real outputs before calling it the highest-quality configuration |
-| Voice avatar | `/avatar` | Portrait + live microphone → utterance ASR → streamed Ollama text → streamed XTTS → prepared-image MuseTalk → WebRTC A/V | First implementation; target-GPU latency and visual quality are not yet validated |
+| Voice avatar | `/avatar` | Portrait + live microphone → utterance ASR → streamed LLM text (OpenAI-compatible, vLLM on the host) → streamed XTTS → prepared-image MuseTalk → WebRTC A/V | First implementation; target-GPU latency and visual quality are not yet validated |
 
 The audio-only preset skips lip synchronization for minimum turnaround. Fast capture requests 640×360 at 25 fps; quality capture requests 1280×720 at 25 fps. Actual camera constraints may differ. Avatar output is at most 512 pixels on its longest side and 25 fps. It animates the mouth on a still portrait; it does not synthesize natural head gestures.
 
@@ -42,7 +42,7 @@ The same ICE settings reach both peers. Host networking is designed for the Linu
 
 ## Avatar setup and capacity
 
-Ollama must be reachable at `OLLAMA_HOST`, with `OLLAMA_MODEL` already pulled. The default is `llama3.1:8b-instruct`. XTTS uses a bundled speaker, optionally selected through `AVATAR_SPEAKER`; the portrait does not supply a voice clone. Required XTTS and MuseTalk weights must already be cached. Start with one avatar session, a front-facing portrait and a headset. Tune `AVATAR_VAD_RMS` on the real microphone; the initial energy detector has a 600 ms silence endpoint and is not a trained voice activity detector.
+The chat server must be reachable at `LLM_BASE_URL` (OpenAI-compatible `/v1`; the XE7740 runs vLLM with `Qwen/Qwen3-30B-A3B-Instruct-2507`, which is the default `LLM_MODEL`). XTTS uses a bundled speaker, optionally selected through `AVATAR_SPEAKER`; the portrait does not supply a voice clone. Required XTTS and MuseTalk weights must already be cached. Start with one avatar session, a front-facing portrait and a headset. Tune `AVATAR_VAD_RMS` on the real microphone; the initial energy detector has a 600 ms silence endpoint and is not a trained voice activity detector.
 
 The default stack shares speech and MuseTalk services. Their inference locks prevent corruption but can make avatar replies wait behind translation. Use the optional dedicated-capacity overlay for simultaneous workloads:
 
@@ -53,7 +53,7 @@ docker compose -f docker-compose.yml -f docker-compose.gpu.yml \
   -f docker-compose.avatar.yml up -d --build
 ```
 
-This adds a speech backend on port 8092 and an avatar MuseTalk service on 8093. The avatar backend does not recover translation jobs from the shared volume. Ollama needs capacity of its own; the overlay does not place or launch Ollama. A dedicated speech backend defaults to Whisper small to reduce response latency; set `AVATAR_WHISPER_MODEL` to change it.
+This adds a speech backend on port 8092 and an avatar MuseTalk service on 8093. The avatar backend does not recover translation jobs from the shared volume. The LLM server needs capacity of its own; the overlay does not place or launch it. A dedicated speech backend defaults to Whisper small to reduce response latency; set `AVATAR_WHISPER_MODEL` to change it.
 
 Avatar sessions expire after 30 minutes. Incoming speech or the Interrupt button clears queued audio and video together. Native GPU work already in flight drains safely. Cancelled turn artifacts are retained until the 24-hour orphan cleanup rather than deleted underneath inference. Normal completed chunks are removed after loading into the bounded playback queue.
 
@@ -66,7 +66,7 @@ Avatar sessions expire after 30 minutes. Incoming speech or the Interrupt button
 - Cancellation waits for active native inference before releasing capacity. A queued cancellation exits without waiting for that job's own inference.
 - WebRTC verifies both incoming tracks. Recording limits, session cleanup and retryable, idempotent submission prevent lost recordings and duplicate jobs. Limits default to 120 seconds, 100 MB and four simultaneous recordings.
 - Every nonempty translated utterance is synthesized, including short replies. Failures retry and then fail visibly. Speech is aligned by original utterance onset. Small overruns can accelerate up to `TTS_MAX_SPEED` (default 1.15); larger overruns fail explicitly rather than silently dropping speech. Such failures need a shorter translation or a better duration-aware voice; automatic rewriting is not yet implemented.
-- NLLB mutable tokenizer use is locked. Quality mode can opt into contextual Ollama translation via `QUALITY_TRANSLATE_BACKEND=ollama`; compare fidelity for each target language before adoption.
+- NLLB mutable tokenizer use is locked. The GPU compose file defaults both lanes to `TRANSLATE_BACKEND=llm` (contextual, glossary-aware translation through `LLM_BASE_URL`); set `nllb` to compare fidelity per target language.
 - MuseTalk runs inference without gradients; CUDA Whisper weights and features use matching dtypes. FP16 remains opt-in pending parity checks. LatentSync defaults to process sharding; compilation remains opt-in pending GPU validation.
 - The frontend is patched to Next.js 15.5.27, React 19.3.0, Tailwind 4.3.3 and PostCSS 8.5.28. Key CUDA framework packages are pinned with pip constraints so later installs cannot silently replace the chosen versions. The full ML dependency graph and model revisions are not yet completely locked; capture built-image digests and model hashes when validating a release.
 
@@ -94,7 +94,7 @@ CPU validation covers submission retries, cancellation drain, SSE fanout, short 
 5. Replace energy VAD with a measured speech detector and add browser tests across TURN, disconnects and camera changes.
 6. Lock the full dependency/model graph from validated images and add a GPU CI runner. Current CPU CI cannot establish numerical parity or throughput.
 
-Upstream references: [Next.js security patch](https://nextjs.org/blog/security-update-2025-12-11), [XTTS streaming API](https://docs.coqui.ai/en/latest/models/xtts.html), [Ollama chat API](https://docs.ollama.com/api/chat), [aiortc media helpers](https://aiortc.readthedocs.io/en/latest/helpers.html).
+Upstream references: [Next.js security patch](https://nextjs.org/blog/security-update-2025-12-11), [XTTS streaming API](https://docs.coqui.ai/en/latest/models/xtts.html), [OpenAI-compatible chat completions (vLLM)](https://docs.vllm.ai/en/latest/serving/openai_compatible_server.html), [aiortc media helpers](https://aiortc.readthedocs.io/en/latest/helpers.html).
 
 ## Reviewer remediation
 

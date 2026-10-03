@@ -37,6 +37,30 @@ def _get_model() -> "WhisperModel":
         return _model
 
 
+_batched = None
+
+
+def _get_pipeline():
+    """Return the object whose `.transcribe()` runs full-clip ASR.
+
+    CUDA: faster-whisper's BatchedInferencePipeline wraps the same model and
+    decodes the VAD-split chunks as one batch, which is where a 96 GB card
+    pays off (large-v3 fp16 goes from ~2 s to well under 1 s on a 52 s
+    clip). CPU: the plain model; batching only adds memory there.
+    `_get_model()` stays available for callers that need the sequential
+    API (TTS tail verification passes `condition_on_previous_text`).
+    """
+    global _batched
+    model = _get_model()
+    if settings.resolved_device != "cuda":
+        return model
+    if _batched is None:
+        from faster_whisper import BatchedInferencePipeline
+
+        _batched = BatchedInferencePipeline(model=model)
+    return _batched
+
+
 @dataclass
 class Word:
     start: float
@@ -95,7 +119,8 @@ def transcribe(
 
     `language` is a 2-letter ISO code (e.g. "en"); if None, auto-detect.
     """
-    model = _get_model()
+    model = _get_pipeline()
+    extra = {"batch_size": settings.whisper_batch_size} if model is not _model else {}
     segments_iter, info = model.transcribe(
         str(audio_path),
         language=language,
@@ -108,6 +133,7 @@ def transcribe(
         # 500 ms matches the architecture review's anti-hallucination
         # recommendation. Shorter pauses are preserved in the transcript.
         vad_parameters={"min_silence_duration_ms": 500},
+        **extra,
     )
 
     segments: list[Segment] = []

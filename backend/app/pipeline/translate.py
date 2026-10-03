@@ -2,9 +2,9 @@
 
 Two backends are wired up:
 
-- `nllb` (default, CPU friendly): facebook/nllb-200-distilled-600M via transformers.
-- `ollama`: hits a local Ollama server. Slow on CPU for an 8B model but wired
-  for parity with the spec.
+- `nllb`: facebook/nllb-200 via transformers (fp16 on CUDA). Self-contained.
+- `llm`: an OpenAI-compatible chat server (vLLM serving Qwen3-30B on the GPU
+  host). Context-aware, glossary-aware and length-aware; the GPU default.
 
 The orchestrator picks based on `settings.translate_backend`.
 """
@@ -12,14 +12,13 @@ The orchestrator picks based on `settings.translate_backend`.
 from __future__ import annotations
 
 import json
-import urllib.error
-import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
 from typing import Any
 
 from ..config import settings
+from .. import llm
 
 
 # BCP-47 -> NLLB FLORES-200 codes. NLLB-200 supports all 200 FLORES
@@ -62,7 +61,7 @@ NLLB_LANG_CODES: dict[str, str] = {
     "as": "asm_Beng",  # Assamese
 }
 
-# Human-readable names for prompt templating (Ollama backend).
+# Human-readable names for prompt templating (LLM backend).
 LANG_NAMES: dict[str, str] = {
     "en": "English",
     "es": "Spanish",
@@ -188,19 +187,19 @@ def _translate_segment_nllb(text: str, src: str, tgt: str) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# Ollama backend
+# LLM backend (OpenAI-compatible chat; vLLM on the GPU host)
 # --------------------------------------------------------------------------- #
 
-_OLLAMA_PROMPT = (
-    "You are a professional translator. Translate the following text from "
-    "{src_name} to {tgt_name}. Preserve the speaker's tone and register. "
-    "Match the approximate length of the original so the translated speech "
-    "fits in roughly the same time. Output only the translation, no commentary.\n\n"
-    "Text: {text}"
+_LLM_SYSTEM = (
+    "You are a professional translator for dubbed video. Translate from "
+    "{src_name} to {tgt_name}. Preserve the speaker's tone, register, names, "
+    "numbers and meaning. Match the approximate length of the original so the "
+    "translated speech fits in roughly the same time. Do not add greetings, "
+    "notes or explanations. Output only the translation."
 )
 
 
-def _translate_segment_ollama(
+def _translate_segment_llm(
     text: str,
     src: str,
     tgt: str,
@@ -210,31 +209,24 @@ def _translate_segment_ollama(
 ) -> str:
     src_name = LANG_NAMES.get(src, src)
     tgt_name = LANG_NAMES.get(tgt, tgt)
-    body = json.dumps(
-        {
-            "model": settings.ollama_model,
-            "prompt": _OLLAMA_PROMPT.format(src_name=src_name, tgt_name=tgt_name, text=text)
-            + f"\nContext (do not translate): {context}\nSpeech time budget: {duration} seconds."
-            + f" Required terminology: {json.dumps(glossary or {}, ensure_ascii=False)}"
-            + " Preserve names, numbers and meaning. Do not add greetings or explanations.",
-            "stream": False,
-            "options": {"temperature": 0.3},
-        }
-    ).encode("utf-8")
-
-    req = urllib.request.Request(
-        f"{settings.ollama_host.rstrip('/')}/api/generate",
-        data=body,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
+    user = f"Text: {text}"
+    if context:
+        user += f"\nPreceding context (do not translate): {context}"
+    if duration:
+        user += f"\nSpeech time budget: {duration:.1f} seconds."
+    if glossary:
+        user += f"\nRequired terminology: {json.dumps(glossary, ensure_ascii=False)}"
     try:
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            payload = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.URLError as e:
-        raise TranslationError(f"ollama request failed: {e}") from e
-
-    return payload.get("response", "").strip()
+        return llm.chat(
+            [
+                {"role": "system", "content": _LLM_SYSTEM.format(src_name=src_name, tgt_name=tgt_name)},
+                {"role": "user", "content": user},
+            ],
+            temperature=0.2,
+            max_tokens=max(64, min(1024, 4 * len(text))),
+        ).strip().strip('"')
+    except llm.LLMError as e:
+        raise TranslationError(str(e)) from e
 
 
 # --------------------------------------------------------------------------- #
@@ -267,8 +259,10 @@ def translate(
         nllb_src = NLLB_LANG_CODES[src]
         nllb_tgt = NLLB_LANG_CODES[tgt]
         translate_fn = lambda t: _translate_segment_nllb(t, nllb_src, nllb_tgt)  # noqa: E731
-    elif backend == "ollama":
-        translate_fn = lambda t: _translate_segment_ollama(t, src, tgt)  # noqa: E731
+    elif backend == "llm":
+        if not llm.configured():
+            raise TranslationError("translate backend 'llm' selected but LLM_BASE_URL is unset")
+        translate_fn = lambda t: _translate_segment_llm(t, src, tgt)  # noqa: E731
     else:
         raise TranslationError(f"unknown translate backend: {backend!r}")
 
@@ -280,9 +274,9 @@ def translate(
             continue
         if src == tgt:
             translated = source_text
-        elif backend == "ollama":
+        elif backend == "llm":
             context = " ".join(s["text"] for s in segments[max(0, index - 2) : index])
-            translated = _translate_segment_ollama(
+            translated = _translate_segment_llm(
                 source_text, src, tgt, context, float(seg["end"]) - float(seg["start"]), glossary
             ).strip()
         else:

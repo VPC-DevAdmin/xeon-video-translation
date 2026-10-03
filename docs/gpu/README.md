@@ -102,3 +102,25 @@ Each PR is independently mergeable. Order matters for the first four.
   non-commercial weights (XTTS CPML, F5-TTS and Wav2Lip CC-BY-NC) and
   gated repos (IndicF5) are acceptable. No need to swap TTS for licensing
   reasons; model choice is on quality and speed alone.
+
+## GPU-native component policy
+
+The CPU track made several choices purely so the pipeline would fit and run on
+a Xeon. None of those survive on the GPU track; the table is the checklist a
+reviewer should hold new changes against.
+
+| Stage | CPU-era choice | GPU track |
+| --- | --- | --- |
+| ASR | `base` whisper, int8 CTranslate2, sequential decode | `large-v3` fp16 on CUDA through faster-whisper's `BatchedInferencePipeline` (`WHISPER_BATCH_SIZE`, default 16) |
+| Translation | NLLB-200 distilled 600M (fits in RAM) / Ollama 8B | `TRANSLATE_BACKEND=llm`: OpenAI-compatible chat server (vLLM, Qwen3-30B-A3B on the host). NLLB-200 3.3B fp16 remains selectable. Ollama-specific code is gone; `LLM_BASE_URL` takes any `/v1` server |
+| Overrun handling | hard truncation / time-stretch | per-segment resynthesis, then LLM rewrite (`REWRITE_OVERRUNS=true`), then fail loudly |
+| TTS | XTTS-v2 fp32 on CPU | XTTS-v2 / F5-TTS / IndicF5 on CUDA, warmed at startup |
+| MuseTalk | IPEX bf16, fp32 weights, per-frame VAE, libx264 | native CUDA fp16 (`MUSETALK_DTYPE=fp16`), batched VAE + BiSeNet, SCRFD on the CUDA ORT provider, NVENC write, TF32 + cuDNN autotune. IPEX is not installed and `/ready` does not look for it |
+| LatentSync | IPEX bf16 autocast, DeepCache, single process | fp16 UNet sharded one process per GPU (`LATENTSYNC_SHARD_MODE=process`), NVDEC/NVENC read and write, DeepCache disabled when sharded, TF32 + cuDNN autotune. IPEX and DeepCache are CPU-only extras |
+| Wav2Lip | CPU-feasible lipsync | not part of any GPU mode preset (fast = MuseTalk, quality = LatentSync); still callable for A/B |
+| Window cuts / mux / watermark | libx264 | `h264_nvenc` via `VIDEO_ENCODER`, with automatic libx264 fallback if the encoder session fails |
+| Image decode | `cv2.imread` | Pillow for PNG/JPEG files. The OpenCV wheel's bundled libpng fails ("bad parameters to zlib") once torch, torchvision, onnxruntime and decord have loaded their own zlib copies into the server; video frames still go through OpenCV/NVDEC |
+
+Residual CPU work on the GPU track is limited to ffmpeg audio filters,
+silence detection and the numpy compositing in MuseTalk (which runs in a
+thread pool and finished faster than a GPU round trip at 1080p).

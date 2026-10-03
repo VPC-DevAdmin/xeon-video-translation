@@ -1,16 +1,16 @@
-"""Streaming assistant turns: ASR, Ollama tokens, XTTS audio chunks."""
+"""Streaming assistant turns: ASR, LLM tokens (OpenAI-compatible), XTTS audio chunks."""
 
 from __future__ import annotations
 import json
 import os
 import re
-import urllib.request
 import uuid
 from pathlib import Path
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from ..config import settings
+from .. import llm
 from ..pipeline.orchestrator import blocking_call, speech_lock
 from ..pipeline import transcribe, tts
 
@@ -25,30 +25,12 @@ class Turn(BaseModel):
 
 
 def _sentences(messages):
-    request = urllib.request.Request(
-        f"{settings.ollama_host.rstrip('/')}/api/chat",
-        data=json.dumps(
-            {
-                "model": settings.ollama_model,
-                "messages": messages,
-                "stream": True,
-                "options": {"num_predict": 160, "temperature": 0.4},
-            }
-        ).encode(),
-        headers={"Content-Type": "application/json"},
-    )
     pending = ""
-    with urllib.request.urlopen(request, timeout=30) as response:
-        for line in response:
-            event = json.loads(line)
-            if event.get("error"):
-                raise RuntimeError(event["error"])
-            pending += event.get("message", {}).get("content", "")
-            if re.search(r"[.!?。！？]\s*$", pending) or len(pending) > 180:
-                yield pending.strip()
-                pending = ""
-            if event.get("done"):
-                break
+    for delta in llm.stream(messages, temperature=0.4, max_tokens=160, timeout=30):
+        pending += delta
+        if re.search(r"[.!?。！？]\s*$", pending) or len(pending) > 180:
+            yield pending.strip()
+            pending = ""
     if pending.strip():
         yield pending.strip()
 

@@ -44,6 +44,10 @@ def _worker_main(dev_index: int, in_q, out_q, build: dict) -> None:  # pragma: n
         torch.multiprocessing.set_sharing_strategy("file_system")
         torch.cuda.set_device(dev_index)
         device = torch.device(f"cuda:{dev_index}")
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        torch.backends.cudnn.benchmark = True
+        torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = True
         dtype = getattr(torch, build["dtype"])
 
         from diffusers import AutoencoderKL, DDIMScheduler

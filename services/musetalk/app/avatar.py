@@ -15,6 +15,23 @@ from .musetalk.blending import composite_np, face_large_crop_rgb
 _prepared = OrderedDict()
 
 
+def _read_image_bgr(image_path: Path):
+    """Decode a portrait with Pillow (EXIF-rotated) and return BGR uint8.
+
+    cv2.imread is avoided for file decoding: the OpenCV wheel's bundled
+    libpng breaks once torch/onnxruntime have loaded their own zlib into the
+    process, which made PNG portraits fail intermittently."""
+    from PIL import Image, ImageOps
+    import numpy as np
+
+    try:
+        with Image.open(image_path) as handle:
+            rgb = np.asarray(ImageOps.exif_transpose(handle).convert("RGB"))
+    except Exception:
+        return None
+    return np.ascontiguousarray(rgb[:, :, ::-1])
+
+
 @torch.inference_mode()
 def render(image_path: Path, audio_path: Path, output_path: Path):
     state = get_or_load(
@@ -22,7 +39,7 @@ def render(image_path: Path, audio_path: Path, output_path: Path):
     )
     key = hashlib.sha256(image_path.read_bytes()).hexdigest()
     if key not in _prepared:
-        image = cv2.imread(str(image_path))
+        image = _read_image_bgr(image_path)
         if image is None:
             raise RuntimeError("invalid avatar image")
         h, w = image.shape[:2]

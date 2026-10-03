@@ -306,6 +306,12 @@ def _resolve_device() -> "torch.device":
     if choice.startswith("cuda") and not torch.cuda.is_available():
         log.warning("DEVICE=%s requested but CUDA is unavailable; falling back to cpu", choice)
         choice = "cpu"
+    if choice.startswith("cuda"):
+        # Free on Ampere+/Blackwell for this workload: TF32 for remaining fp32
+        # matmuls, cuDNN autotune for fixed-shape UNet/VAE convs.
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        torch.backends.cudnn.benchmark = True
     return torch.device(choice)
 
 

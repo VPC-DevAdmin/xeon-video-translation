@@ -19,8 +19,9 @@ services:
       HF_TOKEN_PATH: /run/secrets/hf_token
       WHISPER_MODEL: ${AVATAR_WHISPER_MODEL:-small}
       WHISPER_COMPUTE_TYPE: float16
-      OLLAMA_HOST: ${OLLAMA_HOST:-http://host.docker.internal:11434}
-      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.1:8b-instruct}
+      LLM_BASE_URL: ${LLM_BASE_URL:-http://host.docker.internal:2080/v1}
+      LLM_MODEL: ${LLM_MODEL:-Qwen/Qwen3-30B-A3B-Instruct-2507}
+      LLM_API_KEY_FILE: /run/secrets/llm_api_key
       RECOVER_JOBS: "false"
       WARMUP_MODELS: "false"
       OMP_NUM_THREADS: "8"
@@ -29,6 +30,7 @@ services:
       - models:/models
       - jobs:/jobs
       - ${HF_TOKEN_FILE:-/dev/null}:/run/secrets/hf_token:ro
+      - ${LLM_API_KEY_FILE:-/dev/null}:/run/secrets/llm_api_key:ro
     ports: ["127.0.0.1:8092:8000"]
     deploy:
       resources:
@@ -51,7 +53,7 @@ services:
       JOB_ARTIFACTS_DIR: /jobs
       HF_HOME: /models/huggingface
       HF_TOKEN_PATH: /run/secrets/hf_token
-      MUSETALK_DTYPE: ${MUSETALK_DTYPE:-fp32}
+      MUSETALK_DTYPE: ${MUSETALK_DTYPE:-fp16}
       OMP_NUM_THREADS: "8"
       MKL_NUM_THREADS: "8"
     volumes:

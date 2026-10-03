@@ -37,7 +37,12 @@ RUN pip install --upgrade pip wheel \
     && pip install --index-url https://download.pytorch.org/whl/cu128 "torchvision==0.22.1"
 
 COPY pyproject.toml ./
-RUN pip install -e ".[gpu]"
+# Transitive deps drag in opencv-python and opencv-contrib-python next to the
+# headless wheel; three copies of cv2/ and their bundled codecs overwrite each
+# other in site-packages. Keep exactly one.
+RUN pip install -e ".[gpu]" \
+    && pip uninstall -y opencv-python opencv-contrib-python opencv-python-headless \
+    && pip install --no-deps "opencv-python-headless>=4.9,<5.0"
 
 # The pytorch image ships CUDA runtime libs as pip packages under
 # site-packages/nvidia/*/lib, not on the system loader path. onnxruntime's

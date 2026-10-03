@@ -5,6 +5,7 @@ Window artifacts are checksummed and can be reused after a failed attempt.
 """
 
 import json
+import logging
 import math
 import subprocess
 from pathlib import Path
@@ -13,6 +14,38 @@ from ..checkpoints import digest
 
 class RenderCancelled(RuntimeError):
     pass
+
+
+def _encoder_args(hardware: bool) -> list[str]:
+    """Intermediate-window encode. NVENC keeps the 7-8 window cuts and the
+    per-window trims off the CPU; CQ 16 is visually lossless for the renderer
+    input. libx264 CRF 16 is the software equivalent and the fallback."""
+    if hardware:
+        return ["-c:v", "h264_nvenc", "-preset", "p5", "-tune", "hq", "-rc", "vbr",
+                "-cq", "16", "-b:v", "0", "-pix_fmt", "yuv420p"]
+    return ["-c:v", "libx264", "-crf", "16", "-pix_fmt", "yuv420p"]
+
+
+def encode(args, output):
+    """run_ffmpeg(args + encoder + output), preferring the configured hardware
+    encoder and falling back to libx264 once per process if NVENC fails."""
+    global _hardware
+    if _hardware is None:
+        from ..config import settings
+
+        _hardware = settings.video_encoder == "h264_nvenc"
+    if _hardware:
+        try:
+            return run_ffmpeg([*args, *_encoder_args(True), output])
+        except RuntimeError as exc:
+            _hardware = False
+            logging.getLogger(__name__).warning(
+                "h264_nvenc unavailable for window encodes (%s); using libx264", str(exc)[-200:]
+            )
+    return run_ffmpeg([*args, *_encoder_args(False), output])
+
+
+_hardware = None
 
 
 def run_ffmpeg(args):
@@ -132,7 +165,7 @@ def render(
             # Beyond EOF, retain one last frame/sample before padding.
             span = (right - left) / 25
             seek = min(left / 25, max(0, video_seconds - 0.08))
-            run_ffmpeg(
+            encode(
                 [
                     "-ss",
                     seek,
@@ -145,12 +178,8 @@ def render(
                     "25",
                     "-fps_mode",
                     "cfr",
-                    "-c:v",
-                    "libx264",
-                    "-crf",
-                    "16",
-                    source,
-                ]
+                ],
+                source,
             )
             if left / 25 >= audio_seconds:
                 run_ffmpeg(["-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono", "-t", span, sound])
@@ -173,7 +202,7 @@ def render(
             renderer(source, sound, rendered)
             if cancel and cancel.is_set():
                 raise RenderCancelled("render cancelled after active window drained")
-            run_ffmpeg(
+            encode(
                 [
                     "-i",
                     rendered,
@@ -184,12 +213,8 @@ def render(
                     "25",
                     "-fps_mode",
                     "cfr",
-                    "-c:v",
-                    "libx264",
-                    "-crf",
-                    "16",
-                    clip,
-                ]
+                ],
+                clip,
             )
             if abs(duration(clip) - (end - start) / 25) > 0.08:
                 raise RuntimeError("renderer returned the wrong window duration")

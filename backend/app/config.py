@@ -27,11 +27,21 @@ class Settings(BaseSettings):
     whisper_model: str = "base"
     # float16 is the GPU default; int8 variants are the CPU defaults.
     whisper_compute_type: Literal["int8", "int8_float32", "float16", "float32"] = "int8"
+    # CUDA only: faster-whisper's BatchedInferencePipeline decodes VAD-split
+    # chunks as one batch instead of sequentially. 16 fits large-v3 fp16 in
+    # a few GB; raise on 96 GB cards if transcribe shows up in profiles.
+    whisper_batch_size: int = Field(16, ge=1, le=64)
 
-    translate_backend: Literal["nllb", "ollama"] = "nllb"
+    # `llm` is the GPU default: an OpenAI-compatible chat server (vLLM on the
+    # XE7740). `nllb` is the self-contained seq2seq path kept for CPU hosts.
+    translate_backend: Literal["nllb", "llm"] = "nllb"
     nllb_model: str = "facebook/nllb-200-distilled-600M"
-    ollama_host: str = "http://localhost:11434"
-    ollama_model: str = "llama3.1:8b-instruct"
+    # OpenAI-compatible endpoint, e.g. http://host.docker.internal:2080/v1.
+    # Empty disables every LLM feature (llm translation, rewrites, avatar).
+    llm_base_url: str = ""
+    llm_model: str = "Qwen/Qwen3-30B-A3B-Instruct-2507"
+    llm_api_key_file: str = ""
+    llm_timeout_seconds: int = Field(120, ge=5)
 
     # Local ownership, scheduling and optional quality integrations.
     internal_api_key: str = ""
@@ -61,7 +71,7 @@ class Settings(BaseSettings):
     max_concurrent_jobs: int = Field(1, ge=1)
     recover_jobs: bool = True
     max_pending_jobs: int = Field(32, ge=1)
-    quality_translate_backend: Literal["nllb", "ollama"] = "nllb"
+    quality_translate_backend: Literal["nllb", "llm"] = "nllb"
     tts_segment_retries: int = Field(1, ge=0, le=3)
     tts_max_speed: float = Field(1.15, ge=1.0, le=1.3)
     tts_timing_tolerance: float = Field(0.15, ge=0.0, le=1.0)

@@ -53,9 +53,17 @@ services:
       CUDA_VISIBLE_DEVICES: "0"
       # GPU defaults. Large-v3 in fp16 is ~30x+ realtime on this class of
       # card, so there is no reason to keep `base`.
-      QUALITY_TRANSLATE_BACKEND: ${QUALITY_TRANSLATE_BACKEND:-nllb}
-      OLLAMA_HOST: ${OLLAMA_HOST:-http://host.docker.internal:11434}
-      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.1:8b-instruct}
+      # Translation, overrun rewrites and the avatar assistant all use the
+      # OpenAI-compatible LLM server on the host (vLLM, Qwen3-30B-A3B). NLLB
+      # stays available as TRANSLATE_BACKEND=nllb for hosts without one.
+      TRANSLATE_BACKEND: ${TRANSLATE_BACKEND:-llm}
+      QUALITY_TRANSLATE_BACKEND: ${QUALITY_TRANSLATE_BACKEND:-llm}
+      LLM_BASE_URL: ${LLM_BASE_URL:-http://host.docker.internal:2080/v1}
+      LLM_MODEL: ${LLM_MODEL:-Qwen/Qwen3-30B-A3B-Instruct-2507}
+      LLM_API_KEY_FILE: /run/secrets/llm_api_key
+      # With a rewriter available, an overrun past TTS_MAX_SPEED is
+      # re-translated shorter instead of failing the job.
+      REWRITE_OVERRUNS: ${REWRITE_OVERRUNS:-true}
       WHISPER_MODEL: ${WHISPER_MODEL:-large-v3}
       WHISPER_COMPUTE_TYPE: ${WHISPER_COMPUTE_TYPE:-float16}
       NLLB_MODEL: ${NLLB_MODEL:-facebook/nllb-200-3.3B}
@@ -80,6 +88,8 @@ services:
       MKL_NUM_THREADS: "16"
     volumes:
       - ${HF_TOKEN_FILE:-/dev/null}:/run/secrets/hf_token:ro
+      # Optional bearer token for the LLM server (unset => none sent).
+      - ${LLM_API_KEY_FILE:-/dev/null}:/run/secrets/llm_api_key:ro
     deploy:
       resources:
         limits:
@@ -99,10 +109,10 @@ services:
     environment:
       DEVICE: cuda
       CUDA_VISIBLE_DEVICES: "0"
-      # fp32 for parity with the CPU build until outputs are compared;
-      # MUSETALK_DTYPE=fp16 is the speed mode (upstream's CUDA default).
+      # fp16 is upstream's CUDA default for the UNet/VAE; fp32 was only the
+      # CPU parity setting. MUSETALK_DTYPE=fp32 to A/B against it.
       MUSETALK_FRAME_BUDGET_MB: ${MUSETALK_FRAME_BUDGET_MB:-4096}
-      MUSETALK_DTYPE: ${MUSETALK_DTYPE:-fp32}
+      MUSETALK_DTYPE: ${MUSETALK_DTYPE:-fp16}
       # Final encode on NVENC (MUSETALK_VIDEO_ENCODER=libx264 to opt out).
       NVIDIA_DRIVER_CAPABILITIES: compute,utility,video
       # CPU-only knobs; harmless but meaningless here.

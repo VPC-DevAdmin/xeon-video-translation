@@ -107,15 +107,21 @@ _REQUIRED_MODULES = (
     "insightface",
     "onnxruntime",
     "huggingface_hub",
-    # IPEX is nice-to-have: if it's missing, inference just runs vanilla
-    # PyTorch. `/ready` still treats an import failure as non-fatal.
-    "intel_extension_for_pytorch",
 )
+
+# CPU-only accelerator; not installed in the GPU image.
+_CPU_ONLY_MODULES = ("intel_extension_for_pytorch",)
+
+
+def _required_modules() -> tuple[str, ...]:
+    if os.environ.get("DEVICE", "cpu").lower().startswith("cuda"):
+        return _REQUIRED_MODULES
+    return _REQUIRED_MODULES + _CPU_ONLY_MODULES
 
 
 def _dep_status() -> dict[str, dict]:
     status: dict[str, dict] = {}
-    for name in _REQUIRED_MODULES:
+    for name in _required_modules():
         try:
             mod = importlib.import_module(name)
         except Exception as e:
@@ -183,6 +189,8 @@ def health() -> dict:
         "weights_ready": all_weights_present,
         "device": os.environ.get("DEVICE", "cpu"),
         "dtype": os.environ.get("MUSETALK_DTYPE") or os.environ.get("MUSETALK_IPEX_DTYPE", "fp32"),
+        "video_encoder": os.environ.get("MUSETALK_VIDEO_ENCODER", "h264_nvenc on cuda / libx264 on cpu"),
+        # CPU-only accelerator; reported so a CPU operator can confirm it.
         "ipex_dtype": os.environ.get("MUSETALK_IPEX_DTYPE", "fp32"),
         "ld_preload": os.environ.get("LD_PRELOAD", ""),
         "blend_mode": os.environ.get("MUSETALK_BLEND_MODE", "jaw"),
@@ -190,7 +198,7 @@ def health() -> dict:
         "face_restore": os.environ.get("MUSETALK_FACE_RESTORE", "codeformer"),
         "face_restore_fidelity": os.environ.get("MUSETALK_FACE_RESTORE_FIDELITY", "0.7"),
         "face_restore_blend": os.environ.get("MUSETALK_FACE_RESTORE_BLEND", "0.6"),
-        "milestone": "MuseTalk + SCRFD + IPEX + CodeFormer face restore",
+        "milestone": "MuseTalk + SCRFD (CUDA ORT) + batched VAE + CodeFormer face restore",
     }
 
 

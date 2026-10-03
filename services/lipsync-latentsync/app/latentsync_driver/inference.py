@@ -189,7 +189,20 @@ def _resolve_device():
     if choice.startswith("cuda") and not torch.cuda.is_available():
         log.warning("DEVICE=%s requested but CUDA is unavailable; falling back to cpu", choice)
         choice = "cpu"
+    if choice.startswith("cuda"):
+        _enable_cuda_fast_math(torch)
     return torch.device(choice)
+
+
+def _enable_cuda_fast_math(torch) -> None:
+    """Blackwell/Ampere+ settings that are free on this workload: TF32 for
+    the fp32 matmuls that remain (VAE scaling, whisper features), cuDNN
+    autotuning for the fixed-shape 3D UNet convs, and fp16 reduced-precision
+    reductions. Idempotent; also called inside each denoise worker."""
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    torch.backends.cudnn.benchmark = True
+    torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = True
 
 
 def _ipex_optimize(model, name: str):

@@ -2,9 +2,8 @@
 
 import json
 import re
-import urllib.request
 import unicodedata
-from ..config import settings
+from .. import llm
 
 
 def digits(text):
@@ -34,20 +33,23 @@ def rewrite(text, source, language, seconds, glossary=None):
         "If it cannot be shortened safely return the original translation. Return only the rewritten text.\n"
         f"Source: {source}\nTranslation: {text}\nRequired terminology: {json.dumps(glossary or {}, ensure_ascii=False)}"
     )
-    request = urllib.request.Request(
-        f"{settings.ollama_host.rstrip('/')}/api/generate",
-        data=json.dumps(
-            {
-                "model": settings.ollama_model,
-                "prompt": prompt,
-                "stream": False,
-                "options": {"temperature": 0},
-            }
-        ).encode(),
-        headers={"Content-Type": "application/json"},
-    )
-    with urllib.request.urlopen(request, timeout=60) as response:
-        candidate = json.load(response).get("response", "").strip()
+    if not llm.configured():
+        raise ValueError("duration rewrite needs LLM_BASE_URL")
+    try:
+        candidate = llm.chat(
+            [
+                {
+                    "role": "system",
+                    "content": "You shorten dubbed-video translations without losing meaning. Return only the rewritten text.",
+                },
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.0,
+            max_tokens=max(64, min(1024, 4 * len(text))),
+            timeout=60,
+        ).strip().strip('"')
+    except llm.LLMError as e:
+        raise ValueError(str(e)) from e
     problems = issues(source, candidate, glossary)
     if problems:
         raise ValueError("unsafe duration rewrite: " + "; ".join(problems))

@@ -160,19 +160,23 @@ _REQUIRED_MODULES = (
     "scenedetect",
     "kornia",
     "face_alignment",
-    # Performance stack (PR-LS-1c perf follow-up). IPEX is the big win
-    # on Xeon; DeepCache is a smaller stacking speedup. Both are
-    # treated as required for a healthy /ready now that they're part
-    # of the default inference path. If either import fails, that's
-    # a Dockerfile regression worth surfacing loudly.
-    "intel_extension_for_pytorch",
-    "DeepCache",
 )
+
+# CPU-only accelerators. On CUDA the UNet runs fp16 on the native kernels,
+# sharded across GPUs; IPEX and DeepCache are not installed in the GPU
+# image and must not make /ready report "degraded" there.
+_CPU_ONLY_MODULES = ("intel_extension_for_pytorch", "DeepCache")
+
+
+def _required_modules() -> tuple[str, ...]:
+    if os.environ.get("DEVICE", "cpu").lower().startswith("cuda"):
+        return _REQUIRED_MODULES
+    return _REQUIRED_MODULES + _CPU_ONLY_MODULES
 
 
 def _dep_status() -> dict[str, dict]:
     status: dict[str, dict] = {}
-    for name in _REQUIRED_MODULES:
+    for name in _required_modules():
         try:
             mod = importlib.import_module(name)
         except Exception as e:
@@ -256,6 +260,9 @@ def health() -> dict:
         "device": os.environ.get("DEVICE", "cpu"),
         "dtype": os.environ.get("LATENTSYNC_DTYPE")
         or os.environ.get("LATENTSYNC_IPEX_DTYPE", "fp16 on cuda / fp32 on cpu"),
+        "shard_mode": os.environ.get("LATENTSYNC_SHARD_MODE", "process"),
+        "video_encoder": os.environ.get("LATENTSYNC_VIDEO_ENCODER", "h264_nvenc on cuda / libx264 on cpu"),
+        # CPU-only accelerators; reported so a CPU operator can confirm them.
         "ipex_dtype": os.environ.get("LATENTSYNC_IPEX_DTYPE", "fp32"),
         "deepcache_enabled": os.environ.get("LATENTSYNC_ENABLE_DEEPCACHE", "1"),
         "ld_preload": os.environ.get("LD_PRELOAD", ""),
