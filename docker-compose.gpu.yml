@@ -132,6 +132,9 @@ services:
     volumes:
       - jobs:/jobs
       - ./services/ingest-webrtc/app:/app/app
+      - ./services/ingest-webrtc/scripts:/app/scripts:ro
+      # Fixture clips for the headless e2e client (scripts/e2e_client.py).
+      - ./artifacts/inputs:/fixtures:ro
     # WebRTC media needs UDP ports the browser can reach. host networking
     # is the simplest correct answer on a single box; the service listens
     # on INGEST_PORT (default 8091) for the HTTP signalling API.
