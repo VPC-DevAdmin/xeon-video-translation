@@ -1,5 +1,7 @@
 # polyglot-demo
 
+> Current implementation and setup: [three-mode local updates](docs/gpu/local-updates.md). This includes the new avatar path and supersedes historical status notes below.
+
 > An open-source video translation demo: take a short clip of someone speaking, produce a new clip of the same person saying the same thing in another language — with their own voice and (eventually) lip-synced mouth movements. Designed for live conference demos.
 >
 > **Two tracks.** The original build targets CPU-only inference on Xeon-class machines and is what `docker-compose.yml` runs. The **GPU track** (`docker-compose.gpu.yml`, `make up-gpu`) targets an 8x RTX PRO box with webcam ingest over WebRTC and three modes: real-time translation, batch translation, and a live voice avatar. See [docs/gpu/README.md](docs/gpu/README.md). The CPU path was optimised as far as it goes and did not meet the quality and turnaround bar; new work goes to the GPU track.
@@ -172,3 +174,7 @@ docs/       architecture, models, limitations, ethics
 ## License
 
 [Apache 2.0](LICENSE).
+
+## Local implementation and GPU handoff
+
+The studio, durable jobs, bounded rendering, optional audio-quality service and avatar reliability updates are implemented locally. See [the implementation checklist](docs/gpu/implementation-todo.md) and [GPU testing handoff](docs/gpu/gpu-testing-handoff.md) for checks, configuration, limitations and the hardware acceptance matrix.

@@ -21,23 +21,50 @@
 #   docker run --rm --gpus all nvidia/cuda:12.8.1-base-ubuntu24.04 nvidia-smi
 
 services:
+  audio-quality:
+    profiles: [quality-audio]
+    build: ./services/audio-quality
+    image: polyglot-demo/audio-quality:gpu
+    environment:
+      JOB_ARTIFACTS_DIR: /jobs
+      HF_HOME: /models/huggingface
+      HF_TOKEN_PATH: /run/secrets/hf_token
+      DEVICE: cuda
+    volumes:
+      - jobs:/jobs
+      - models:/models
+      - ${HF_TOKEN_FILE:-/dev/null}:/run/secrets/hf_token:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${AUDIO_QUALITY_GPU:-7}"]
+              capabilities: [gpu]
   backend:
     build:
       context: ./backend
       dockerfile: Dockerfile.gpu
     image: polyglot-demo/backend:gpu
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       DEVICE: cuda
       CUDA_VISIBLE_DEVICES: "0"
       # GPU defaults. Large-v3 in fp16 is ~30x+ realtime on this class of
       # card, so there is no reason to keep `base`.
+      QUALITY_TRANSLATE_BACKEND: ${QUALITY_TRANSLATE_BACKEND:-nllb}
+      OLLAMA_HOST: ${OLLAMA_HOST:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.1:8b-instruct}
       WHISPER_MODEL: ${WHISPER_MODEL:-large-v3}
       WHISPER_COMPUTE_TYPE: ${WHISPER_COMPUTE_TYPE:-float16}
       NLLB_MODEL: ${NLLB_MODEL:-facebook/nllb-200-3.3B}
-      # Several jobs can run at once on GPU; the stage-level semaphore is
-      # still process-global, so keep this modest until the queue lands.
-      MAX_CONCURRENT_JOBS: ${MAX_CONCURRENT_JOBS:-2}
-      MAX_VIDEO_DURATION_SECONDS: ${MAX_VIDEO_DURATION_SECONDS:-600}
+      # One fast lane and one batch lane; speech inference is serialized.
+      LATENTSYNC_REALTIME_FACTOR: ${LATENTSYNC_REALTIME_FACTOR:-5.0}
+      MAX_PENDING_JOBS: ${MAX_PENDING_JOBS:-32}
+      MUSETALK_FRAME_BUDGET_MB: ${MUSETALK_FRAME_BUDGET_MB:-4096}
+      LATENTSYNC_FRAME_BUDGET_MB: ${LATENTSYNC_FRAME_BUDGET_MB:-8192}
+      MAX_VIDEO_DURATION_SECONDS: ${MAX_VIDEO_DURATION_SECONDS:-120}
       # Final mux on the GPU's hardware encoder. Needs the `video` driver
       # capability below; watermark.py falls back to libx264 if it fails.
       VIDEO_ENCODER: ${VIDEO_ENCODER:-h264_nvenc}
@@ -74,6 +101,7 @@ services:
       CUDA_VISIBLE_DEVICES: "0"
       # fp32 for parity with the CPU build until outputs are compared;
       # MUSETALK_DTYPE=fp16 is the speed mode (upstream's CUDA default).
+      MUSETALK_FRAME_BUDGET_MB: ${MUSETALK_FRAME_BUDGET_MB:-4096}
       MUSETALK_DTYPE: ${MUSETALK_DTYPE:-fp32}
       # Final encode on NVENC (MUSETALK_VIDEO_ENCODER=libx264 to opt out).
       NVIDIA_DRIVER_CAPABILITIES: compute,utility,video
@@ -121,6 +149,9 @@ services:
       # card the runtime passed in (CUDA ignores indices that don't exist).
       CUDA_VISIBLE_DEVICES: "0,1,2,3,4,5,6,7"
       # 0 = one replica per visible GPU.
+      LATENTSYNC_SHARD_MODE: ${LATENTSYNC_SHARD_MODE:-process}
+      LATENTSYNC_COMPILE: ${LATENTSYNC_COMPILE:-0}
+      LATENTSYNC_FRAME_BUDGET_MB: ${LATENTSYNC_FRAME_BUDGET_MB:-8192}
       LATENTSYNC_UNET_REPLICAS: ${LATENTSYNC_UNET_REPLICAS:-0}
       # NVENC for the 25 fps re-encode on read and the final write.
       NVIDIA_DRIVER_CAPABILITIES: compute,utility,video
@@ -157,12 +188,29 @@ services:
       # through its published host port.
       BACKEND_URL: http://localhost:${BACKEND_PORT:-8088}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3030}
-      # Public IP/hostname the browser can reach for ICE. Leave empty on a
-      # single host (host-mode networking handles it); set it when the
-      # browser is on another machine.
-      INGEST_PUBLIC_IP: ${INGEST_PUBLIC_IP:-}
+      # STUN/TURN configuration is sent to both WebRTC peers.
+      # Run scripts/setup_local.py once to generate the proxy secret.
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY:-}
+      ICE_SERVERS_JSON: ${ICE_SERVERS_JSON:-[]}
+      INGEST_MAX_SECONDS: ${MAX_VIDEO_DURATION_SECONDS:-120}
+      INGEST_MAX_MB: ${MAX_VIDEO_SIZE_MB:-100}
+      INGEST_MAX_SESSIONS: ${INGEST_MAX_SESSIONS:-4}
+      AVATAR_MAX_SESSIONS: ${AVATAR_MAX_SESSIONS:-1}
+      AVATAR_BACKEND_URL: ${AVATAR_BACKEND_URL:-http://localhost:${BACKEND_PORT:-8088}}
+      AVATAR_MUSETALK_URL: ${AVATAR_MUSETALK_URL:-http://localhost:${MUSETALK_PORT:-8089}}
+      AVATAR_VAD_RMS: ${AVATAR_VAD_RMS:-450}
+      AVATAR_VAD_BACKEND: ${AVATAR_VAD_BACKEND:-energy}
+      SILERO_VAD_MODEL: /models/silero/silero_vad.onnx
+      AVATAR_VAD_THRESHOLD: ${AVATAR_VAD_THRESHOLD:-0.5}
+      AVATAR_ENDPOINT_SECONDS: ${AVATAR_ENDPOINT_SECONDS:-0.6}
+      AVATAR_LIVE_CAPTIONS: ${AVATAR_LIVE_CAPTIONS:-false}
+      AVATAR_RENDER_TIMEOUT: ${AVATAR_RENDER_TIMEOUT:-5}
+      AVATAR_MAX_STORAGE_MB: ${AVATAR_MAX_STORAGE_MB:-256}
+      TURN_SHARED_SECRET: ${TURN_SHARED_SECRET:-}
+      TURN_URLS_JSON: ${TURN_URLS_JSON:-[]}
     volumes:
       - jobs:/jobs
+      - models:/models:ro
       - ./services/ingest-webrtc/app:/app/app
       - ./services/ingest-webrtc/scripts:/app/scripts:ro
       # Fixture clips for the headless e2e client (scripts/e2e_client.py).
@@ -171,13 +219,39 @@ services:
     # is the simplest correct answer on a single box; the service listens
     # on INGEST_PORT (default 8091) for the HTTP signalling API.
     network_mode: host
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "${INGEST_PORT:-8091}"]
     depends_on:
       - backend
 
   frontend:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     build:
       args:
-        NEXT_PUBLIC_API_BASE_URL: "http://localhost:${BACKEND_PORT:-8088}"
-        NEXT_PUBLIC_INGEST_BASE_URL: "http://localhost:${INGEST_PORT:-8091}"
+        NEXT_PUBLIC_API_BASE_URL: "/api"
+        NEXT_PUBLIC_INGEST_BASE_URL: "/ingest"
     environment:
-      NEXT_PUBLIC_INGEST_BASE_URL: "http://localhost:${INGEST_PORT:-8091}"
+      NEXT_PUBLIC_INGEST_BASE_URL: "/ingest"
+      API_PROXY_TARGET: http://backend:8000
+      INGEST_PROXY_TARGET: http://host.docker.internal:${INGEST_PORT:-8091}
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY:-}
+
+  # Optional authenticated HTTPS entrypoint for a remote browser.
+  web:
+    image: caddy:2.10.2-alpine
+    profiles: [web]
+    network_mode: host
+    environment:
+      PUBLIC_HOST: ${PUBLIC_HOST:-localhost}
+      FRONTEND_PORT: ${FRONTEND_PORT:-3030}
+      DEMO_USER: ${DEMO_USER:-demo}
+      DEMO_PASSWORD_HASH: ${DEMO_PASSWORD_HASH:-}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:

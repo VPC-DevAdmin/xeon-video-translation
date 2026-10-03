@@ -56,7 +56,6 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 log = logging.getLogger(__name__)
 
@@ -254,7 +253,7 @@ class InferenceResult:
     dry_run: bool
 
 
-def run(
+def _run_impl(
     video_path: Path,
     audio_path: Path,
     output_path: Path,
@@ -262,6 +261,7 @@ def run(
     num_inference_steps: int | None = None,
     guidance_scale: float | None = None,
     seed: int | None = None,
+    request_temp_dir: str | None = None,
 ) -> InferenceResult:
     """Run LatentSync inference. All tensor ops are CPU float32.
 
@@ -525,7 +525,11 @@ def run(
         if pipeline is None:
             t_build = time.perf_counter()
             pipeline = _build_pipeline()
-            _PIPELINE_CACHE.clear()  # one resident pipeline; configs rarely change
+            for old in _PIPELINE_CACHE.values():
+                old_pool = getattr(old, "denoise_pool", None)
+                if old_pool is not None:
+                    old_pool.close()
+            _PIPELINE_CACHE.clear()
             _PIPELINE_CACHE[cache_key] = pipeline
             log.info("pipeline built in %.1fs and cached", time.perf_counter() - t_build)
         else:
@@ -542,7 +546,7 @@ def run(
     # Temp dir for intermediate frames/audio — cleaned up by the pipeline
     # internally. We write under /tmp so the `jobs` volume only gets
     # the final mp4.
-    temp_dir = Path(os.environ.get("LATENTSYNC_TEMP_DIR", "/tmp/latentsync_work"))
+    temp_dir = Path(request_temp_dir or "/tmp/latentsync_work")
     temp_dir.mkdir(parents=True, exist_ok=True)
 
     # --- Resume / denoise cache --------------------------------------
@@ -672,3 +676,38 @@ def run(
         guidance_scale=guidance,
         dry_run=dry_run,
     )
+
+
+_RUN_LOCK = _threading.Lock()
+
+def run(**kwargs):
+    import tempfile
+    import subprocess
+    import json
+    probe = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0",
+                            "-show_entries", "stream=width,height:format=duration", "-of", "json",
+                            str(kwargs["video_path"])], capture_output=True, check=True, timeout=30)
+    info = json.loads(probe.stdout)
+    video = info["streams"][0]
+    size = int(video["width"]) * int(video["height"]) * 3 * 25 * float(info["format"]["duration"])
+    budget = int(os.environ.get("LATENTSYNC_FRAME_BUDGET_MB", "8192")) * 1024 * 1024
+    if size > budget:
+        raise RuntimeError("video exceeds decoded-frame budget; use shorter clips or lower resolution")
+    with _RUN_LOCK, tempfile.TemporaryDirectory(prefix="latentsync-") as directory:
+        try:
+            return _run_impl(**kwargs, request_temp_dir=directory)
+        except BaseException:
+            for pipeline in _PIPELINE_CACHE.values():
+                pool = getattr(pipeline, "denoise_pool", None)
+                if pool is not None:
+                    pool.close()
+            _PIPELINE_CACHE.clear()
+            raise
+
+
+def shutdown_workers():
+    for pipeline in _PIPELINE_CACHE.values():
+        pool = getattr(pipeline, "denoise_pool", None)
+        if pool is not None:
+            pool.close()
+    _PIPELINE_CACHE.clear()

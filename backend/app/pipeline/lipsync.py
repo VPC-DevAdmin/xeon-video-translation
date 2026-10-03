@@ -89,12 +89,14 @@ def realtime_factor(backend: str) -> float:
         # wav2lip 76 s on one GPU; musetalk 96 s on one GPU (batched VAE,
         # numpy composite, NVENC write); latentsync 247 s with the denoise
         # sharded over 4 GPUs (512 px, fp16, 20 steps). A single-GPU
-        # LatentSync is ~8.5 s per source second.
+        # LatentSync is ~8.5 s per source second. The configurable factor
+        # retains the conservative historical thread baseline; process mode
+        # and automatic windows need fresh target-host calibration.
         return {
             "none": 0.0,
             "wav2lip": 1.5,
             "musetalk": 2.0,
-            "latentsync": 5.0,
+            "latentsync": settings.latentsync_realtime_factor,
         }.get(backend, 0.0)
     return {
         "none": 0.0,

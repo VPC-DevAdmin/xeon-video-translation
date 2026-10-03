@@ -1,5 +1,7 @@
 # Mode 3 — real-time voice avatar
 
+> Current implementation and setup: [three-mode local updates](local-updates.md). This includes the new avatar path and supersedes historical status notes below.
+
 **Goal:** a voice assistant with a face. The user talks (mic over WebRTC);
 the assistant answers in speech, and a talking-head video generated from
 a single still image plays back in sync. Conversational latency.

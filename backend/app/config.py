@@ -33,10 +33,38 @@ class Settings(BaseSettings):
     ollama_host: str = "http://localhost:11434"
     ollama_model: str = "llama3.1:8b-instruct"
 
+    # Local ownership, scheduling and optional quality integrations.
+    internal_api_key: str = ""
+    auth_tokens_json: str = "{}"
+    max_user_jobs: int = Field(8, ge=1)
+    max_user_storage_mb: int = Field(10240, ge=1)
+    min_free_disk_mb: int = Field(256, ge=0)
+    retention_days: int = Field(0, ge=0)
+    window_seconds: float = Field(8.0, ge=1, le=30)
+    window_overlap_seconds: float = Field(0.4, ge=0, le=2)
+    windowed_lipsync: bool = False
+    musetalk_frame_budget_mb: int = Field(4096, ge=64)
+    latentsync_frame_budget_mb: int = Field(8192, ge=64)
+    latentsync_realtime_factor: float = Field(5.0, gt=0)
+    rewrite_overruns: bool = False
+    tts_fit_retries: int = Field(2, ge=0, le=3)
+    enable_diarization: bool = False
+    enable_alignment: bool = False
+    enable_background_audio: bool = False
+    background_gain: float = Field(0.35, ge=0, le=1)
+    audio_quality_url: str = "http://audio-quality:8000"
+    model_revision: str | None = None
+
     # Limits
     max_video_duration_seconds: int = 60
     max_video_size_mb: int = 100
-    max_concurrent_jobs: int = 1
+    max_concurrent_jobs: int = Field(1, ge=1)
+    recover_jobs: bool = True
+    max_pending_jobs: int = Field(32, ge=1)
+    quality_translate_backend: Literal["nllb", "ollama"] = "nllb"
+    tts_segment_retries: int = Field(1, ge=0, le=3)
+    tts_max_speed: float = Field(1.15, ge=1.0, le=1.3)
+    tts_timing_tolerance: float = Field(0.15, ge=0.0, le=1.0)
 
     # Paths (resolved to absolute on init)
     model_cache_dir: Path = Path("./models")

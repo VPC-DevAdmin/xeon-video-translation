@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "media_policy": "Use consented local recordings; no fabricated quality scores or external voice scraping.",
+  "cases": [
+    {"id":"short-words","seconds":10,"source":"en","target":"es","script":"Yes. No. I paid 12 dollars. The server is a Xeon.","checks":["short edge words preserved","12 retained","Xeon glossary honored"]},
+    {"id":"dense-speech","seconds":30,"source":"en","target":"de","checks":["no omitted claims","no truncated words","overrun shown for editing if unfit"]},
+    {"id":"two-speakers","seconds":30,"source":"en","target":"fr","checks":["speaker labels stable","correct voice per turn","review overlapping speech manually"]},
+    {"id":"music","seconds":30,"source":"en","target":"ja","checks":["background retained to video end","source speech suppressed","no clipping or pumping"]},
+    {"id":"window-boundaries","seconds":120,"source":"en","target":"es","checks":["continuous timestamps","no seam jumps","bounded peak VRAM","resume reuses finished windows"]},
+    {"id":"avatar-interrupt","seconds":60,"source":"en","checks":["interrupt while speaking","history contains heard sentences only","audio continues after renderer timeout","mic echo does not self-interrupt"]}
+  ],
+  "quality_rubric": {"scale":"1=unusable, 3=noticeable defects, 5=no material defects", "fields":["translation_accuracy","voice_identity","lip_sync","temporal_flicker"],"missing_speech":"Boolean; must be false for acceptance"},
+  "proposed_gates": {"fast_30s_warm_p95_seconds":180,"avatar_first_reply_p95_seconds":3,"avatar_interrupt_p95_seconds":0.3,"missing_speech":false,"quality_median_minimum":4},
+  "gate_status":"Targets to validate on the actual GPUs; not measured results. Batch has no speed gate."
+}

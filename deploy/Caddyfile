@@ -1,0 +1,8 @@
+{$PUBLIC_HOST:localhost} {
+    basic_auth {
+        {$DEMO_USER:demo} {$DEMO_PASSWORD_HASH}
+    }
+    reverse_proxy 127.0.0.1:{$FRONTEND_PORT:3030} {
+        flush_interval -1
+    }
+}

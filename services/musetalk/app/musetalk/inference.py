@@ -425,18 +425,23 @@ def _load(paths: WeightPaths) -> _Loaded:
     optimize = _ipex_optimize if device.type == "cpu" else (lambda m, name: m)
 
     log.info("Loading Whisper encoder from %s", paths.whisper_dir)
-    whisper = WhisperModel.from_pretrained(str(paths.whisper_dir)).to(device)
+    whisper = WhisperModel.from_pretrained(str(paths.whisper_dir)).to(device=device, dtype=dtype if device.type == "cuda" else torch.float32)
     whisper.eval()
+    whisper.requires_grad_(False)
     whisper = optimize(whisper, name="whisper")
 
     audio_processor = AudioProcessor(paths.whisper_dir)
 
     log.info("Loading VAE from %s", paths.vae_dir)
     vae = VAE(paths.vae_dir, device=device)
+    if device.type == "cuda":
+        vae.vae.to(dtype=dtype)
     vae.vae = optimize(vae.vae, name="sd-vae")
 
     log.info("Loading UNet from %s", paths.unet_weights)
     unet = UNet(str(paths.unet_config), str(paths.unet_weights), device=device)
+    if device.type == "cuda":
+        unet.model.to(dtype=dtype)
     unet.model = optimize(unet.model, name="musetalk-unet")
 
     log.info("Loading BiSeNet face parser")
@@ -486,6 +491,7 @@ class InferenceResult:
     frames_processed: int
 
 
+@torch.inference_mode()
 def run(
     video_path: str | Path,
     audio_path: str | Path,
@@ -559,10 +565,16 @@ def run(
     cap = cv2.VideoCapture(str(video_path))
     fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
     frames: list[np.ndarray] = []
+    frame_bytes = 0
+    max_frame_bytes = int(os.environ.get("MUSETALK_FRAME_BUDGET_MB", "4096")) * 1024 * 1024
     while True:
         ok, frame = cap.read()
         if not ok:
             break
+        frame_bytes += frame.nbytes
+        if frame_bytes > max_frame_bytes:
+            cap.release()
+            raise RuntimeError("video exceeds decoded-frame budget; use a shorter clip or lower resolution")
         frames.append(frame)
     cap.release()
     if not frames:

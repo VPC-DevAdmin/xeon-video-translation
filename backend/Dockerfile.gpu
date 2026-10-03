@@ -32,19 +32,21 @@ RUN python3 -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
 WORKDIR /app
+COPY constraints-gpu.txt /app/constraints-gpu.txt
+ENV PIP_CONSTRAINT=/app/constraints-gpu.txt
 
 COPY pyproject.toml ./
 
-# torch cu128 line. torchcodec 0.4 matches torch 2.7; bump both together.
+# torch cu128 line. torchcodec 0.7 matches torch 2.8; bump both together.
 # ctranslate2 (faster-whisper) ships CUDA 12 wheels on PyPI; cuDNN comes
 # from the base image.
 RUN pip install --upgrade pip wheel \
     && pip install "setuptools>=68,<81" \
     && pip install \
        --index-url https://download.pytorch.org/whl/cu128 \
-       "torch>=2.7,<2.9" \
-       "torchaudio>=2.7,<2.9" \
-    && pip install "torchcodec>=0.4,<0.6" \
+       "torch==2.8.0" \
+       "torchaudio==2.8.0" \
+    && pip install "torchcodec==0.7.0" \
     && pip install -e . \
     && pip install --no-deps "f5-tts>=1.0,<2.0" \
     && pip install \

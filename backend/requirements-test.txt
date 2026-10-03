@@ -1,0 +1,8 @@
+# CPU application-contract tests; no inference model downloads.
+pytest==9.1.1
+pytest-asyncio==1.4.0
+pydantic-settings==2.15.0
+fastapi==0.142.2
+httpx==0.28.1
+sse-starlette==3.5.0
+python-multipart==0.0.32

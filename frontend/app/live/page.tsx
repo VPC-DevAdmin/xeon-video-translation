@@ -16,17 +16,23 @@ import { LanguagePicker } from "../components/LanguagePicker";
 import { getJob, openJobEventStream, type JobRecord } from "../lib/api";
 
 const INGEST_BASE_URL =
-  process.env.NEXT_PUBLIC_INGEST_BASE_URL || "http://localhost:8091";
+  process.env.NEXT_PUBLIC_INGEST_BASE_URL || "/ingest";
 
-type Mode = "fast" | "quality";
+type Mode = "fast" | "quality" | "dub";
 
 const MODE_LABELS: Record<Mode, string> = {
   fast: "Real-time (minutes, some quality traded for speed)",
   quality: "Batch (best quality, takes as long as it takes)",
+  dub: "Fastest (translated audio, original video)",
 };
 
 export default function LivePage() {
   const [target, setTarget] = useState("es");
+  const [captions,setCaptions]=useState(false);
+  const [caption,setCaption]=useState("");
+  const [elapsed,setElapsed]=useState(0);
+  const [limit,setLimit]=useState(120);
+  const [connection,setConnection]=useState("");
   const [mode, setMode] = useState<Mode>("fast");
   const [phase, setPhase] = useState<"idle" | "connecting" | "recording" | "submitting">("idle");
   const [job, setJob] = useState<JobRecord | null>(null);
@@ -41,24 +47,39 @@ export default function LivePage() {
   useEffect(() => {
     return () => {
       esRef.current?.close();
+      if (sessionRef.current) void fetch(`${INGEST_BASE_URL}/sessions/${sessionRef.current}`, { method: "DELETE", keepalive: true });
       pcRef.current?.close();
       streamRef.current?.getTracks().forEach((t) => t.stop());
     };
   }, []);
 
+  useEffect(()=>{
+    if(phase!=="recording")return;
+    const timer=setInterval(async()=>{
+      const id=sessionRef.current;if(!id)return;
+      try{const r=await fetch(`${INGEST_BASE_URL}/sessions/${id}`);if(r.ok){const data=await r.json();setElapsed(data.seconds??0);setCaption(data.caption||"");if(data.error)setError(data.error);}}catch{}
+      const pc=pcRef.current;if(pc){const stats=await pc.getStats();stats.forEach(report=>{if(report.type==="candidate-pair"&&report.state==="succeeded")setConnection(`Connected · round trip ${Math.round((report.currentRoundTripTime||0)*1000)} ms`);});}
+    },1000);return()=>clearInterval(timer);
+  },[phase]);
+
   async function start() {
     setError(null);
+    esRef.current?.close();
     setJob(null);
     setPhase("connecting");
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
+        video: { width: { ideal: mode === "quality" ? 1280 : 640 }, height: { ideal: mode === "quality" ? 720 : 360 }, frameRate: { ideal: 25, max: 25 } },
         audio: { echoCancellation: true, noiseSuppression: true, sampleRate: 48000 },
       });
       streamRef.current = stream;
       if (videoRef.current) videoRef.current.srcObject = stream;
 
-      const pc = new RTCPeerConnection();
+      const configResponse = await fetch(`${INGEST_BASE_URL}/config`);
+      if (!configResponse.ok) throw new Error("Unable to load recording configuration");
+      const config = await configResponse.json();
+      setLimit(config.maxSeconds);setElapsed(0);setCaption("");
+      const pc = new RTCPeerConnection({ iceServers: config.iceServers });
       pcRef.current = pc;
       stream.getTracks().forEach((t) => pc.addTrack(t, stream));
 
@@ -76,14 +97,26 @@ export default function LivePage() {
           type: pc.localDescription!.type,
           target_language: target,
           mode,
+          live_captions:captions,
         }),
       });
       if (!resp.ok) throw new Error(`ingest offer failed: ${resp.status} ${await resp.text()}`);
       const answer = await resp.json();
       await pc.setRemoteDescription({ sdp: answer.sdp, type: answer.type });
+      await waitForConnection(pc);
+      const started = Date.now();
+      while (true) {
+        const stats = await pc.getStats();
+        let sent = false;
+        stats.forEach(report => { if (report.type === "outbound-rtp" && report.kind === "video" && report.packetsSent > 0) sent = true; });
+        if (sent) break;
+        if (Date.now() - started > 5000) throw new Error("Camera connected but no video packets were sent");
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
       setPhase("recording");
     } catch (e: any) {
       setError(e?.message ?? String(e));
+      if (sessionRef.current) void fetch(`${INGEST_BASE_URL}/sessions/${sessionRef.current}`, { method: "DELETE" });
       teardown();
       setPhase("idle");
     }
@@ -120,21 +153,25 @@ export default function LivePage() {
           /* tolerate transient errors */
         }
       });
-    } catch (e: any) {
-      setError(e?.message ?? String(e));
-    } finally {
       teardown();
       setPhase("idle");
+    } catch (e: any) {
+      setError(e?.message ?? String(e));
+      teardown(false);
+      setPhase("recording");
+    } finally {
+      // A failed submission retains the session so Stop can be retried.
+      if (sessionRef.current) setPhase("recording");
     }
   }
 
-  function teardown() {
+  function teardown(clearSession = true) {
     pcRef.current?.close();
     pcRef.current = null;
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
     if (videoRef.current) videoRef.current.srcObject = null;
-    sessionRef.current = null;
+    if (clearSession) sessionRef.current = null;
   }
 
   const busy = phase !== "idle";
@@ -145,8 +182,13 @@ export default function LivePage() {
         <h1 className="text-2xl font-semibold">Live capture</h1>
         <p className="text-sm text-gray-500">
           Webcam → WebRTC → GPU pipeline. Stop recording to submit the clip.
+          <a href="/avatar" className="ml-3 underline">Live voice avatar</a>
         </p>
       </header>
+      <a href="/studio" className="underline">Jobs and editor</a>
+      <label className="block"><input type="checkbox" checked={captions} disabled={busy} onChange={e=>setCaptions(e.target.checked)}/> Provisional captions during capture</label>
+      {phase==="recording"&&<p>{Math.floor(elapsed)} / {limit} seconds · {connection}</p>}
+      {caption&&<p aria-live="polite">{caption}</p>}
 
       <video ref={videoRef} autoPlay muted playsInline className="w-full rounded bg-black aspect-video" />
 
@@ -199,19 +241,27 @@ export default function LivePage() {
 }
 
 function waitForIceGathering(pc: RTCPeerConnection): Promise<void> {
-  if (pc.iceGatheringState === "complete") return Promise.resolve();
-  return new Promise((resolve) => {
-    const check = () => {
-      if (pc.iceGatheringState === "complete") {
-        pc.removeEventListener("icegatheringstatechange", check);
-        resolve();
-      }
+  return new Promise((resolve, reject) => {
+    const finish = (error?: Error) => { clearTimeout(timer); pc.removeEventListener("icegatheringstatechange", check); error ? reject(error) : resolve(); };
+    const check = () => { if (pc.iceGatheringState === "complete") finish(); };
+    const timer = setTimeout(() => finish(new Error("ICE gathering timed out; check TURN settings")), 15000);
+    pc.addEventListener("icegatheringstatechange", check); check();
+  });
+}
+
+function waitForConnection(pc: RTCPeerConnection): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => finish(new Error("Media connection timed out; check TURN settings")), 20000);
+    const finish = (error?: Error) => {
+      clearTimeout(timeout);
+      pc.removeEventListener("connectionstatechange", check);
+      error ? reject(error) : resolve();
     };
-    pc.addEventListener("icegatheringstatechange", check);
-    // Don't hang forever on a flaky network; partial candidates still work on LAN.
-    setTimeout(() => {
-      pc.removeEventListener("icegatheringstatechange", check);
-      resolve();
-    }, 2000);
+    const check = () => {
+      if (pc.connectionState === "connected") finish();
+      else if (["failed", "closed"].includes(pc.connectionState)) finish(new Error("Media connection failed"));
+    };
+    pc.addEventListener("connectionstatechange", check);
+    check();
   });
 }

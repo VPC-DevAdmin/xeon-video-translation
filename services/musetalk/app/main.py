@@ -15,6 +15,7 @@ from __future__ import annotations
 import importlib
 import logging
 import os
+import threading
 from pathlib import Path
 from typing import Literal
 
@@ -26,6 +27,7 @@ log = logging.getLogger(__name__)
 
 VERSION = "0.7.0"
 INFERENCE_IMPLEMENTED = True
+_INFERENCE_LOCK = threading.RLock()
 
 MODEL_CACHE_DIR = Path(os.environ.get("MODEL_CACHE_DIR", "/models"))
 WEIGHTS_ROOT = MODEL_CACHE_DIR / "musetalk"
@@ -218,8 +220,18 @@ def weights() -> dict:
 
 @app.post("/lipsync", response_model=LipsyncResponse)
 def lipsync(req: LipsyncRequest) -> LipsyncResponse:
+    with _INFERENCE_LOCK:
+        return _lipsync_locked(req)
+
+
+def _lipsync_locked(req: LipsyncRequest) -> LipsyncResponse:
     import time
 
+    root = Path(os.environ.get("JOB_ARTIFACTS_DIR", "/jobs")).resolve()
+    for value in (req.video_path, req.audio_path, req.output_path):
+        candidate = Path(value).resolve()
+        if not candidate.is_relative_to(root) or candidate == root:
+            raise HTTPException(400, "media paths must be inside JOB_ARTIFACTS_DIR")
     video = Path(req.video_path)
     audio = Path(req.audio_path)
 
@@ -281,3 +293,29 @@ def lipsync(req: LipsyncRequest) -> LipsyncResponse:
         frames_processed=result.frames_processed,
         duration_ms=duration_ms,
     )
+
+
+class AvatarChunk(BaseModel):
+    image_path: str
+    audio_path: str
+    output_path: str
+
+
+@app.post("/avatar/render")
+def avatar_render(req: AvatarChunk):
+    root = (Path(os.environ.get("JOB_ARTIFACTS_DIR", "/jobs")) / "avatars").resolve()
+    paths = [Path(value).resolve() for value in (req.image_path, req.audio_path, req.output_path)]
+    if any(not p.is_relative_to(root) for p in paths):
+        raise HTTPException(400, "avatar paths must be inside /jobs/avatars")
+    from .avatar import render
+    with _INFERENCE_LOCK:
+        try:
+            return render(*paths)
+        except (ValueError, RuntimeError) as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+
+@app.get("/avatar/capabilities")
+def avatar_capabilities():
+    return {"renderer":"musetalk","input":"portrait","fps":25,"max_chunk_seconds":10,
+            "max_image_edge":512,"lip_motion":True,"head_motion":False,"prepared_cache":8}

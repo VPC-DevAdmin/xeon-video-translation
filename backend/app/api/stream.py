@@ -1,45 +1,39 @@
-"""Server-Sent Events stream of pipeline progress."""
+"""Independent SSE subscribers with replay and durable terminal snapshots."""
 
-from __future__ import annotations
-
-import asyncio
 import json
-
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Header
 from sse_starlette.sse import EventSourceResponse
-
 from ..pipeline.orchestrator import get_job, get_queue
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
 
 @router.get("/{job_id}/events")
-async def job_events(job_id: str):
-    state = get_job(job_id)
+async def job_events(job_id: str, last_event_id: str | None = Header(None)):
+    try:
+        state = get_job(job_id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     if state is None:
         raise HTTPException(404, "job not found")
+    from ..security import check_owner
 
-    queue = get_queue(job_id)
-    if queue is None:
-        # Job is no longer live (already finished and dropped from memory). Replay
-        # one synthetic event so clients connecting late still see the final state.
-        async def replay():
-            yield {"event": "job_completed" if state.status == "completed" else "error",
-                   "data": json.dumps(state.to_dict())}
-        return EventSourceResponse(replay())
+    check_owner(state.to_dict())
+    log = get_queue(job_id)
+    try:
+        cursor = max(0, int(last_event_id or 0))
+    except ValueError:
+        cursor = 0
 
-    async def event_gen():
-        while True:
-            try:
-                msg = await asyncio.wait_for(queue.get(), timeout=30)
-            except asyncio.TimeoutError:
-                # Heartbeat to keep the connection alive through proxies.
-                yield {"event": "ping", "data": "{}"}
-                continue
-            event = msg.get("event", "message")
-            data = json.dumps(msg.get("data", {}), default=str)
-            yield {"event": event, "data": data}
-            if event in ("job_completed", "stream_end", "error"):
-                break
+    if log is not None and cursor > log.sequence:
+        cursor = 0  # A restart creates a new in-memory event sequence.
 
-    return EventSourceResponse(event_gen())
+    async def events():
+        yield {"event": "snapshot", "data": json.dumps(state.to_dict())}
+        if log is None:
+            yield {"event": "stream_end", "data": "{}"}
+            return
+        async for seq, msg in log.subscribe(cursor):
+            yield {"id": str(seq), "event": msg["event"], "data": json.dumps(msg["data"])}
+
+    return EventSourceResponse(events())

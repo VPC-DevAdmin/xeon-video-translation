@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
 import time
 import uuid
@@ -31,7 +32,7 @@ async def main() -> int:
     ap.add_argument("--file", required=True)
     ap.add_argument("--ingest", default="http://localhost:8091")
     ap.add_argument("--target", default="es")
-    ap.add_argument("--mode", default="fast", choices=["fast", "quality"])
+    ap.add_argument("--mode", default="fast", choices=["fast", "quality", "dub"])
     ap.add_argument("--seconds", type=float, default=None,
                     help="how long to stream; default = file duration + 1s")
     args = ap.parse_args()
@@ -63,7 +64,7 @@ async def main() -> int:
     while pc.iceGatheringState != "complete":
         await asyncio.sleep(0.05)
 
-    async with httpx.AsyncClient(timeout=60) as client:
+    async with httpx.AsyncClient(timeout=60, headers={"x-internal-key": os.getenv("INTERNAL_API_KEY", "")}) as client:
         t0 = time.perf_counter()
         r = await client.post(
             f"{args.ingest}/sessions/{session_id}/offer",

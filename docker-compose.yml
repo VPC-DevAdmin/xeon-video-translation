@@ -3,6 +3,7 @@
 
 services:
   backend:
+    stop_grace_period: 10m  # drain native inference and persist resumable work
     build:
       context: ./backend
       dockerfile: Dockerfile
@@ -62,7 +63,7 @@ services:
     ports:
       # Host port is configurable via BACKEND_PORT (default 8088) to avoid
       # clashing with other local apps that use 8000. Container stays on 8000.
-      - "${BACKEND_PORT:-8088}:8000"
+      - "127.0.0.1:${BACKEND_PORT:-8088}:8000"
     # Xeon machines often have many cores; cap so we don't starve the host.
     deploy:
       resources:
@@ -116,7 +117,7 @@ services:
       - ./services/musetalk/scripts:/app/scripts:ro
     ports:
       # Host-exposed for debugging. Backend talks to the service over Docker DNS.
-      - "${MUSETALK_PORT:-8089}:8000"
+      - "127.0.0.1:${MUSETALK_PORT:-8089}:8000"
     deploy:
       resources:
         limits:
@@ -255,7 +256,7 @@ services:
     ports:
       # Host-exposed for debugging. Backend talks to the service over
       # Docker DNS. 8090 by default to keep it clear of 8089 (MuseTalk).
-      - "${LATENTSYNC_PORT:-8090}:8000"
+      - "127.0.0.1:${LATENTSYNC_PORT:-8090}:8000"
     deploy:
       resources:
         limits:
@@ -292,16 +293,17 @@ services:
       args:
         # Baked into the client bundle at build time — must match the host-side
         # backend port since the browser runs outside Docker.
-        NEXT_PUBLIC_API_BASE_URL: "http://localhost:${BACKEND_PORT:-8088}"
+        NEXT_PUBLIC_API_BASE_URL: "/api"
     image: polyglot-demo/frontend:dev
     container_name: polyglot-frontend
     restart: unless-stopped
     environment:
-      NEXT_PUBLIC_API_BASE_URL: "http://localhost:${BACKEND_PORT:-8088}"
+      API_PROXY_TARGET: http://backend:8000
+      NEXT_PUBLIC_API_BASE_URL: "/api"
     ports:
       # Host port is configurable via FRONTEND_PORT (default 3030) to avoid
       # clashing with other local apps that use 3000. Container stays on 3000.
-      - "${FRONTEND_PORT:-3030}:3000"
+      - "127.0.0.1:${FRONTEND_PORT:-3030}:3000"
     depends_on:
       - backend
 

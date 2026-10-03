@@ -1,5 +1,7 @@
 # GPU track
 
+> Current implementation and setup: [three-mode local updates](local-updates.md). This includes the new avatar path and supersedes historical status notes below.
+
 The CPU build was optimised as far as it goes and still missed the minimum
 bar for quality and turnaround. This track targets a **Dell PowerEdge
 XE7740 with 8x RTX PRO 6000 Blackwell (96 GB each)** and three user-facing

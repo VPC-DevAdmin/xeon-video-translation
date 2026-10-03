@@ -27,15 +27,17 @@ RUN python3 -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
 WORKDIR /app
+COPY constraints-gpu.txt /app/constraints-gpu.txt
+ENV PIP_CONSTRAINT=/app/constraints-gpu.txt
 
 RUN pip install --upgrade pip wheel \
     && pip install "setuptools>=68,<81" \
     && pip install \
        --index-url https://download.pytorch.org/whl/cu128 \
-       "torch>=2.7,<2.9" \
-       "torchaudio>=2.7,<2.9" \
-       "torchvision>=0.22,<0.24" \
-    && pip install "torchcodec>=0.4,<0.6"
+       "torch==2.8.0" \
+       "torchaudio==2.8.0" \
+       "torchvision==0.23.0" \
+    && pip install "torchcodec==0.7.0"
 
 COPY pyproject.toml ./
 RUN pip install -e ".[gpu]"

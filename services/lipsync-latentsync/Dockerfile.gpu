@@ -27,6 +27,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+COPY constraints-gpu.txt /app/constraints-gpu.txt
+ENV PIP_CONSTRAINT=/app/constraints-gpu.txt
 
 # setuptools 81 dropped pkg_resources; insightface + onnx still import it.
 # torchvision must match the preinstalled torch 2.7.1.

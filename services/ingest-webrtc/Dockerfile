@@ -11,8 +11,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY pyproject.toml ./
-RUN pip install --upgrade pip && pip install -e .
+COPY pyproject.toml requirements.lock ./
+RUN pip install --upgrade pip && pip install -c requirements.lock -e . && pip check
 COPY app ./app
 
 EXPOSE 8091

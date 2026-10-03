@@ -1,7 +1,9 @@
 export const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
+  process.env.NEXT_PUBLIC_API_BASE_URL || "/api";
 
 export type StageName =
+  | "stabilize"
+  | "poststabilize"
   | "audio"
   | "transcribe"
   | "translate"
@@ -30,7 +32,7 @@ export interface StageRecord {
 
 export interface JobRecord {
   job_id: string;
-  status: "queued" | "running" | "completed" | "failed";
+  status: "queued" | "running" | "completed" | "failed" | "cancelling" | "cancelled";
   current_stage: StageName | null;
   target_language: string;
   source_language: string | null;
@@ -47,11 +49,12 @@ export interface JobRecord {
 export async function createJob(
   video: File,
   target_language: string,
-  opts: { source_language?: string; lipsync_backend?: LipsyncBackend } = {}
+  opts: { source_language?: string; lipsync_backend?: LipsyncBackend; mode?: "fast" | "quality" | "dub" } = {}
 ): Promise<{ job_id: string; status: string; created_at: string }> {
   const fd = new FormData();
   fd.append("video", video);
   fd.append("target_language", target_language);
+  if (opts.mode) fd.append("mode", opts.mode);
   if (opts.source_language) fd.append("source_language", opts.source_language);
   if (opts.lipsync_backend) fd.append("lipsync_backend", opts.lipsync_backend);
 
@@ -77,6 +80,7 @@ export function openJobEventStream(
   const url = `${API_BASE_URL}/jobs/${jobId}/events`;
   const es = new EventSource(url);
   const handle = (name: string) => (ev: MessageEvent) => {
+    if (typeof ev.data !== "string") return; // Transport errors should reconnect.
     let parsed: any = ev.data;
     try {
       parsed = JSON.parse(ev.data);
@@ -84,9 +88,11 @@ export function openJobEventStream(
       /* keep as string */
     }
     onEvent(name, parsed);
+    if (name === "stream_end" || name === "job_completed" || name === "error") es.close();
   };
   // Listen for the named events the backend emits.
   for (const name of [
+    "snapshot",
     "job_started",
     "stage_started",
     "stage_progress",

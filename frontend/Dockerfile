@@ -8,11 +8,11 @@ WORKDIR /app
 # NEXT_PUBLIC_* vars are baked into the client bundle at build time, so the
 # backend URL must be passed as a build ARG. Default is only a fallback — the
 # real value comes from docker-compose.yml, derived from BACKEND_PORT.
-ARG NEXT_PUBLIC_API_BASE_URL=http://localhost:8088
+ARG NEXT_PUBLIC_API_BASE_URL=/api
 ENV NEXT_PUBLIC_API_BASE_URL=${NEXT_PUBLIC_API_BASE_URL}
 # WebRTC ingest service (GPU track, /live page). Only set by
 # docker-compose.gpu.yml; the CPU stack leaves it at the default.
-ARG NEXT_PUBLIC_INGEST_BASE_URL=http://localhost:8091
+ARG NEXT_PUBLIC_INGEST_BASE_URL=/ingest
 ENV NEXT_PUBLIC_INGEST_BASE_URL=${NEXT_PUBLIC_INGEST_BASE_URL}
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .

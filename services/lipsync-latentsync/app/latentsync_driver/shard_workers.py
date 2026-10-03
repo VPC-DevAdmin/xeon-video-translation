@@ -25,6 +25,7 @@ import os
 import sys
 import time
 import traceback
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -56,11 +57,14 @@ def _worker_main(dev_index: int, in_q, out_q, build: dict) -> None:  # pragma: n
         vae = AutoencoderKL.from_pretrained(build["vae_repo"], torch_dtype=dtype).to(device).eval()
         vae.config.scaling_factor = build["vae_scaling_factor"]
         vae.config.shift_factor = build["vae_shift_factor"]
+        if os.environ.get("LATENTSYNC_COMPILE", "0") == "1":
+            unet = torch.compile(unet, mode="reduce-overhead")
         scheduler = DDIMScheduler.from_pretrained(build["scheduler_dir"])
         if build.get("cudnn_benchmark", True):
             torch.backends.cudnn.benchmark = True
         out_q.put(("ready", dev_index, time.perf_counter() - t0))
 
+        job_id = None
         timesteps = None
         guidance = 1.5
         cfg = True
@@ -73,15 +77,17 @@ def _worker_main(dev_index: int, in_q, out_q, build: dict) -> None:  # pragma: n
                 return
             kind = msg[0]
             if kind == "job":
-                _, steps, guidance, cfg, eta = msg
+                _, job_id, steps, guidance, cfg, eta = msg
                 scheduler.set_timesteps(int(steps), device=device)
                 timesteps = scheduler.timesteps
                 continue
             if kind != "chunk":
                 continue
-            _, i, cond = msg
+            _, message_job, i, cond = msg
+            if message_job != job_id:
+                continue
             try:
-                with torch.no_grad():
+                with torch.inference_mode():
                     lat, ml, mil, rl, ae = (None if x is None else x.to(device, non_blocking=True) for x in cond)
                     step_kwargs = {"eta": eta} if accepts_eta else {}
                     for t in timesteps:
@@ -97,9 +103,9 @@ def _worker_main(dev_index: int, in_q, out_q, build: dict) -> None:  # pragma: n
                     z = rearrange(z, "b c f h w -> (b f) c h w")
                     pixels = vae.decode(z).sample
                     torch.cuda.synchronize(device)
-                out_q.put(("done", i, pixels.to("cpu")))
+                out_q.put(("done", job_id, i, pixels.to("cpu")))
             except Exception as e:  # report, keep serving
-                out_q.put(("error", i, f"{type(e).__name__}: {e}\n{traceback.format_exc()[-1500:]}"))
+                out_q.put(("error", job_id, i, f"{type(e).__name__}: {e}\n{traceback.format_exc()[-1500:]}"))
     except Exception as e:
         out_q.put(("fatal", dev_index, f"{type(e).__name__}: {e}\n{traceback.format_exc()[-1500:]}"))
 
@@ -115,13 +121,15 @@ class DenoisePool:
         self._results: dict[int, Any] = {}
         self._next = 0
         self.size = len(workers)
+        self.job_id = None
+        self.closed = False
 
     @classmethod
     def start(cls, devices: list[int], build: dict, timeout_s: float = 600.0) -> "DenoisePool":
         torch.multiprocessing.set_sharing_strategy("file_system")
         ctx = mp.get_context("spawn")
-        out_q = ctx.Queue()
-        in_queues = [ctx.Queue() for _ in devices]
+        out_q = ctx.Queue(maxsize=max(2, len(devices) * 2))
+        in_queues = [ctx.Queue(maxsize=2) for _ in devices]
         workers = []
         for d, q in zip(devices, in_queues):
             p = ctx.Process(target=_worker_main, args=(d, q, out_q, build), daemon=True, name=f"latentsync-denoise-{d}")
@@ -130,32 +138,37 @@ class DenoisePool:
         pool = cls(workers, in_queues, out_q, devices)
         ready = 0
         deadline = time.perf_counter() + timeout_s
-        while ready < len(devices):
-            remaining = deadline - time.perf_counter()
-            if remaining <= 0:
-                pool.close()
-                raise RuntimeError("denoise workers did not become ready in time")
-            msg = out_q.get(timeout=remaining)
-            if msg[0] == "ready":
-                ready += 1
-                log.info("denoise worker on cuda:%d ready (models loaded in %.1fs)", msg[1], msg[2])
-            elif msg[0] == "fatal":
-                pool.close()
-                raise RuntimeError(f"denoise worker on cuda:{msg[1]} failed to start: {msg[2]}")
+        try:
+            while ready < len(devices):
+                remaining = deadline - time.perf_counter()
+                if remaining <= 0:
+                    pool.close()
+                    raise RuntimeError("denoise workers did not become ready in time")
+                msg = out_q.get(timeout=remaining)
+                if msg[0] == "ready":
+                    ready += 1
+                    log.info("denoise worker on cuda:%d ready (models loaded in %.1fs)", msg[1], msg[2])
+                elif msg[0] == "fatal":
+                    pool.close()
+                    raise RuntimeError(f"denoise worker on cuda:{msg[1]} failed to start: {msg[2]}")
+        except BaseException:
+            pool.close()
+            raise
         return pool
 
     def alive(self) -> bool:
-        return all(p.is_alive() for p in self.workers)
+        return not self.closed and all(p.is_alive() for p in self.workers)
 
     def begin_job(self, steps: int, guidance: float, cfg: bool, eta: float) -> None:
+        self.job_id = uuid.uuid4().hex
         self._results.clear()
         self._next = 0
         for q in self.in_queues:
-            q.put(("job", int(steps), float(guidance), bool(cfg), float(eta)))
+            q.put(("job", self.job_id, int(steps), float(guidance), bool(cfg), float(eta)), timeout=10)
 
     def submit(self, i: int, cond: tuple) -> None:
         """`cond` = (latents, mask_latents, masked_image_latents, ref_latents, audio_embeds) as CPU tensors."""
-        self.in_queues[self._next % self.size].put(("chunk", i, cond))
+        self.in_queues[self._next % self.size].put(("chunk", self.job_id, i, cond), timeout=60)
         self._next += 1
 
     def result(self, i: int, timeout_s: float = 1800.0):
@@ -177,24 +190,33 @@ class DenoisePool:
             except _queue.Empty:
                 continue
             kind = msg[0]
+            if kind in ("done", "error") and msg[1] != self.job_id:
+                continue
             if kind == "done":
-                self._results[msg[1]] = msg[2]
+                self._results[msg[2]] = msg[3]
             elif kind == "error":
-                raise RuntimeError(f"denoise chunk {msg[1]} failed in worker: {msg[2]}")
+                raise RuntimeError(f"denoise chunk {msg[2]} failed in worker: {msg[3]}")
             elif kind == "fatal":
                 raise RuntimeError(f"denoise worker cuda:{msg[1]} died: {msg[2]}")
         return self._results.pop(i)
 
     def close(self) -> None:
-        for q in self.in_queues:
-            try:
-                q.put(None)
-            except Exception:
-                pass
-        for p in self.workers:
-            p.join(timeout=10)
-            if p.is_alive():
-                p.terminate()
+        if self.closed:
+            return
+        self.closed = True
+        self._results.clear()
+        # Queue feeder threads may be blocked behind abandoned tensor output.
+        # Failed pools are never reused: terminate children then close pipes.
+        for process in self.workers:
+            if process.is_alive():
+                process.terminate()
+            process.join(timeout=5)
+            if process.is_alive():
+                process.kill()
+                process.join(timeout=5)
+        for q in [*self.in_queues, self.out_q]:
+            q.cancel_join_thread()
+            q.close()
 
 
 def build_args_for(unet_config: dict, unet_ckpt: Path, scheduler_dir: Path, dtype: torch.dtype,

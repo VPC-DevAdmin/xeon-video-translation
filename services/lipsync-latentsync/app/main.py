@@ -29,6 +29,7 @@ from __future__ import annotations
 import importlib
 import logging
 import os
+import threading
 from pathlib import Path
 from typing import Literal
 
@@ -45,6 +46,7 @@ VERSION = "0.3.0"
 # Flipped True in PR-LS-1c. /lipsync now dispatches to the real
 # LatentSync pipeline under app/latentsync_driver/inference.py.
 INFERENCE_IMPLEMENTED = True
+_INFERENCE_LOCK = threading.RLock()
 # Phase string surfaced in /health so operators can tell at a glance
 # which staged PR built the image they're poking at.
 PHASE = "PR-LS-1c (inference live)"
@@ -301,6 +303,11 @@ def weights() -> dict:
 
 @app.post("/lipsync", response_model=LipsyncResponse)
 def lipsync(req: LipsyncRequest) -> LipsyncResponse:
+    with _INFERENCE_LOCK:
+        return _lipsync_locked(req)
+
+
+def _lipsync_locked(req: LipsyncRequest) -> LipsyncResponse:
     """Run LatentSync inference end-to-end.
 
     Error translation mirrors lipsync-musetalk's conventions so the
@@ -314,6 +321,11 @@ def lipsync(req: LipsyncRequest) -> LipsyncResponse:
     """
     import time
 
+    root = Path(os.environ.get("JOB_ARTIFACTS_DIR", "/jobs")).resolve()
+    for value in (req.video_path, req.audio_path, req.output_path):
+        candidate = Path(value).resolve()
+        if not candidate.is_relative_to(root) or candidate == root:
+            raise HTTPException(400, "media paths must be inside JOB_ARTIFACTS_DIR")
     video = Path(req.video_path)
     audio = Path(req.audio_path)
 
@@ -392,3 +404,10 @@ def lipsync(req: LipsyncRequest) -> LipsyncResponse:
             f"dry_run={result.dry_run}"
         ),
     )
+
+
+@app.on_event("shutdown")
+def stop_workers():
+    from .latentsync_driver.inference import shutdown_workers
+    with _INFERENCE_LOCK:
+        shutdown_workers()
