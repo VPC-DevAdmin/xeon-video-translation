@@ -37,6 +37,7 @@ services:
       # Final mux on the GPU's hardware encoder. Needs the `video` driver
       # capability below; watermark.py falls back to libx264 if it fails.
       VIDEO_ENCODER: ${VIDEO_ENCODER:-h264_nvenc}
+      WARMUP_MODELS: ${WARMUP_MODELS:-true}
       NVIDIA_DRIVER_CAPABILITIES: compute,utility,video
       # Hugging Face auth via a mounted file rather than an env value, so
       # the token never lands in .env or shell history. Point HF_TOKEN_FILE

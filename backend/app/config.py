@@ -132,6 +132,12 @@ class Settings(BaseSettings):
     # compose overlay sets. Falls back to libx264 if ffmpeg rejects it.
     video_encoder: Literal["libx264", "h264_nvenc"] = "libx264"
 
+    # Load whisper, NLLB and the default TTS backend at startup instead of
+    # on the first job. Costs ~60 s of startup on the GPU box and ~40 GB of
+    # VRAM held idle; saves the same minute on the first request, which
+    # matters for a demo and for honest per-stage timings. Off on CPU.
+    warmup_models: bool = False
+
     # Feature flags
     enable_watermark: bool = True
     enable_c2pa: bool = False
