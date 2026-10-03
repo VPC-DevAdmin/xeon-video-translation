@@ -12,8 +12,8 @@
 #   1      lipsync-musetalk (real-time mode)
 #   2-7    lipsync-latentsync workers (batch mode shards 16-frame chunks
 #          across these; until sharding lands only GPU 2 is used)
-# Override per host with BACKEND_GPU / MUSETALK_GPU / LATENTSYNC_GPU in
-# .env — the XE7740 shares GPUs 1-2 with vLLM containers, so it runs
+# Override per host with BACKEND_GPU / MUSETALK_GPU / LATENTSYNC_GPUS
+# (comma list, e.g. "4,5,6,7") in .env — the XE7740 shares GPUs 1-2 with vLLM containers, so it runs
 # 0 / 3 / 4. Check `nvidia-smi` before picking; an occupied card shows up
 # as a CUDA OOM at the first UNet call, not at startup.
 #
@@ -75,6 +75,8 @@ services:
       # fp32 for parity with the CPU build until outputs are compared;
       # MUSETALK_DTYPE=fp16 is the speed mode (upstream's CUDA default).
       MUSETALK_DTYPE: ${MUSETALK_DTYPE:-fp32}
+      # Final encode on NVENC (MUSETALK_VIDEO_ENCODER=libx264 to opt out).
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility,video
       # CPU-only knobs; harmless but meaningless here.
       KMP_AFFINITY: ""
       KMP_BLOCKTIME: ""
@@ -102,9 +104,19 @@ services:
       context: ./services/lipsync-latentsync
       dockerfile: Dockerfile.gpu
     image: polyglot-demo/lipsync-latentsync:gpu
+    # Several GPUs: the denoise loop is sharded across every visible card
+    # (one UNet replica each; docs/gpu/mode2-batch.md). Compose cannot
+    # build a device_ids list from one env var, so this service uses the
+    # nvidia runtime directly and takes a comma list in LATENTSYNC_GPUS.
+    runtime: nvidia
     environment:
       DEVICE: cuda
-      CUDA_VISIBLE_DEVICES: "0"
+      NVIDIA_VISIBLE_DEVICES: ${LATENTSYNC_GPUS:-2}
+      # The base compose file blanks CUDA_VISIBLE_DEVICES; re-expose every
+      # card the runtime passed in (CUDA ignores indices that don't exist).
+      CUDA_VISIBLE_DEVICES: "0,1,2,3,4,5,6,7"
+      # 0 = one replica per visible GPU.
+      LATENTSYNC_UNET_REPLICAS: ${LATENTSYNC_UNET_REPLICAS:-0}
       # fp16 is upstream's tested GPU path. The CPU bf16 jitter artifact
       # (docs/latentsync-pipeline.md §5) was specific to CPU bf16 autocast
       # and does not apply here; re-run the stability metric to confirm.
@@ -122,11 +134,6 @@ services:
         limits:
           cpus: "32.0"
           memory: 96g
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: ["${LATENTSYNC_GPU:-2}"]
-              capabilities: [gpu]
 
   # WebRTC ingest: browser webcam -> this service -> file in /jobs ->
   # backend job. See services/ingest-webrtc/README.md.

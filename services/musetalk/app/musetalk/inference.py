@@ -21,7 +21,6 @@ import json
 import logging
 import os
 import subprocess
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
@@ -30,9 +29,10 @@ from typing import Callable
 import cv2
 import numpy as np
 import torch
+from concurrent.futures import ThreadPoolExecutor
 
 from .audio_features import AudioProcessor
-from .blending import get_image
+from .blending import face_large_crop, get_image
 from .face_parsing import FaceParsing
 from .face_tracking import build_aligner, detect_batch
 from .models.unet import UNet
@@ -693,19 +693,31 @@ def run(
                 progress(min(1.0, end / n))
 
     # --- 6. Paste predicted faces back with BiSeNet-aware blending --------
-    log.info("Compositing predicted faces back into frames")
-    output_frames: list[np.ndarray] = []
-    for i in range(n):
-        frame = frames[i].copy()
+    # Two passes. First, BiSeNet runs on every frame's expanded face crop in
+    # one batched sweep on the device (the per-frame call was ~110 ms, most
+    # of it launch overhead and a host-side argmax). Then the PIL/cv2
+    # blend, which releases the GIL, runs across a thread pool. Together
+    # this took the 52 s clip's compositing from ~105 s to well under 20 s
+    # on the GPU box. Output order is preserved.
+    composite_threads = int(os.environ.get("MUSETALK_COMPOSITE_THREADS", "16"))
+    active_idx = [i for i in range(n) if predicted_faces[i] is not None and face_boxes[i] is not None]
+    log.info(
+        "Compositing predicted faces back into frames (%d faces, batched BiSeNet, %d threads)",
+        len(active_idx), composite_threads,
+    )
+    crops = [face_large_crop(frames[i], face_boxes[i]) for i in active_idx]
+    parse_masks = state.face_parsing.parse_batch(crops, mode=effective_blend_mode)
+    mask_for: dict[int, object] = dict(zip(active_idx, parse_masks))
+
+    def _composite(i: int) -> np.ndarray:
         face = predicted_faces[i]
         box = face_boxes[i]
         if face is None or box is None:
-            output_frames.append(frame)
-            continue
+            return frames[i]
         x1, y1, x2, y2 = box
         face_resized = cv2.resize(face, (x2 - x1, y2 - y1), interpolation=cv2.INTER_LANCZOS4)
-        blended = get_image(
-            image=frame,
+        return get_image(
+            image=frames[i],
             face=face_resized,
             face_box=(x1, y1, x2, y2),
             fp=state.face_parsing,
@@ -714,8 +726,11 @@ def run(
             #   MUSETALK_BLEND_FEATHER = kernel ratio           (default: 0.04)
             mode=effective_blend_mode,
             feather_ratio=effective_blend_feather,
+            mask_image=mask_for.get(i),
         )
-        output_frames.append(blended)
+
+    with ThreadPoolExecutor(max_workers=max(1, composite_threads)) as pool:
+        output_frames: list[np.ndarray] = list(pool.map(_composite, range(n)))
 
     # --- 6b. Optional face restoration (CodeFormer) -----------------------
     # Applied after the MuseTalk blend so the restored skin detail covers
@@ -758,51 +773,61 @@ def run(
             )
 
     # --- 7. Write video + mux audio ---------------------------------------
-    log.info("Writing output video")
-    tmp_video = Path(tempfile.mkstemp(suffix=".mp4")[1])
+    # One ffmpeg process: raw BGR frames over stdin, audio as the second
+    # input, encode + mux in a single pass. Replaces cv2's mp4v writer plus
+    # a second ffmpeg re-encode (27 s + 7 s for the 52 s clip). NVENC is
+    # used when the container has the `video` driver capability and the
+    # encoder is available; any failure falls back to libx264 on the same
+    # frames.
     height, width = output_frames[0].shape[:2]
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    writer = cv2.VideoWriter(str(tmp_video), fourcc, fps, (width, height))
-    try:
-        for f in output_frames:
-            writer.write(f)
-    finally:
-        writer.release()
-
-    # Mux new audio onto the silent MP4. If audio is longer than the
-    # lipsynced video (common — XTTS output often runs past the source clip),
-    # freeze the last frame rather than truncating speech with `-shortest`.
     audio_dur = _probe_duration(audio_path)
-    video_dur = _probe_duration(tmp_video)
+    video_dur = n / float(fps) if fps else None
     pad_seconds = 0.0
     if audio_dur is not None and video_dur is not None and audio_dur > video_dur:
+        # Freeze the last frame rather than truncating speech with `-shortest`
+        # (XTTS output often runs past the source clip).
         pad_seconds = audio_dur - video_dur
 
-    cmd: list[str] = [
-        "ffmpeg", "-y",
-        "-i", str(tmp_video),
-        "-i", str(audio_path),
-    ]
-    if pad_seconds > 0.0:
-        cmd.extend([
-            "-vf", f"tpad=stop_mode=clone:stop_duration={pad_seconds:.3f}",
-        ])
-    cmd.extend([
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
-        "-c:a", "aac",
-        # Deliberately no `-shortest`: we padded video above when needed.
-        str(output_path),
-    ])
+    encoder = os.environ.get(
+        "MUSETALK_VIDEO_ENCODER", "h264_nvenc" if on_cuda else "libx264"
+    ).lower()
+
+    def _encode(enc: str) -> tuple[int, str]:
+        cmd: list[str] = [
+            "ffmpeg", "-y", "-loglevel", "error",
+            "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{width}x{height}",
+            "-r", f"{fps:.6f}", "-i", "pipe:0",
+            "-i", str(audio_path),
+            "-map", "0:v:0", "-map", "1:a:0",
+        ]
+        if pad_seconds > 0.0:
+            cmd.extend(["-vf", f"tpad=stop_mode=clone:stop_duration={pad_seconds:.3f}"])
+        if enc == "h264_nvenc":
+            cmd.extend(["-c:v", "h264_nvenc", "-preset", "p4", "-rc", "vbr", "-cq", "20", "-b:v", "0"])
+        else:
+            cmd.extend(["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"])
+        cmd.extend(["-pix_fmt", "yuv420p", "-c:a", "aac", str(output_path)])
+        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            assert proc.stdin is not None
+            for f in output_frames:
+                proc.stdin.write(np.ascontiguousarray(f).tobytes())
+            proc.stdin.close()
+        except BrokenPipeError:
+            pass  # encoder died; the stderr below says why
+        _, err = proc.communicate(timeout=1800)
+        return proc.returncode, err.decode(errors="replace")[-1000:]
+
     log.info(
-        "musetalk mux: video=%.2fs audio=%.2fs pad=%.2fs",
-        video_dur or -1.0, audio_dur or -1.0, pad_seconds,
+        "Writing output video (%s): %dx%d @ %.2f fps, %d frames, audio=%.2fs pad=%.2fs",
+        encoder, width, height, fps, n, audio_dur or -1.0, pad_seconds,
     )
-    proc = subprocess.run(cmd, capture_output=True, timeout=1800)
-    tmp_video.unlink(missing_ok=True)
-    if proc.returncode != 0:
-        raise RuntimeError(
-            f"ffmpeg mux failed: {proc.stderr.decode(errors='replace')[-1000:]}"
-        )
+    rc, err = _encode(encoder)
+    if rc != 0 and encoder != "libx264":
+        log.warning("%s encode failed (exit %d), falling back to libx264: %s", encoder, rc, err.strip()[-300:])
+        rc, err = _encode("libx264")
+    if rc != 0:
+        raise RuntimeError(f"ffmpeg encode/mux failed: {err}")
 
     if progress is not None:
         progress(1.0)

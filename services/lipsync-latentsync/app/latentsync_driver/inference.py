@@ -405,6 +405,25 @@ def run(
         scheduler=scheduler,
     ).to(device)
 
+    # --- UNet replicas for sharded denoise (GPU track, G5) ------------
+    # One UNet copy per visible CUDA device (NVIDIA_VISIBLE_DEVICES in the
+    # compose overlay). The pipeline splits the 16-frame chunks across
+    # them round-robin; everything else stays on cuda:0. ~2.6 GB fp16 per
+    # copy. LATENTSYNC_UNET_REPLICAS caps the count (0 = all visible).
+    n_visible = torch.cuda.device_count() if device.type == "cuda" else 1
+    want = int(os.environ.get("LATENTSYNC_UNET_REPLICAS", "0") or 0)
+    n_replicas = max(1, min(want or n_visible, n_visible))
+    unet_replicas = [unet]
+    if n_replicas > 1:
+        import copy
+        for k in range(1, n_replicas):
+            unet_replicas.append(copy.deepcopy(unet).to(torch.device(f"cuda:{k}")))
+        log.info(
+            "UNet replicated to %d GPUs: %s",
+            n_replicas, [torch.cuda.get_device_name(k) for k in range(n_replicas)],
+        )
+    pipeline.unet_replicas = unet_replicas
+
     # --- DeepCache -----------------------------------------------------
     # Caches intermediate UNet feature maps on one denoising step and
     # reuses them on subsequent steps ("skip" steps). Net effect: about
@@ -418,6 +437,13 @@ def run(
     deepcache_enabled = os.environ.get(
         "LATENTSYNC_ENABLE_DEEPCACHE", "1",
     ).lower() in ("1", "true", "yes")
+    if deepcache_enabled and len(unet_replicas) > 1:
+        # DeepCacheSDHelper patches `pipeline.unet` with per-call cache
+        # state; with replicas running concurrently on other devices that
+        # state would be wrong for them and racy for this one. Sharding
+        # wins ~Nx, DeepCache ~1.3x, so sharding takes precedence.
+        log.info("DeepCache disabled: %d UNet replicas in use", len(unet_replicas))
+        deepcache_enabled = False
     if deepcache_enabled:
         try:
             from DeepCache import DeepCacheSDHelper

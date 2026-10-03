@@ -40,6 +40,18 @@ def face_seg(image, mode="raw", fp=None):
     return seg_image
 
 
+def face_large_crop(image, face_box, expand=1.5):
+    """The expanded face crop `get_image` feeds to the parser, as PIL RGB.
+
+    Exposed so callers can run BiSeNet on many crops in one batch
+    (`FaceParsing.parse_batch`) and hand the masks back via
+    `get_image(..., mask_image=...)`.
+    """
+    body = Image.fromarray(image[:, :, ::-1])
+    crop_box, _ = get_crop_box(face_box, expand)
+    return body.crop(crop_box)
+
+
 def get_image(
     image,
     face,
@@ -49,6 +61,7 @@ def get_image(
     mode="raw",
     fp=None,
     feather_ratio: float | None = None,
+    mask_image=None,
 ):
     """Composite a predicted face back onto the original frame.
 
@@ -80,8 +93,12 @@ def get_image(
     face_large = body.crop(crop_box)
     ori_shape = face_large.size
 
-    # Mask from the face-parsing network.
-    mask_image = face_seg(face_large, mode=mode, fp=fp)
+    # Mask from the face-parsing network, unless the caller precomputed it
+    # (batched parse). Either way it is resized to the crop.
+    if mask_image is None:
+        mask_image = face_seg(face_large, mode=mode, fp=fp)
+    else:
+        mask_image = mask_image.resize(ori_shape)
 
     mask_small = mask_image.crop((x - x_s, y - y_s, x1 - x_s, y1 - y_s))
     mask_image = Image.new("L", ori_shape, 0)
