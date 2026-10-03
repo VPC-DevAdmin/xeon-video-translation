@@ -836,7 +836,11 @@ def _synthesize_indicf5_single_shot(
     users can override by supplying a native-language reference clip.
     """
     components = _get_indicf5()
-    ref_text = _f5tts_reference_text(reference_audio, transcript_segments)
+    picked = _select_f5_reference(reference_audio, transcript_segments, output_path.parent)
+    if picked is not None:
+        reference_audio, ref_text = picked
+    else:
+        ref_text = _f5tts_reference_text(reference_audio, transcript_segments)
     if not ref_text:
         raise TTSError(
             "IndicF5 requires a reference transcript but none was found. "
@@ -947,11 +951,16 @@ def _synthesize_f5tts_single_shot(
 ) -> TTSResult:
     """Single-shot F5-TTS synthesis. Per-segment path is a follow-up."""
     f5tts = _get_f5tts()
-    ref_text = _f5tts_reference_text(reference_audio, transcript_segments)
+    picked = _select_f5_reference(reference_audio, transcript_segments, output_path.parent)
+    if picked is not None:
+        ref_path, ref_text = picked
+    else:
+        ref_path = reference_audio
+        ref_text = _f5tts_reference_text(reference_audio, transcript_segments)
 
     # F5-TTS's Python API writes directly to `file_wave`.
     f5tts.infer(
-        ref_file=str(reference_audio),
+        ref_file=str(ref_path),
         ref_text=ref_text,
         gen_text=text,
         file_wave=str(output_path),
@@ -1041,6 +1050,63 @@ def _select_reference(
         span_len, span_start, span_end,
     )
     return trimmed, f"trimmed {span_len:.2f}s"
+
+
+_F5_REF_MAX_SPAN_SECONDS = 10.0  # F5 clips refs at ~12 s internally; stay under
+
+
+def _select_f5_reference(
+    reference_audio: Path,
+    transcript_segments: list[dict] | None,
+    work_dir: Path,
+) -> tuple[Path, str] | None:
+    """Pick a short reference clip *and the text spoken in it* for F5-TTS.
+
+    F5-style models size the generated audio from the reference: roughly
+    ref_seconds / len(ref_text) * len(gen_text). They also clip the
+    reference audio to ~12 s internally. Feeding the whole 52 s source
+    plus its full transcript therefore gave a per-character duration 4-5x
+    too small and the output came out compressed to 9 s on the XE7740.
+    The reference text must describe exactly the audio span passed.
+
+    Returns None when word timestamps are missing, so callers can fall
+    back to the whole-clip behaviour.
+    """
+    if not transcript_segments:
+        return None
+    words: list[dict] = []
+    for seg in transcript_segments:
+        for w in (seg.get("words") or []):
+            if w.get("start") is not None and w.get("end") is not None and (w.get("word") or "").strip():
+                words.append(w)
+    if len(words) < 3:
+        return None
+    span = _longest_contiguous_word_span(words, max_gap=_REF_GAP_SECONDS)
+    if span is None:
+        return None
+    span_start, span_end = span
+    if span_end - span_start < _REF_MIN_SPAN_SECONDS:
+        return None
+    span_end = min(span_end, span_start + _F5_REF_MAX_SPAN_SECONDS)
+    # Only words fully inside the (possibly capped) span.
+    in_span = [w for w in sorted(words, key=lambda w: float(w["start"]))
+               if float(w["start"]) >= span_start - 1e-3 and float(w["end"]) <= span_end + 1e-3]
+    if len(in_span) < 3:
+        return None
+    # Cut on the last whole word so the text matches the audio exactly.
+    span_end = float(in_span[-1]["end"])
+    ref_text = " ".join((w["word"] or "").strip() for w in in_span).strip()
+    trimmed = work_dir / "f5_reference.wav"
+    try:
+        _ffmpeg_atrim(reference_audio, trimmed, span_start, span_end)
+    except Exception as e:
+        log.warning("failed to cut F5 reference audio (%s); using whole clip", e)
+        return None
+    log.info(
+        "selected F5 reference: %.2fs span (%.2f–%.2fs), %d words",
+        span_end - span_start, span_start, span_end, len(in_span),
+    )
+    return trimmed, ref_text
 
 
 def _longest_contiguous_word_span(
