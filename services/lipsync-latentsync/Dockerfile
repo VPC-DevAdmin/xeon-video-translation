@@ -91,7 +91,8 @@ RUN pip install --upgrade pip wheel \
        "triton>=3.1,<3.2"
 
 COPY pyproject.toml ./
-RUN pip install -e .
+# `.[cpu]` pulls onnxruntime (CPU) + IPEX; the GPU image uses `.[gpu]`.
+RUN pip install -e ".[cpu]"
 
 # Clear the executable-stack marker from IPEX's native libs (see apt
 # patchelf note above). Targeted only at intel_extension_for_pytorch

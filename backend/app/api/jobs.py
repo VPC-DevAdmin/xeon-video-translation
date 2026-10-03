@@ -2,25 +2,53 @@
 
 from __future__ import annotations
 
-import asyncio
 import shutil
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile, status
+from fastapi import (
+    Depends,
+    Request,
+    APIRouter,
+    BackgroundTasks,
+    File,
+    Form,
+    HTTPException,
+    UploadFile,
+    status,
+)
 from fastapi.responses import FileResponse
 
-from .. import storage
+from .. import storage, state_store, operations
+from ..security import principal, check_owner
 from ..config import settings
+from ..modes import MODES
 from ..pipeline.orchestrator import (
     JobState,
     cancel_job,
     get_job,
     register_job,
     run_pipeline,
+    blocking_call,
 )
 
-router = APIRouter(prefix="/jobs", tags=["jobs"])
 
+def valid_job_path(request: Request):
+    value = request.path_params.get("job_id")
+    if value:
+        try:
+            storage.job_dir(value)
+            meta = storage.read_meta(value)
+            if meta is None:
+                raise HTTPException(404, "job not found")
+            check_owner(meta)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+
+router = APIRouter(prefix="/jobs", tags=["jobs"], dependencies=[Depends(valid_job_path)])
+
+
+_uploading: set[str] = set()
 
 _ALLOWED_EXTENSIONS = {".mp4", ".mov", ".webm", ".mkv", ".m4v"}
 
@@ -40,6 +68,9 @@ async def create_job(
     target_language: str = Form(...),
     source_language: str | None = Form(None),
     lipsync_backend: str | None = Form(None),
+    mode: str | None = Form(None),
+    request_id: str | None = Form(None),
+    options_json: str = Form("{}"),
     # Per-request TTS backend (xtts | f5tts). Omit → env default (xtts).
     tts_backend: str | None = Form(None),
     # Per-request pre-stabilization toggle. Omit → env default
@@ -59,6 +90,40 @@ async def create_job(
     musetalk_face_restore_blend: float | None = Form(None),
 ) -> dict:
     """Accept a video upload, persist it, and kick off the pipeline."""
+    from ..options import from_request
+
+    try:
+        options = from_request(options_json)
+    except ValueError as exc:
+        raise HTTPException(400, "invalid job options") from exc
+    if not settings.recover_jobs:
+        raise HTTPException(503, "this service is reserved for avatar speech")
+    if mode is not None and mode not in MODES:
+        raise HTTPException(400, "unsupported mode")
+    preset = MODES.get(mode, {})
+    lipsync_backend = lipsync_backend or preset.get("lipsync_backend")
+    tts_backend = tts_backend or preset.get("tts_backend")
+    musetalk_face_restore = musetalk_face_restore or preset.get("musetalk_face_restore")
+    musetalk_blend_mode = musetalk_blend_mode or preset.get("musetalk_blend_mode")
+    if enable_output_stabilization is None:
+        enable_output_stabilization = preset.get("enable_output_stabilization")
+    from ..pipeline.translate import NLLB_LANG_CODES
+
+    if target_language.lower() not in NLLB_LANG_CODES:
+        raise HTTPException(400, "unsupported target language")
+    if request_id:
+        try:
+            existing = storage.read_meta(request_id)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if existing:
+            check_owner(existing)
+            return {k: existing[k] for k in ("job_id", "status", "created_at")}
+    await blocking_call(lambda: operations.check_capacity(principal.get()))
+    from ..pipeline.orchestrator import pending_count
+
+    if pending_count() + len(_uploading) >= settings.max_pending_jobs:
+        raise HTTPException(429, "job queue is full; retry later")
     filename = video.filename or "input"
     ext = Path(filename).suffix.lower()
     if ext not in _ALLOWED_EXTENSIONS:
@@ -69,8 +134,9 @@ async def create_job(
         lipsync_backend_norm = lipsync_backend.lower().strip()
         if lipsync_backend_norm not in _ALLOWED_LIPSYNC:
             raise HTTPException(
-                400, f"unsupported lipsync_backend: {lipsync_backend!r}. "
-                     f"Allowed: {sorted(_ALLOWED_LIPSYNC)}"
+                400,
+                f"unsupported lipsync_backend: {lipsync_backend!r}. "
+                f"Allowed: {sorted(_ALLOWED_LIPSYNC)}",
             )
 
     # Normalize + validate the per-request musetalk knobs. Invalid input
@@ -81,7 +147,8 @@ async def create_job(
         v = val.lower().strip()
         if v not in allowed:
             raise HTTPException(
-                400, f"unsupported {label}: {val!r}. Allowed: {sorted(allowed)}",
+                400,
+                f"unsupported {label}: {val!r}. Allowed: {sorted(allowed)}",
             )
         return v
 
@@ -90,7 +157,8 @@ async def create_job(
             return None
         if not lo <= val <= hi:
             raise HTTPException(
-                400, f"{label}={val} out of range [{lo}, {hi}]",
+                400,
+                f"{label}={val} out of range [{lo}, {hi}]",
             )
         return val
 
@@ -98,9 +166,15 @@ async def create_job(
     q = {
         "blend_mode": _norm_enum(musetalk_blend_mode, _ALLOWED_BLEND_MODES, "musetalk_blend_mode"),
         "blend_feather": _norm_ratio(musetalk_blend_feather, 0.02, 0.30, "musetalk_blend_feather"),
-        "face_restore": _norm_enum(musetalk_face_restore, _ALLOWED_FACE_RESTORE, "musetalk_face_restore"),
-        "face_restore_fidelity": _norm_ratio(musetalk_face_restore_fidelity, 0.0, 1.0, "musetalk_face_restore_fidelity"),
-        "face_restore_blend": _norm_ratio(musetalk_face_restore_blend, 0.0, 1.0, "musetalk_face_restore_blend"),
+        "face_restore": _norm_enum(
+            musetalk_face_restore, _ALLOWED_FACE_RESTORE, "musetalk_face_restore"
+        ),
+        "face_restore_fidelity": _norm_ratio(
+            musetalk_face_restore_fidelity, 0.0, 1.0, "musetalk_face_restore_fidelity"
+        ),
+        "face_restore_blend": _norm_ratio(
+            musetalk_face_restore_blend, 0.0, 1.0, "musetalk_face_restore_blend"
+        ),
     }
     if any(v is not None for v in q.values()):
         lipsync_quality = {k: v for k, v in q.items() if v is not None}
@@ -122,34 +196,50 @@ async def create_job(
 
     enable_stabilization_norm = _norm_bool(enable_stabilization, "enable_stabilization")
     enable_output_stabilization_norm = _norm_bool(
-        enable_output_stabilization, "enable_output_stabilization",
+        enable_output_stabilization,
+        "enable_output_stabilization",
     )
 
-    job_id = storage.new_job_id()
+    job_id = request_id or storage.new_job_id()
     job_directory = storage.job_dir(job_id)
+    try:
+        job_directory.mkdir(parents=True, exist_ok=False)
+    except FileExistsError:
+        raise HTTPException(409, "submission in progress; retry with the same request_id")
+    _uploading.add(job_id)
     input_path = job_directory / f"input{ext}"
 
     # Stream the upload to disk and check size as we go.
     max_bytes = settings.max_video_size_mb * 1024 * 1024
     written = 0
-    with input_path.open("wb") as f:
-        while True:
-            chunk = await video.read(1024 * 1024)
-            if not chunk:
-                break
-            written += len(chunk)
-            if written > max_bytes:
-                f.close()
-                input_path.unlink(missing_ok=True)
-                shutil.rmtree(job_directory, ignore_errors=True)
-                raise HTTPException(
-                    413,
-                    f"upload exceeds {settings.max_video_size_mb} MB",
-                )
-            f.write(chunk)
+    try:
+        with input_path.open("wb") as f:
+            while True:
+                chunk = await video.read(1024 * 1024)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > max_bytes:
+                    f.close()
+                    input_path.unlink(missing_ok=True)
+                    shutil.rmtree(job_directory, ignore_errors=True)
+                    raise HTTPException(
+                        413,
+                        f"upload exceeds {settings.max_video_size_mb} MB",
+                    )
+                f.write(chunk)
+        if not written:
+            raise HTTPException(422, "empty video upload")
+    except BaseException:
+        shutil.rmtree(job_directory, ignore_errors=True)
+        raise
+    finally:
+        _uploading.discard(job_id)
 
     state = JobState(
         job_id=job_id,
+        owner_id=principal.get(),
+        options=options,
         target_language=target_language.lower(),
         source_language=source_language.lower() if source_language else None,
         lipsync_backend=lipsync_backend_norm,
@@ -158,8 +248,10 @@ async def create_job(
         enable_stabilization=enable_stabilization_norm,
         enable_output_stabilization=enable_output_stabilization_norm,
         input_filename=filename,
+        mode=mode,
     )
     register_job(state)
+    await blocking_call(lambda: operations.refresh_usage(state.job_id))
     storage.write_meta(job_id, state.to_dict())
 
     # Run the pipeline as a background task on the same event loop.
@@ -178,6 +270,7 @@ async def _kickoff(state: JobState, input_path: Path) -> None:
         await run_pipeline(state, input_path)
     except Exception:
         import logging
+
         logging.getLogger(__name__).exception("pipeline kickoff failed")
 
 
@@ -188,29 +281,12 @@ async def list_jobs(limit: int = 20) -> dict:
     Reads meta.json from each directory under JOB_ARTIFACTS_DIR. Good enough
     for a single-machine demo; we're not pretending this scales.
     """
-    limit = max(1, min(200, int(limit)))
-    jobs: list[dict] = []
-    d = settings.job_artifacts_dir
-    if d.exists():
-        dirs = sorted(d.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)
-        for job_dir in dirs:
-            if not job_dir.is_dir():
-                continue
-            meta = storage.read_meta(job_dir.name)
-            if not meta:
-                continue
-            jobs.append({
-                "job_id": job_dir.name,
-                "status": meta.get("status"),
-                "current_stage": meta.get("current_stage"),
-                "created_at": meta.get("created_at"),
-                "completed_at": meta.get("completed_at"),
-                "input_filename": meta.get("input_filename"),
-                "target_language": meta.get("target_language"),
-                "lipsync_backend": meta.get("lipsync_backend"),
-            })
-            if len(jobs) >= limit:
-                break
+    limit = max(1, min(200, limit))
+    jobs = state_store.list_jobs(principal.get(), limit)
+    queued = sorted((j for j in jobs if j["status"] == "queued"), key=lambda j: j["created_at"])
+    positions = {j["job_id"]: i + 1 for i, j in enumerate(queued)}
+    for job in jobs:
+        job["queue_position"] = positions.get(job["job_id"])
     return {"jobs": jobs}
 
 
@@ -233,10 +309,8 @@ async def get_job_status(job_id: str) -> dict:
 async def cancel(job_id: str) -> dict:
     """Request cancellation of an in-flight pipeline.
 
-    Frees the MAX_CONCURRENT_JOBS semaphore slot immediately so queued
-    jobs can proceed. The underlying lipsync service continues chewing
-    on whatever HTTP request was already in-flight (we can't interrupt
-    blocking I/O from asyncio) but its result is discarded.
+    Queued work cancels immediately. Running work enters cancelling and
+    retains its resource lease until the current blocking inference exits.
 
     Returns 404 if the job_id is unknown or the job was never running
     in this process. 409 if the job is already in a terminal state.
@@ -254,7 +328,7 @@ async def cancel(job_id: str) -> dict:
         # probably completed/failed before cancel reached us, or was
         # reconstructed from disk for an old job_id.
         raise HTTPException(404, "job is not currently running")
-    return {"job_id": job_id, "status": "cancelled"}
+    return {"job_id": job_id, "status": reason}
 
 
 @router.get("/{job_id}/artifacts")
@@ -267,11 +341,13 @@ async def list_artifacts(job_id: str) -> dict:
     for p in sorted(d.iterdir()):
         if not p.is_file():
             continue
-        artifacts.append({
-            "name": p.name,
-            "size_bytes": p.stat().st_size,
-            "url": f"/jobs/{job_id}/artifacts/{p.name}",
-        })
+        artifacts.append(
+            {
+                "name": p.name,
+                "size_bytes": p.stat().st_size,
+                "url": f"/jobs/{job_id}/artifacts/{p.name}",
+            }
+        )
     return {"job_id": job_id, "artifacts": artifacts}
 
 

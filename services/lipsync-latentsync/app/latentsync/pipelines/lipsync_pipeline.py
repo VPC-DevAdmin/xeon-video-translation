@@ -6,6 +6,8 @@ import os
 import shutil
 from typing import Callable, List, Optional, Union
 import subprocess
+import queue
+import threading
 
 import numpy as np
 import torch
@@ -31,7 +33,7 @@ from einops import rearrange
 import cv2
 
 from ..models.unet import UNet3DConditionModel
-from ..utils.util import read_video, read_audio, write_video, check_ffmpeg_installed
+from ..utils.util import read_video, read_audio, write_video, write_video_with_audio, check_ffmpeg_installed
 from ..utils.image_processor import ImageProcessor, load_fixed_mask
 from ..whisper.audio2feature import Audio2Feature
 import tqdm
@@ -659,7 +661,7 @@ class LipsyncPipeline(DiffusionPipeline):
             height = int(y2 - y1)
             width = int(x2 - x1)
             face = torchvision.transforms.functional.resize(
-                face, size=(height, width), interpolation=transforms.InterpolationMode.BICUBIC, antialias=True
+                face.to(self._execution_device), size=(height, width), interpolation=transforms.InterpolationMode.BICUBIC, antialias=True
             )
             out_frame = self.image_processor.restorer.restore_img(video_frames[index], face, affine_matrices[index])
             out_frames.append(out_frame)
@@ -738,7 +740,13 @@ class LipsyncPipeline(DiffusionPipeline):
         # `device` (self._execution_device) is already defined on the
         # line above. Use it so CPU execution paths don't crash in
         # ImageProcessor's internal .to("cuda") calls.
-        self.image_processor = ImageProcessor(height, device=str(device), mask_image=mask_image)
+        # GPU patch: reuse the ImageProcessor across requests. Its
+        # FaceDetector builds two onnxruntime CUDA sessions, which took
+        # ~43 s on the XE7740 and ran on every call.
+        ip_key = (int(height), str(device), str(mask_image_path))
+        if getattr(self, "_image_processor_key", None) != ip_key:
+            self.image_processor = ImageProcessor(height, device=str(device), mask_image=mask_image)
+            self._image_processor_key = ip_key
         self.set_progress_bar_config(desc=f"Sample frames: {num_frames}")
 
         # 1. Default height and width to unet
@@ -799,7 +807,7 @@ class LipsyncPipeline(DiffusionPipeline):
             try:
                 print(f"Loading denoise checkpoint: {denoise_checkpoint_path}")
                 cache = torch.load(
-                    denoise_checkpoint_path, weights_only=False, map_location=device,
+                    denoise_checkpoint_path, weights_only=False, map_location="cpu",
                 )
                 synced_video_frames_tensor = cache["synced_video_frames"]
                 video_frames = cache["video_frames"]
@@ -857,106 +865,216 @@ class LipsyncPipeline(DiffusionPipeline):
                 )
 
             num_inferences = math.ceil(len(whisper_chunks) / num_frames)
-            for i in tqdm.tqdm(range(num_inferences), desc="Doing inference..."):
-                if self.unet.add_audio_layer:
-                    audio_embeds = torch.stack(whisper_chunks[i * num_frames : (i + 1) * num_frames])
-                    audio_embeds = audio_embeds.to(device, dtype=weight_dtype)
-                    if do_classifier_free_guidance:
-                        null_audio_embeds = torch.zeros_like(audio_embeds)
-                        audio_embeds = torch.cat([null_audio_embeds, audio_embeds])
-                else:
-                    audio_embeds = None
-                inference_faces = faces[i * num_frames : (i + 1) * num_frames]
-                latents = all_latents[:, :, i * num_frames : (i + 1) * num_frames]
-                ref_pixel_values, masked_pixel_values, masks = self.image_processor.prepare_masks_and_masked_images(
-                    inference_faces, affine_transform=False
-                )
 
-                if bypass_unet:
-                    # Short-circuit: use the reference face crop as the
-                    # "generated" output. Skips denoise+VAE entirely. The
-                    # shape of ref_pixel_values matches what decode_latents
-                    # would return (both are in pixel space after VAE-round-trip
-                    # normalization), so the downstream paste + restore
-                    # pipeline treats it identically.
-                    decoded_latents = ref_pixel_values.to(dtype=weight_dtype)
-                    decoded_latents = self.paste_surrounding_pixels_back(
-                        decoded_latents, ref_pixel_values, 1 - masks, device, weight_dtype
-                    )
-                    synced_video_frames.append(decoded_latents)
-                    # Emit the same progress signal we would have from the
-                    # denoise loop so the backend's progress bar still moves.
-                    _total = num_inferences
-                    _emit_progress("denoise", 0.25 + 0.65 * ((i + 1) / _total))
-                    continue
+            # GPU patch — sharded denoise. `unet_replicas` (set by the
+            # driver) holds the UNet on the main device plus one copy per
+            # additional visible GPU. The 16-frame chunks are independent
+            # given the shared noise sample, so:
+            #   A. main thread, main device: conditioning for every chunk
+            #      (VAE encodes of masks / reference), as before;
+            #   B. one thread per replica runs the 20-step UNet loop for
+            #      its round-robin share of chunks and ships the latents
+            #      back to the main device;
+            #   C. main thread decodes + pastes in chunk order.
+            # With one replica this is the original sequential loop, just
+            # split into the same three phases. The scheduler is stateless
+            # per step, `torch.no_grad()` is thread-local so each worker
+            # enters it itself, and DeepCache (which patches `self.unet`
+            # with per-call cache state) is disabled by the driver when
+            # more than one replica is in play.
+            replicas = list(getattr(self, "unet_replicas", None) or [self.unet])
+            replica_devices = [next(u.parameters()).device for u in replicas]
+            # Process-per-GPU pool (latentsync_driver/shard_workers.py) takes
+            # precedence over in-process thread replicas when the driver
+            # attached one. Each worker owns a UNet + VAE and returns decoded
+            # pixels; this process only conditions and pastes.
+            pool = getattr(self, "denoise_pool", None)
+            use_pool = pool is not None and not bypass_unet
+            if use_pool:
+                print(f"Denoise sharded across {pool.size} worker processes on cuda:{pool.devices}")
+                pool.begin_job(num_inference_steps, guidance_scale, do_classifier_free_guidance, eta)
+            elif len(replicas) > 1:
+                print(f"Denoise sharded across {len(replicas)} UNet replicas on {replica_devices}")
 
-                # 7. Prepare mask latent variables
-                mask_latents, masked_image_latents = self.prepare_mask_latents(
-                    masks,
-                    masked_pixel_values,
-                    height,
-                    width,
-                    weight_dtype,
-                    device,
-                    generator,
-                    do_classifier_free_guidance,
-                )
+            # --- Workers (one per replica) start first and consume chunks
+            # as Phase A produces them, so conditioning, denoising and the
+            # decode below overlap instead of running back to back.
+            todo_count = [0]
+            denoised: dict = {}
+            denoise_lock = threading.Lock()
+            done_count = [0]
+            ready: dict = {}  # chunk index -> threading.Event
+            work_queues = [queue.Queue() for _ in replicas]
+            failures: list = []
+            stopping = threading.Event()
 
-                # 8. Prepare image latents
-                ref_latents = self.prepare_image_latents(
-                    ref_pixel_values,
-                    device,
-                    weight_dtype,
-                    generator,
-                    do_classifier_free_guidance,
-                )
+            vae_replicas = list(getattr(self, "vae_replicas", None) or [])
 
-                # 9. Denoising loop
-                num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
-                with self.progress_bar(total=num_inference_steps) as progress_bar:
-                    for j, t in enumerate(timesteps):
-                        # expand the latents if we are doing classifier free guidance
-                        unet_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
-
+            def _denoise_chunk(unet, dev, k, cond):
+                latents, mask_latents, masked_image_latents, ref_latents, audio_embeds, _, _ = cond
+                mv = lambda x: None if x is None else x.to(dev)
+                lat, ml, mil, rl, ae = mv(latents), mv(mask_latents), mv(masked_image_latents), mv(ref_latents), mv(audio_embeds)
+                with torch.no_grad():
+                    for t in timesteps:
+                        unet_input = torch.cat([lat] * 2) if do_classifier_free_guidance else lat
                         unet_input = self.scheduler.scale_model_input(unet_input, t)
-
-                        # concat latents, mask, masked_image_latents in the channel dimension
-                        unet_input = torch.cat([unet_input, mask_latents, masked_image_latents, ref_latents], dim=1)
-
-                        # predict the noise residual
-                        noise_pred = self.unet(unet_input, t, encoder_hidden_states=audio_embeds).sample
-
-                        # perform guidance
+                        unet_input = torch.cat([unet_input, ml, mil, rl], dim=1)
+                        noise_pred = unet(unet_input, t.to(dev), encoder_hidden_states=ae).sample
                         if do_classifier_free_guidance:
                             noise_pred_uncond, noise_pred_audio = noise_pred.chunk(2)
                             noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_audio - noise_pred_uncond)
+                        lat = self.scheduler.step(noise_pred, t, lat, **extra_step_kwargs).prev_sample
+                    if k < len(vae_replicas) and vae_replicas[k] is not None:
+                        # Decode here, on this device, so the main GPU is
+                        # not left doing all 78 decodes after the workers
+                        # finish. Returns pixels; Phase C only pastes.
+                        vae = vae_replicas[k]
+                        z = lat / vae.config.scaling_factor + vae.config.shift_factor
+                        z = rearrange(z, "b c f h w -> (b f) c h w")
+                        return ("pixels", vae.decode(z).sample.to(device))
+                return ("latents", lat.to(device))
 
-                        # compute the previous noisy sample x_t -> x_t-1
-                        latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs).prev_sample
+            def _worker(k: int):
+                unet, dev = replicas[k], replica_devices[k]
+                q = work_queues[k]
+                while True:
+                    item = q.get()
+                    if item is None:
+                        return
+                    i, cond = item
+                    if stopping.is_set():
+                        ready[i].set()
+                        continue
+                    try:
+                        out = _denoise_chunk(unet, dev, k, cond)
+                    except Exception as e:  # surface on the main thread
+                        with denoise_lock:
+                            failures.append((i, e))
+                        ready[i].set()
+                        continue
+                    with denoise_lock:
+                        denoised[i] = out
+                        done_count[0] += 1
+                        _emit_progress("denoise", 0.35 + 0.50 * (done_count[0] / max(1, todo_count[0] or num_inferences)))
+                    ready[i].set()
 
-                        # call the callback, if provided
-                        if j == len(timesteps) - 1 or ((j + 1) > num_warmup_steps and (j + 1) % self.scheduler.order == 0):
-                            progress_bar.update()
-                            if callback is not None and j % callback_steps == 0:
-                                callback(j, t, latents)
+            threads = []
+            if not use_pool:
+                threads = [threading.Thread(target=_worker, args=(k,), daemon=True) for k in range(len(replicas))]
+                for th in threads:
+                    th.start()
 
-                        # Real-progress emit (every step). Progress within
-                        # the denoise budget (0.25 -> 0.90) linearly tracks
-                        # total-steps-done / total-steps. "Total" here =
-                        # num_inferences * num_inference_steps.
-                        _total_steps = num_inferences * num_inference_steps
-                        _done_steps = i * num_inference_steps + (j + 1)
-                        _emit_progress(
-                            "denoise",
-                            0.25 + 0.65 * (_done_steps / _total_steps),
+            def collect_chunk(index):
+                _, _, _, _, _, ref_pixels, chunk_masks = chunk_cond[index]
+                if use_pool:
+                    decoded = pool.result(index).to(device, dtype=weight_dtype)
+                    done_count[0] += 1
+                else:
+                    ready[index].wait()
+                    if failures:
+                        raise failures[0][1]
+                    kind, payload = denoised.pop(index)
+                    decoded = payload if kind == "pixels" else self.decode_latents(payload)
+                decoded = self.paste_surrounding_pixels_back(
+                    decoded, ref_pixels, 1 - chunk_masks, device, weight_dtype)
+                synced_video_frames.append(decoded.cpu())
+                chunk_cond[index] = None
+                _emit_progress("denoise", 0.35 + 0.50 * done_count[0] / num_inferences)
+
+            try:
+                collected = 0
+                # --- Phase A: conditioning per chunk (main device) -------------
+                chunk_cond: list = []
+                decoded_by_chunk: dict = {}
+                next_worker = 0
+                for i in tqdm.tqdm(range(num_inferences), desc="Preparing chunks..."):
+                    if self.unet.add_audio_layer:
+                        audio_embeds = torch.stack(whisper_chunks[i * num_frames : (i + 1) * num_frames])
+                        audio_embeds = audio_embeds.to(device, dtype=weight_dtype)
+                        if do_classifier_free_guidance:
+                            null_audio_embeds = torch.zeros_like(audio_embeds)
+                            audio_embeds = torch.cat([null_audio_embeds, audio_embeds])
+                    else:
+                        audio_embeds = None
+                    inference_faces = faces[i * num_frames : (i + 1) * num_frames]
+                    latents = all_latents[:, :, i * num_frames : (i + 1) * num_frames]
+                    ref_pixel_values, masked_pixel_values, masks = self.image_processor.prepare_masks_and_masked_images(
+                        inference_faces, affine_transform=False
+                    )
+
+                    if bypass_unet:
+                        # Short-circuit: use the reference face crop as the
+                        # "generated" output. Skips denoise+VAE entirely.
+                        decoded_latents = ref_pixel_values.to(dtype=weight_dtype)
+                        decoded_latents = self.paste_surrounding_pixels_back(
+                            decoded_latents, ref_pixel_values, 1 - masks, device, weight_dtype
                         )
+                        decoded_by_chunk[i] = decoded_latents.cpu()
+                        chunk_cond.append(None)
+                        continue
 
-                # Recover the pixel values
-                decoded_latents = self.decode_latents(latents)
-                decoded_latents = self.paste_surrounding_pixels_back(
-                    decoded_latents, ref_pixel_values, 1 - masks, device, weight_dtype
-                )
-                synced_video_frames.append(decoded_latents)
+                    # 7. Prepare mask latent variables
+                    mask_latents, masked_image_latents = self.prepare_mask_latents(
+                        masks,
+                        masked_pixel_values,
+                        height,
+                        width,
+                        weight_dtype,
+                        device,
+                        generator,
+                        do_classifier_free_guidance,
+                    )
+                    # 8. Prepare image latents
+                    ref_latents = self.prepare_image_latents(
+                        ref_pixel_values,
+                        device,
+                        weight_dtype,
+                        generator,
+                        do_classifier_free_guidance,
+                    )
+                    cond = (latents, mask_latents, masked_image_latents, ref_latents,
+                            audio_embeds, ref_pixel_values, masks)
+                    chunk_cond.append(cond)
+                    todo_count[0] += 1
+                    if use_pool:
+                        pool.submit(i, tuple(
+                            None if x is None else x.detach().to("cpu")
+                            for x in (latents, mask_latents, masked_image_latents, ref_latents, audio_embeds)
+                        ))
+                    else:
+                        ready[i] = threading.Event()
+                        work_queues[next_worker].put((i, cond))
+                        next_worker = (next_worker + 1) % len(replicas)
+                    # Bound conditioning and completed tensors in both worker modes.
+                    if i - collected + 1 >= max(1, pool.size if use_pool else len(replicas)):
+                        collect_chunk(collected)
+                        collected += 1
+                    _emit_progress("denoise", 0.25 + 0.10 * ((i + 1) / num_inferences))
+
+                if not use_pool:
+                    for q in work_queues:
+                        q.put(None)
+
+                # --- Phase C: decode + paste, in order, as results land --------
+                for i in tqdm.tqdm(range(collected, num_inferences), desc="Decoding chunks..."):
+                    if chunk_cond[i] is None:
+                        synced_video_frames.append(decoded_by_chunk[i])
+                        continue
+                    collect_chunk(i)
+
+                for th in threads:
+                    th.join()
+                for dev in replica_devices[1:]:
+                    torch.cuda.synchronize(dev)
+
+            finally:
+                # A failed request must not leave threads touching the scheduler
+                # or models after the service releases its inference lock.
+                stopping.set()
+                for q in work_queues:
+                    q.put(None)
+                for th in threads:
+                    th.join()
 
             # Consolidate all chunk outputs into one tensor, then save for
             # resume. Cache write is best-effort: if disk is full or the
@@ -1074,10 +1192,11 @@ class LipsyncPipeline(DiffusionPipeline):
         os.makedirs(temp_dir, exist_ok=True)
 
         _emit_progress("mux", 0.98)
-        write_video(os.path.join(temp_dir, "video.mp4"), synced_video_frames, fps=video_fps)
-
+        # GPU patch: one encode+mux pass (NVENC when available) instead of
+        # imageio libx264 crf 13 followed by a second libx264 crf 18 pass.
         sf.write(os.path.join(temp_dir, "audio.wav"), audio_samples, audio_sample_rate)
-
-        command = f"ffmpeg -y -loglevel error -nostdin -i {os.path.join(temp_dir, 'video.mp4')} -i {os.path.join(temp_dir, 'audio.wav')} -c:v libx264 -crf 18 -c:a aac -q:v 0 -q:a 0 {video_out_path}"
-        subprocess.run(command, shell=True)
+        write_video_with_audio(
+            video_out_path, synced_video_frames, fps=video_fps,
+            audio_wav_path=os.path.join(temp_dir, "audio.wav"),
+        )
         _emit_progress("done", 1.0)

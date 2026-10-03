@@ -1,16 +1,19 @@
 # Lip sync on a Xeon CPU — what to expect
 
-This repository ships with a **pluggable** lipsync stage. Four backends are
-defined; only `none` and `wav2lip` are wired up in this build. MuseTalk and
-LatentSync are intentionally stubbed — the UI dropdown exposes them so the
-shape is there, but they raise a clear error if you pick them.
+This repository ships with a **pluggable** lipsync stage. All four backends
+are implemented. `wav2lip` runs in-process; `musetalk` and `latentsync` are
+microservices under `services/` with their own dependency sets. (Earlier
+sections of this doc were written while the latter two were stubs; the
+measured numbers below supersede any "projected" figures further down.)
 
-| Backend     | Status   | Wall-clock for a 3 s clip | Quality   | License of weights |
-| ----------- | -------- | ------------------------- | --------- | ------------------ |
-| `none`      | shipping | <1 s                      | dub-over  | n/a                |
-| `wav2lip`   | shipping | ~30–60 s                  | mediocre  | CC-BY-NC 4.0       |
-| `musetalk`  | stubbed  | projected 6–18 min        | good      | MIT (code)         |
-| `latentsync`| stubbed  | projected 30–60+ min      | best      | Apache 2.0         |
+| Backend     | Status   | Measured CPU wall-clock           | Quality   | License of weights |
+| ----------- | -------- | --------------------------------- | --------- | ------------------ |
+| `none`      | shipping | <1 s                              | dub-over  | n/a                |
+| `wav2lip`   | shipping | ~30–60 s per 3 s clip             | mediocre  | CC-BY-NC 4.0       |
+| `musetalk`  | shipping | ~200 s per source second (Q3)     | good, soft mouth (256 px VAE) | MIT (code) |
+| `latentsync`| shipping | ~90 min per source second (512, fp32) | best, residual jitter | Apache 2.0 |
+
+For GPU numbers and the path forward see [gpu/README.md](gpu/README.md).
 
 "Shipping" in this context means "implemented and callable". Quality is
 honestly assessed — all three real lipsync backends produce visible artifacts

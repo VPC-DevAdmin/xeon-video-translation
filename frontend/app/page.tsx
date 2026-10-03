@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Uploader } from "./components/Uploader";
 import { LanguagePicker } from "./components/LanguagePicker";
-import { LipsyncPicker } from "./components/LipsyncPicker";
+
 import { PipelineView } from "./components/PipelineView";
 import { ResultPlayer } from "./components/ResultPlayer";
 import {
@@ -11,13 +11,13 @@ import {
   getJob,
   openJobEventStream,
   type JobRecord,
-  type LipsyncBackend,
+
 } from "./lib/api";
 
 export default function HomePage() {
   const [file, setFile] = useState<File | null>(null);
   const [target, setTarget] = useState("es");
-  const [lipsync, setLipsync] = useState<LipsyncBackend>("none");
+  const [mode, setMode] = useState<"fast" | "quality" | "dub">("quality");
   const [job, setJob] = useState<JobRecord | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -35,7 +35,7 @@ export default function HomePage() {
     setError(null);
     setJob(null);
     try {
-      const created = await createJob(file, target, { lipsync_backend: lipsync });
+      const created = await createJob(file, target, { mode });
       // Hydrate initial JobRecord, then subscribe to events.
       const initial = await getJob(created.job_id);
       setJob(initial);
@@ -57,6 +57,7 @@ export default function HomePage() {
           return;
         }
         if (
+          eventName === "snapshot" ||
           eventName === "stage_completed" ||
           eventName === "stage_started" ||
           eventName === "stage_skipped" ||
@@ -79,22 +80,29 @@ export default function HomePage() {
     }
   }
 
-  const canSubmit = !!file && !submitting && job?.status !== "running";
+  const canSubmit = !!file && !submitting && !["queued", "running", "cancelling"].includes(job?.status ?? "");
 
   return (
     <main className="max-w-5xl mx-auto px-6 py-10">
       <header className="mb-8">
         <h1 className="text-3xl font-semibold text-ink-200">polyglot-demo</h1>
         <p className="text-ink-400 mt-1">
-          Open-source video translation · CPU-only build · M1 + M2
+          GPU video translation and live voice avatars
         </p>
+        <nav className="flex gap-4 mt-4 text-accent"><a href="/studio">Jobs and editor</a><a href="/live">Translate from webcam</a><a href="/avatar">Live voice avatar</a></nav>
       </header>
 
       <section className="grid md:grid-cols-[1fr_280px] gap-6 items-start mb-6">
         <Uploader file={file} onFile={setFile} />
         <div className="flex flex-col gap-4">
           <LanguagePicker value={target} onChange={setTarget} />
-          <LipsyncPicker value={lipsync} onChange={setLipsync} />
+          <label className="text-sm">Translation mode
+            <select value={mode} onChange={e => setMode(e.target.value as typeof mode)} className="block w-full mt-1 bg-ink-800 border border-ink-600 rounded p-2">
+              <option value="fast">Fast · MuseTalk</option>
+              <option value="quality">Quality · LatentSync</option>
+              <option value="dub">Fastest · translated audio only</option>
+            </select>
+          </label>
           <button
             onClick={onTranslate}
             disabled={!canSubmit}

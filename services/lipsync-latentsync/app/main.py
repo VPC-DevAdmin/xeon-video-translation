@@ -29,6 +29,7 @@ from __future__ import annotations
 import importlib
 import logging
 import os
+import threading
 from pathlib import Path
 from typing import Literal
 
@@ -45,6 +46,7 @@ VERSION = "0.3.0"
 # Flipped True in PR-LS-1c. /lipsync now dispatches to the real
 # LatentSync pipeline under app/latentsync_driver/inference.py.
 INFERENCE_IMPLEMENTED = True
+_INFERENCE_LOCK = threading.RLock()
 # Phase string surfaced in /health so operators can tell at a glance
 # which staged PR built the image they're poking at.
 PHASE = "PR-LS-1c (inference live)"
@@ -158,19 +160,23 @@ _REQUIRED_MODULES = (
     "scenedetect",
     "kornia",
     "face_alignment",
-    # Performance stack (PR-LS-1c perf follow-up). IPEX is the big win
-    # on Xeon; DeepCache is a smaller stacking speedup. Both are
-    # treated as required for a healthy /ready now that they're part
-    # of the default inference path. If either import fails, that's
-    # a Dockerfile regression worth surfacing loudly.
-    "intel_extension_for_pytorch",
-    "DeepCache",
 )
+
+# CPU-only accelerators. On CUDA the UNet runs fp16 on the native kernels,
+# sharded across GPUs; IPEX and DeepCache are not installed in the GPU
+# image and must not make /ready report "degraded" there.
+_CPU_ONLY_MODULES = ("intel_extension_for_pytorch", "DeepCache")
+
+
+def _required_modules() -> tuple[str, ...]:
+    if os.environ.get("DEVICE", "cpu").lower().startswith("cuda"):
+        return _REQUIRED_MODULES
+    return _REQUIRED_MODULES + _CPU_ONLY_MODULES
 
 
 def _dep_status() -> dict[str, dict]:
     status: dict[str, dict] = {}
-    for name in _REQUIRED_MODULES:
+    for name in _required_modules():
         try:
             mod = importlib.import_module(name)
         except Exception as e:
@@ -251,7 +257,13 @@ def health() -> dict:
         # Performance knobs surfaced for debugging: operators can curl
         # /health to confirm the container is running the configuration
         # they intended without having to docker exec and grep env.
-        "ipex_dtype": os.environ.get("LATENTSYNC_IPEX_DTYPE", "bf16"),
+        "device": os.environ.get("DEVICE", "cpu"),
+        "dtype": os.environ.get("LATENTSYNC_DTYPE")
+        or os.environ.get("LATENTSYNC_IPEX_DTYPE", "fp16 on cuda / fp32 on cpu"),
+        "shard_mode": os.environ.get("LATENTSYNC_SHARD_MODE", "process"),
+        "video_encoder": os.environ.get("LATENTSYNC_VIDEO_ENCODER", "h264_nvenc on cuda / libx264 on cpu"),
+        # CPU-only accelerators; reported so a CPU operator can confirm them.
+        "ipex_dtype": os.environ.get("LATENTSYNC_IPEX_DTYPE", "fp32"),
         "deepcache_enabled": os.environ.get("LATENTSYNC_ENABLE_DEEPCACHE", "1"),
         "ld_preload": os.environ.get("LD_PRELOAD", ""),
     }
@@ -298,6 +310,11 @@ def weights() -> dict:
 
 @app.post("/lipsync", response_model=LipsyncResponse)
 def lipsync(req: LipsyncRequest) -> LipsyncResponse:
+    with _INFERENCE_LOCK:
+        return _lipsync_locked(req)
+
+
+def _lipsync_locked(req: LipsyncRequest) -> LipsyncResponse:
     """Run LatentSync inference end-to-end.
 
     Error translation mirrors lipsync-musetalk's conventions so the
@@ -311,6 +328,11 @@ def lipsync(req: LipsyncRequest) -> LipsyncResponse:
     """
     import time
 
+    root = Path(os.environ.get("JOB_ARTIFACTS_DIR", "/jobs")).resolve()
+    for value in (req.video_path, req.audio_path, req.output_path):
+        candidate = Path(value).resolve()
+        if not candidate.is_relative_to(root) or candidate == root:
+            raise HTTPException(400, "media paths must be inside JOB_ARTIFACTS_DIR")
     video = Path(req.video_path)
     audio = Path(req.audio_path)
 
@@ -389,3 +411,10 @@ def lipsync(req: LipsyncRequest) -> LipsyncResponse:
             f"dry_run={result.dry_run}"
         ),
     )
+
+
+@app.on_event("shutdown")
+def stop_workers():
+    from .latentsync_driver.inference import shutdown_workers
+    with _INFERENCE_LOCK:
+        shutdown_workers()

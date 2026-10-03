@@ -12,9 +12,18 @@ class FaceDetector:
         # Upstream assumed CUDA end-to-end; on our host neither is true.
         is_cuda = str(device).startswith("cuda")
         providers = ["CUDAExecutionProvider"] if is_cuda else ["CPUExecutionProvider"]
+        # Upstream used a relative "checkpoints/auxiliary", which inside the
+        # container is ephemeral: every recreated container re-downloaded
+        # the 280 MB buffalo_l pack. Root it in the shared models volume
+        # (same location the MuseTalk service uses) unless overridden.
+        import os
+        root = os.environ.get(
+            "INSIGHTFACE_ROOT",
+            os.path.join(os.environ.get("MODEL_CACHE_DIR", "/models"), "insightface"),
+        )
         self.app = FaceAnalysis(
             allowed_modules=["detection", "landmark_2d_106"],
-            root="checkpoints/auxiliary",
+            root=root,
             providers=providers,
         )
         ctx_id = cuda_to_int(device) if is_cuda else -1

@@ -15,6 +15,7 @@ from __future__ import annotations
 import importlib
 import logging
 import os
+import threading
 from pathlib import Path
 from typing import Literal
 
@@ -26,6 +27,7 @@ log = logging.getLogger(__name__)
 
 VERSION = "0.7.0"
 INFERENCE_IMPLEMENTED = True
+_INFERENCE_LOCK = threading.RLock()
 
 MODEL_CACHE_DIR = Path(os.environ.get("MODEL_CACHE_DIR", "/models"))
 WEIGHTS_ROOT = MODEL_CACHE_DIR / "musetalk"
@@ -105,15 +107,21 @@ _REQUIRED_MODULES = (
     "insightface",
     "onnxruntime",
     "huggingface_hub",
-    # IPEX is nice-to-have: if it's missing, inference just runs vanilla
-    # PyTorch. `/ready` still treats an import failure as non-fatal.
-    "intel_extension_for_pytorch",
 )
+
+# CPU-only accelerator; not installed in the GPU image.
+_CPU_ONLY_MODULES = ("intel_extension_for_pytorch",)
+
+
+def _required_modules() -> tuple[str, ...]:
+    if os.environ.get("DEVICE", "cpu").lower().startswith("cuda"):
+        return _REQUIRED_MODULES
+    return _REQUIRED_MODULES + _CPU_ONLY_MODULES
 
 
 def _dep_status() -> dict[str, dict]:
     status: dict[str, dict] = {}
-    for name in _REQUIRED_MODULES:
+    for name in _required_modules():
         try:
             mod = importlib.import_module(name)
         except Exception as e:
@@ -179,6 +187,10 @@ def health() -> dict:
         "version": VERSION,
         "inference_implemented": INFERENCE_IMPLEMENTED,
         "weights_ready": all_weights_present,
+        "device": os.environ.get("DEVICE", "cpu"),
+        "dtype": os.environ.get("MUSETALK_DTYPE") or os.environ.get("MUSETALK_IPEX_DTYPE", "fp32"),
+        "video_encoder": os.environ.get("MUSETALK_VIDEO_ENCODER", "h264_nvenc on cuda / libx264 on cpu"),
+        # CPU-only accelerator; reported so a CPU operator can confirm it.
         "ipex_dtype": os.environ.get("MUSETALK_IPEX_DTYPE", "fp32"),
         "ld_preload": os.environ.get("LD_PRELOAD", ""),
         "blend_mode": os.environ.get("MUSETALK_BLEND_MODE", "jaw"),
@@ -186,7 +198,7 @@ def health() -> dict:
         "face_restore": os.environ.get("MUSETALK_FACE_RESTORE", "codeformer"),
         "face_restore_fidelity": os.environ.get("MUSETALK_FACE_RESTORE_FIDELITY", "0.7"),
         "face_restore_blend": os.environ.get("MUSETALK_FACE_RESTORE_BLEND", "0.6"),
-        "milestone": "MuseTalk + SCRFD + IPEX + CodeFormer face restore",
+        "milestone": "MuseTalk + SCRFD (CUDA ORT) + batched VAE + CodeFormer face restore",
     }
 
 
@@ -216,8 +228,18 @@ def weights() -> dict:
 
 @app.post("/lipsync", response_model=LipsyncResponse)
 def lipsync(req: LipsyncRequest) -> LipsyncResponse:
+    with _INFERENCE_LOCK:
+        return _lipsync_locked(req)
+
+
+def _lipsync_locked(req: LipsyncRequest) -> LipsyncResponse:
     import time
 
+    root = Path(os.environ.get("JOB_ARTIFACTS_DIR", "/jobs")).resolve()
+    for value in (req.video_path, req.audio_path, req.output_path):
+        candidate = Path(value).resolve()
+        if not candidate.is_relative_to(root) or candidate == root:
+            raise HTTPException(400, "media paths must be inside JOB_ARTIFACTS_DIR")
     video = Path(req.video_path)
     audio = Path(req.audio_path)
 
@@ -279,3 +301,29 @@ def lipsync(req: LipsyncRequest) -> LipsyncResponse:
         frames_processed=result.frames_processed,
         duration_ms=duration_ms,
     )
+
+
+class AvatarChunk(BaseModel):
+    image_path: str
+    audio_path: str
+    output_path: str
+
+
+@app.post("/avatar/render")
+def avatar_render(req: AvatarChunk):
+    root = (Path(os.environ.get("JOB_ARTIFACTS_DIR", "/jobs")) / "avatars").resolve()
+    paths = [Path(value).resolve() for value in (req.image_path, req.audio_path, req.output_path)]
+    if any(not p.is_relative_to(root) for p in paths):
+        raise HTTPException(400, "avatar paths must be inside /jobs/avatars")
+    from .avatar import render
+    with _INFERENCE_LOCK:
+        try:
+            return render(*paths)
+        except (ValueError, RuntimeError) as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+
+@app.get("/avatar/capabilities")
+def avatar_capabilities():
+    return {"renderer":"musetalk","input":"portrait","fps":25,"max_chunk_seconds":10,
+            "max_image_edge":512,"lip_motion":True,"head_motion":False,"prepared_cache":8}

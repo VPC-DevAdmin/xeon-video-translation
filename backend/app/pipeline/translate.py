@@ -2,9 +2,9 @@
 
 Two backends are wired up:
 
-- `nllb` (default, CPU friendly): facebook/nllb-200-distilled-600M via transformers.
-- `ollama`: hits a local Ollama server. Slow on CPU for an 8B model but wired
-  for parity with the spec.
+- `nllb`: facebook/nllb-200 via transformers (fp16 on CUDA). Self-contained.
+- `llm`: an OpenAI-compatible chat server (vLLM serving Qwen3-30B on the GPU
+  host). Context-aware, glossary-aware and length-aware; the GPU default.
 
 The orchestrator picks based on `settings.translate_backend`.
 """
@@ -12,14 +12,13 @@ The orchestrator picks based on `settings.translate_backend`.
 from __future__ import annotations
 
 import json
-import urllib.error
-import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
 from typing import Any
 
 from ..config import settings
+from .. import llm
 
 
 # BCP-47 -> NLLB FLORES-200 codes. NLLB-200 supports all 200 FLORES
@@ -62,16 +61,35 @@ NLLB_LANG_CODES: dict[str, str] = {
     "as": "asm_Beng",  # Assamese
 }
 
-# Human-readable names for prompt templating (Ollama backend).
+# Human-readable names for prompt templating (LLM backend).
 LANG_NAMES: dict[str, str] = {
-    "en": "English", "es": "Spanish", "fr": "French", "de": "German",
-    "it": "Italian", "pt": "Portuguese", "nl": "Dutch", "ru": "Russian",
-    "ja": "Japanese", "zh": "Mandarin Chinese", "hi": "Hindi", "ar": "Arabic",
-    "ko": "Korean", "tr": "Turkish", "pl": "Polish", "vi": "Vietnamese",
+    "en": "English",
+    "es": "Spanish",
+    "fr": "French",
+    "de": "German",
+    "it": "Italian",
+    "pt": "Portuguese",
+    "nl": "Dutch",
+    "ru": "Russian",
+    "ja": "Japanese",
+    "zh": "Mandarin Chinese",
+    "hi": "Hindi",
+    "ar": "Arabic",
+    "ko": "Korean",
+    "tr": "Turkish",
+    "pl": "Polish",
+    "vi": "Vietnamese",
     # Indic
-    "bn": "Bengali", "ta": "Tamil", "te": "Telugu", "mr": "Marathi",
-    "gu": "Gujarati", "kn": "Kannada", "ml": "Malayalam",
-    "pa": "Punjabi", "or": "Odia", "as": "Assamese",
+    "bn": "Bengali",
+    "ta": "Tamil",
+    "te": "Telugu",
+    "mr": "Marathi",
+    "gu": "Gujarati",
+    "kn": "Kannada",
+    "ml": "Malayalam",
+    "pa": "Punjabi",
+    "or": "Odia",
+    "as": "Assamese",
 }
 
 
@@ -85,6 +103,7 @@ class TranslatedSegment:
     end: float
     source_text: str
     text: str
+    speaker: str | None = None
 
 
 @dataclass
@@ -103,8 +122,11 @@ class TranslationResult:
             "text": self.text,
             "segments": [
                 {
-                    "start": s.start, "end": s.end,
-                    "source_text": s.source_text, "text": s.text,
+                    "start": s.start,
+                    "end": s.end,
+                    "source_text": s.source_text,
+                    "speaker": s.speaker,
+                    "text": s.text,
                 }
                 for s in self.segments
             ],
@@ -129,62 +151,82 @@ def _get_nllb_pipeline():
         from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 
         cache_dir = str(settings.model_cache_dir / "huggingface")
+        import torch
+
+        device = settings.resolved_device
         tokenizer = AutoTokenizer.from_pretrained(settings.nllb_model, cache_dir=cache_dir)
-        model = AutoModelForSeq2SeqLM.from_pretrained(settings.nllb_model, cache_dir=cache_dir)
+        model = AutoModelForSeq2SeqLM.from_pretrained(
+            settings.nllb_model,
+            cache_dir=cache_dir,
+            # fp16 on GPU halves memory and roughly doubles throughput for
+            # NLLB with no measurable quality change; CPU stays fp32.
+            torch_dtype=torch.float16 if device == "cuda" else torch.float32,
+        )
+        model.to(device)
+        model.eval()
         _nllb_pipeline = (tokenizer, model)
         return _nllb_pipeline
 
 
 def _translate_segment_nllb(text: str, src: str, tgt: str) -> str:
+    import torch
+
     tokenizer, model = _get_nllb_pipeline()
-    tokenizer.src_lang = src
-    inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=512)
-    forced_bos = tokenizer.convert_tokens_to_ids(tgt)
-    output_ids = model.generate(
-        **inputs,
-        forced_bos_token_id=forced_bos,
-        max_new_tokens=512,
-        num_beams=4,
-    )
-    return tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0]
+    with _nllb_lock, torch.inference_mode():
+        tokenizer.src_lang = src
+        inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=512)
+        inputs = {k: v.to(model.device) for k, v in inputs.items()}
+        forced_bos = tokenizer.convert_tokens_to_ids(tgt)
+        output_ids = model.generate(
+            **inputs,
+            forced_bos_token_id=forced_bos,
+            max_new_tokens=512,
+            num_beams=4,
+        )
+        return tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0]
 
 
 # --------------------------------------------------------------------------- #
-# Ollama backend
+# LLM backend (OpenAI-compatible chat; vLLM on the GPU host)
 # --------------------------------------------------------------------------- #
 
-_OLLAMA_PROMPT = (
-    "You are a professional translator. Translate the following text from "
-    "{src_name} to {tgt_name}. Preserve the speaker's tone and register. "
-    "Match the approximate length of the original so the translated speech "
-    "fits in roughly the same time. Output only the translation, no commentary.\n\n"
-    "Text: {text}"
+_LLM_SYSTEM = (
+    "You are a professional translator for dubbed video. Translate from "
+    "{src_name} to {tgt_name}. Preserve the speaker's tone, register, names, "
+    "numbers and meaning. Match the approximate length of the original so the "
+    "translated speech fits in roughly the same time. Do not add greetings, "
+    "notes or explanations. Output only the translation."
 )
 
 
-def _translate_segment_ollama(text: str, src: str, tgt: str) -> str:
+def _translate_segment_llm(
+    text: str,
+    src: str,
+    tgt: str,
+    context: str = "",
+    duration: float | None = None,
+    glossary: dict | None = None,
+) -> str:
     src_name = LANG_NAMES.get(src, src)
     tgt_name = LANG_NAMES.get(tgt, tgt)
-    body = json.dumps({
-        "model": settings.ollama_model,
-        "prompt": _OLLAMA_PROMPT.format(src_name=src_name, tgt_name=tgt_name, text=text),
-        "stream": False,
-        "options": {"temperature": 0.3},
-    }).encode("utf-8")
-
-    req = urllib.request.Request(
-        f"{settings.ollama_host.rstrip('/')}/api/generate",
-        data=body,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
+    user = f"Text: {text}"
+    if context:
+        user += f"\nPreceding context (do not translate): {context}"
+    if duration:
+        user += f"\nSpeech time budget: {duration:.1f} seconds."
+    if glossary:
+        user += f"\nRequired terminology: {json.dumps(glossary, ensure_ascii=False)}"
     try:
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            payload = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.URLError as e:
-        raise TranslationError(f"ollama request failed: {e}") from e
-
-    return payload.get("response", "").strip()
+        return llm.chat(
+            [
+                {"role": "system", "content": _LLM_SYSTEM.format(src_name=src_name, tgt_name=tgt_name)},
+                {"role": "user", "content": user},
+            ],
+            temperature=0.2,
+            max_tokens=max(64, min(1024, 4 * len(text))),
+        ).strip().strip('"')
+    except llm.LLMError as e:
+        raise TranslationError(str(e)) from e
 
 
 # --------------------------------------------------------------------------- #
@@ -197,6 +239,8 @@ def translate(
     output_path: Path,
     target_language: str,
     source_language: str | None = None,
+    backend_override: str | None = None,
+    glossary: dict | None = None,
 ) -> TranslationResult:
     """Translate a transcript dict (from Stage 2) to `target_language`.
 
@@ -205,7 +249,7 @@ def translate(
     """
     src = (source_language or transcript.get("language") or "en").lower()
     tgt = target_language.lower()
-    backend = settings.translate_backend
+    backend = backend_override or settings.translate_backend
 
     if backend == "nllb":
         if src not in NLLB_LANG_CODES:
@@ -215,23 +259,39 @@ def translate(
         nllb_src = NLLB_LANG_CODES[src]
         nllb_tgt = NLLB_LANG_CODES[tgt]
         translate_fn = lambda t: _translate_segment_nllb(t, nllb_src, nllb_tgt)  # noqa: E731
-    elif backend == "ollama":
-        translate_fn = lambda t: _translate_segment_ollama(t, src, tgt)  # noqa: E731
+    elif backend == "llm":
+        if not llm.configured():
+            raise TranslationError("translate backend 'llm' selected but LLM_BASE_URL is unset")
+        translate_fn = lambda t: _translate_segment_llm(t, src, tgt)  # noqa: E731
     else:
         raise TranslationError(f"unknown translate backend: {backend!r}")
 
     out_segments: list[TranslatedSegment] = []
-    for seg in transcript.get("segments", []):
+    segments = transcript.get("segments", [])
+    for index, seg in enumerate(segments):
         source_text = seg["text"].strip()
         if not source_text:
             continue
-        translated = translate_fn(source_text).strip()
-        out_segments.append(TranslatedSegment(
-            start=float(seg["start"]),
-            end=float(seg["end"]),
-            source_text=source_text,
-            text=translated,
-        ))
+        if src == tgt:
+            translated = source_text
+        elif backend == "llm":
+            context = " ".join(s["text"] for s in segments[max(0, index - 2) : index])
+            translated = _translate_segment_llm(
+                source_text, src, tgt, context, float(seg["end"]) - float(seg["start"]), glossary
+            ).strip()
+        else:
+            translated = translate_fn(source_text).strip()
+        if not translated:
+            raise TranslationError(f"empty translation at segment {index + 1}")
+        out_segments.append(
+            TranslatedSegment(
+                start=float(seg["start"]),
+                end=float(seg["end"]),
+                source_text=source_text,
+                text=translated,
+                speaker=seg.get("speaker"),
+            )
+        )
 
     full_text = " ".join(s.text for s in out_segments).strip()
     result = TranslationResult(
@@ -243,5 +303,21 @@ def translate(
     )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(result.to_dict(), indent=2, ensure_ascii=False))
+    from .quality import issues
+
+    document = result.to_dict()
+    document["glossary"] = glossary or {}
+    document["review_issues"] = [
+        {"segment": i, "issues": issues(s.source_text, s.text, glossary)}
+        for i, s in enumerate(out_segments)
+        if issues(s.source_text, s.text, glossary)
+    ]
+    output_path.write_text(json.dumps(document, indent=2, ensure_ascii=False))
+    if any(
+        any("required term" in issue for issue in item["issues"])
+        for item in document["review_issues"]
+    ):
+        raise TranslationError(
+            "required terminology missing; edit the saved translation and regenerate"
+        )
     return result

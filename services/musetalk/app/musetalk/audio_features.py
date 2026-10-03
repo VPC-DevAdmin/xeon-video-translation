@@ -53,6 +53,7 @@ class AudioProcessor:
             features.append(feat)
         return features, len(audio)
 
+    @torch.inference_mode()
     def get_whisper_chunk(
         self,
         whisper_input_features: list[torch.Tensor],
@@ -70,7 +71,7 @@ class AudioProcessor:
 
         per_segment = []
         for input_feature in whisper_input_features:
-            input_feature = input_feature.to(device).to(weight_dtype)
+            input_feature = input_feature.to(device=device, dtype=next(whisper.parameters()).dtype)
             hidden = whisper.encoder(input_feature, output_hidden_states=True).hidden_states
             stacked = torch.stack(hidden, dim=2)  # (1, T, L+1, D)
             per_segment.append(stacked)

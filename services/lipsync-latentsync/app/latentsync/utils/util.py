@@ -65,13 +65,26 @@ def read_video(video_path: str, change_fps=True, use_decord=True):
             enc_args = "-c:v libx264 -qp 0 -preset veryslow -pix_fmt yuv420p"
             print("LATENTSYNC_LOSSLESS_READ=1: using -qp 0 for read_video re-encode")
         else:
-            enc_args = "-crf 18"
-        command = (
-            f"ffmpeg -loglevel error -y -nostdin -i {video_path} "
-            f"-r 25 {enc_args} {os.path.join(temp_dir, 'video.mp4')}"
-        )
-        subprocess.run(command, shell=True)
+            enc_args = "-c:v libx264 -crf 18"
         target_video_path = os.path.join(temp_dir, "video.mp4")
+        encoder = os.environ.get("LATENTSYNC_VIDEO_ENCODER", "libx264").lower()
+        if encoder == "h264_nvenc" and os.environ.get("LATENTSYNC_LOSSLESS_READ", "0") != "1":
+            # GPU patch: the 25 fps re-encode of a 1080p minute took ~30 s
+            # of CPU libx264. NVENC at cq 18 is the same quality band.
+            command = (
+                f"ffmpeg -loglevel error -y -nostdin -hwaccel cuda -i {video_path} "
+                f"-r 25 -c:v h264_nvenc -preset p4 -rc vbr -cq 18 -b:v 0 -pix_fmt yuv420p {target_video_path}"
+            )
+            rc = subprocess.run(command, shell=True).returncode
+            if rc != 0 or not os.path.exists(target_video_path):
+                print(f"read_video: h264_nvenc re-encode failed (exit {rc}); falling back to libx264")
+                encoder = "libx264"
+        if encoder != "h264_nvenc" or os.environ.get("LATENTSYNC_LOSSLESS_READ", "0") == "1":
+            command = (
+                f"ffmpeg -loglevel error -y -nostdin -i {video_path} "
+                f"-r 25 {enc_args} {target_video_path}"
+            )
+            subprocess.run(command, shell=True)
     else:
         target_video_path = video_path
 
@@ -141,6 +154,50 @@ def write_video(video_output_path: str, video_frames: np.ndarray, fps: int):
     ) as writer:
         for video_frame in video_frames:
             writer.append_data(video_frame)
+
+
+def write_video_with_audio(
+    video_output_path: str,
+    video_frames: np.ndarray,
+    fps: float,
+    audio_wav_path: str,
+    encoder: str | None = None,
+) -> None:
+    """Encode RGB frames + mux the wav in one ffmpeg pass over a pipe.
+
+    Replaces imageio's libx264 crf 13 intermediate plus a second libx264
+    crf 18 re-encode (two CPU encodes of every frame). NVENC is used when
+    `encoder`/LATENTSYNC_VIDEO_ENCODER says so and falls back to libx264.
+    """
+    encoder = (encoder or os.environ.get("LATENTSYNC_VIDEO_ENCODER", "libx264")).lower()
+    height, width = video_frames[0].shape[:2]
+
+    def _run(enc: str) -> tuple[int, str]:
+        cmd = [
+            "ffmpeg", "-y", "-loglevel", "error", "-nostdin",
+            "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{width}x{height}", "-r", f"{fps:.6f}", "-i", "pipe:0",
+            "-i", audio_wav_path, "-map", "0:v:0", "-map", "1:a:0",
+        ]
+        if enc == "h264_nvenc":
+            cmd += ["-c:v", "h264_nvenc", "-preset", "p4", "-rc", "vbr", "-cq", "18", "-b:v", "0"]
+        else:
+            cmd += ["-c:v", "libx264", "-crf", "18"]
+        cmd += ["-pix_fmt", "yuv420p", "-c:a", "aac", "-q:a", "0", video_output_path]
+        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            for f in video_frames:
+                proc.stdin.write(np.ascontiguousarray(f).tobytes())
+        except BrokenPipeError:
+            pass
+        _, err = proc.communicate(timeout=1800)
+        return proc.returncode, err.decode(errors="replace")[-800:]
+
+    rc, err = _run(encoder)
+    if rc != 0 and encoder != "libx264":
+        print(f"write_video_with_audio: {encoder} failed (exit {rc}): {err.strip()[-200:]}; retrying with libx264")
+        rc, err = _run("libx264")
+    if rc != 0:
+        raise RuntimeError(f"ffmpeg encode/mux failed: {err}")
 
 
 def write_video_cv2(video_output_path: str, video_frames: np.ndarray, fps: int):

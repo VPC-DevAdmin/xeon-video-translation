@@ -24,8 +24,14 @@ from .face_detector import FaceDetector
 
 
 def load_fixed_mask(resolution: int, mask_image_path="latentsync/utils/mask.png") -> torch.Tensor:
-    mask_image = cv2.imread(mask_image_path)
-    mask_image = cv2.cvtColor(mask_image, cv2.COLOR_BGR2RGB)
+    # Decode with Pillow, not cv2.imread: once torch/torchvision/onnxruntime/
+    # decord have loaded their own zlib copies into the server process, the
+    # libpng bundled with the OpenCV wheel fails PNG inflate ("bad parameters
+    # to zlib") and imread returns None. Pillow ships a self-contained codec.
+    from PIL import Image
+
+    with Image.open(mask_image_path) as handle:
+        mask_image = np.asarray(handle.convert("RGB"))
     mask_image = cv2.resize(mask_image, (resolution, resolution), interpolation=cv2.INTER_LANCZOS4) / 255.0
     mask_image = rearrange(torch.from_numpy(mask_image), "h w c -> c h w")
     return mask_image
