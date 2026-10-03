@@ -1366,15 +1366,20 @@ _WHISPER_TRIM_MIN_RATIO_OF_SOURCE = 0.5
 
 
 def _trim_to_speech(audio_path: Path) -> None:
-    """Trim `audio_path` in place to the longest non-silent span.
+    """Trim `audio_path` in place to [first speech span, last speech span].
 
     XTTS tends to emit a short click at the start, a long pause, the actual
     speech, more silence, and a trailing blip. `silenceremove` can't handle
     that shape because the click is above any reasonable threshold.
 
     Instead: find silence boundaries via ffmpeg `silencedetect`, derive the
-    non-silent spans, pick the longest one (the real speech), and copy that
-    range into the original path via `ffmpeg -af atrim=...`.
+    non-silent spans, drop the ones too short to be speech (clicks, blips),
+    and keep everything from the first remaining span to the last.
+
+    This used to keep only the *longest* span. That silently deleted every
+    sentence but one whenever the synthesised text had sentence pauses
+    longer than the silence threshold — F5-TTS produced 4.5 s of audio for
+    nine sentences on the XE7740 before this was caught.
     """
     spans = _non_silent_spans(audio_path)
     speech = [(s, e) for s, e in spans if (e - s) >= _MIN_SPEECH_SECONDS]
@@ -1382,7 +1387,8 @@ def _trim_to_speech(audio_path: Path) -> None:
         log.info("no speech span detected; leaving %s untouched", audio_path.name)
         return
 
-    start, end = max(speech, key=lambda se: se[1] - se[0])
+    start = min(s for s, _ in speech)
+    end = max(e for _, e in speech)
     total = _probe_duration(audio_path)
     start = max(0.0, start - _HEADROOM_SECONDS)
     end = min(total, end + _HEADROOM_SECONDS)
