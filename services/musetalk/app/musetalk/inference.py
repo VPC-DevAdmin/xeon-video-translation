@@ -21,6 +21,7 @@ import json
 import logging
 import os
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
@@ -32,7 +33,7 @@ import torch
 from concurrent.futures import ThreadPoolExecutor
 
 from .audio_features import AudioProcessor
-from .blending import face_large_crop, get_image
+from .blending import composite_np, face_large_crop_rgb
 from .face_parsing import FaceParsing
 from .face_tracking import build_aligner, detect_batch
 from .models.unet import UNet
@@ -705,9 +706,12 @@ def run(
         "Compositing predicted faces back into frames (%d faces, batched BiSeNet, %d threads)",
         len(active_idx), composite_threads,
     )
-    crops = [face_large_crop(frames[i], face_boxes[i]) for i in active_idx]
-    parse_masks = state.face_parsing.parse_batch(crops, mode=effective_blend_mode)
-    mask_for: dict[int, object] = dict(zip(active_idx, parse_masks))
+    t_parse = time.perf_counter()
+    crops = [face_large_crop_rgb(frames[i], face_boxes[i]) for i in active_idx]
+    parse_masks = state.face_parsing.parse_batch_np(crops, mode=effective_blend_mode)
+    mask_for: dict[int, np.ndarray] = dict(zip(active_idx, parse_masks))
+    del crops
+    log.info("BiSeNet batch parse: %d crops in %.1fs", len(active_idx), time.perf_counter() - t_parse)
 
     def _composite(i: int) -> np.ndarray:
         face = predicted_faces[i]
@@ -716,21 +720,18 @@ def run(
             return frames[i]
         x1, y1, x2, y2 = box
         face_resized = cv2.resize(face, (x2 - x1, y2 - y1), interpolation=cv2.INTER_LANCZOS4)
-        return get_image(
-            image=frames[i],
-            face=face_resized,
-            face_box=(x1, y1, x2, y2),
-            fp=state.face_parsing,
-            # Blend mode / feather are env-tunable.
-            #   MUSETALK_BLEND_MODE  = raw | jaw | mouth | neck  (default: jaw)
-            #   MUSETALK_BLEND_FEATHER = kernel ratio           (default: 0.04)
-            mode=effective_blend_mode,
+        # Blend mode / feather are env-tunable.
+        #   MUSETALK_BLEND_MODE  = raw | jaw | mouth | neck  (default: jaw)
+        #   MUSETALK_BLEND_FEATHER = kernel ratio           (default: 0.04)
+        return composite_np(
+            frames[i], face_resized, (x1, y1, x2, y2), mask_for[i],
             feather_ratio=effective_blend_feather,
-            mask_image=mask_for.get(i),
         )
 
+    t_blend = time.perf_counter()
     with ThreadPoolExecutor(max_workers=max(1, composite_threads)) as pool:
         output_frames: list[np.ndarray] = list(pool.map(_composite, range(n)))
+    log.info("Blend: %d frames in %.1fs", n, time.perf_counter() - t_blend)
 
     # --- 6b. Optional face restoration (CodeFormer) -----------------------
     # Applied after the MuseTalk blend so the restored skin detail covers
@@ -812,9 +813,10 @@ def run(
             assert proc.stdin is not None
             for f in output_frames:
                 proc.stdin.write(np.ascontiguousarray(f).tobytes())
-            proc.stdin.close()
         except BrokenPipeError:
-            pass  # encoder died; the stderr below says why
+            pass  # encoder died early; stderr below says why
+        # communicate() closes stdin itself; closing it first made the
+        # flush inside communicate() raise "flush of closed file".
         _, err = proc.communicate(timeout=1800)
         return proc.returncode, err.decode(errors="replace")[-1000:]
 

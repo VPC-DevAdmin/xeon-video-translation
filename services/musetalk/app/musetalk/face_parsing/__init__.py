@@ -108,6 +108,34 @@ class FaceParsing:
                     masks.append(self._postprocess(p, mode))
         return masks
 
+    def parse_batch_np(
+        self,
+        crops_rgb: list[np.ndarray],
+        mode: str = "raw",
+        size: tuple[int, int] = (512, 512),
+        batch_size: int = 32,
+    ) -> list[np.ndarray]:
+        """`parse_batch` for numpy RGB crops, returning uint8 0/255 masks.
+
+        Resizing uses cv2 and normalisation happens on the device after a
+        single uint8 upload per batch, so the host does no per-image float
+        work. This is the path `inference.py` uses.
+        """
+        mean = torch.tensor([0.485, 0.456, 0.406], device=self.device).view(1, 3, 1, 1)
+        std = torch.tensor([0.229, 0.224, 0.225], device=self.device).view(1, 3, 1, 1)
+        masks: list[np.ndarray] = []
+        with torch.no_grad():
+            for start in range(0, len(crops_rgb), batch_size):
+                chunk = [cv2.resize(c, size, interpolation=cv2.INTER_LINEAR) for c in crops_rgb[start:start + batch_size]]
+                x = torch.from_numpy(np.stack(chunk)).to(self.device)  # (B,H,W,3) uint8
+                x = x.permute(0, 3, 1, 2).float().div_(255.0)
+                x = (x - mean) / std
+                out = self.net(x)[0]
+                parsing = out.argmax(1).to(torch.uint8).cpu().numpy()
+                for p in parsing:
+                    masks.append(np.asarray(self._postprocess(p, mode), dtype=np.uint8))
+        return masks
+
     def _postprocess(self, parsing: np.ndarray, mode: str) -> Image.Image:
         """Turn a (H, W) class map into the 0/255 mask for `mode`."""
         parsing = parsing.copy()
