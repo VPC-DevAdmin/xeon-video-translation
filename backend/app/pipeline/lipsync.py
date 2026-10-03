@@ -84,6 +84,16 @@ def realtime_factor(backend: str) -> float:
     a long tail; that's the cue to add LATENTSYNC_IPEX_DTYPE=fp32 and
     let the ticker stay honest.
     """
+    if settings.resolved_device == "cuda":
+        # Measured on the XE7740 (one RTX PRO 6000 per service, 52 s
+        # 1080x1920 clip, 2026-10-03): wav2lip 76 s, musetalk 168 s (fast,
+        # batched VAE), latentsync 422 s (512 px, fp16, 20 steps).
+        return {
+            "none": 0.0,
+            "wav2lip": 1.5,
+            "musetalk": 3.5,
+            "latentsync": 8.5,
+        }.get(backend, 0.0)
     return {
         "none": 0.0,
         "wav2lip": 15.0,

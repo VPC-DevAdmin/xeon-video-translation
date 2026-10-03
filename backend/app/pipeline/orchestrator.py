@@ -320,6 +320,21 @@ def estimate_eta_seconds(state: JobState, stage_name: str) -> float | None:
         return None
     if stage_name == "audio":
         return 1.0
+    if settings.resolved_device == "cuda":
+        # Measured on the XE7740 (RTX PRO 6000, 52 s clip, warm models,
+        # 2026-10-03): transcribe 2.0 s (large-v3 fp16), translate 2.5 s
+        # (NLLB 3.3B fp16, 9 segments), tts 14-21 s (XTTS / F5 / IndicF5),
+        # mux ~4 s (NVENC; decode + drawtext dominate), vidstab 170 s.
+        gpu = {
+            "stabilize": max(3.0, src * 3.5) if src else None,
+            "poststabilize": max(3.0, src * 3.5) if src else None,
+            "transcribe": max(1.0, src / 25.0) if src else None,
+            "translate": max(1.0, src / 20.0) if src else None,
+            "tts": max(3.0, src * 0.35) if src else None,
+            "mux": 4.0,
+        }
+        if stage_name in gpu:
+            return gpu[stage_name]
     if stage_name == "stabilize":
         # vidstab two-pass on CPU: detect + transform at ~1-2× realtime
         # depending on resolution. Cap at 3 so the ETA doesn't feel
