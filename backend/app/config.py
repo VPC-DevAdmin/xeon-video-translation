@@ -125,6 +125,13 @@ class Settings(BaseSettings):
     # enable_video_stabilization; the two can stack or be used alone.
     enable_output_stabilization: bool = False
 
+    # Final-mux video encoder. libx264 is the portable default. h264_nvenc
+    # offloads the watermark/pad re-encode to the GPU's hardware encoder
+    # (the mux took ~10 s of CPU for a 30 s clip on the XE7740); it needs
+    # the container to have the `video` driver capability, which the GPU
+    # compose overlay sets. Falls back to libx264 if ffmpeg rejects it.
+    video_encoder: Literal["libx264", "h264_nvenc"] = "libx264"
+
     # Feature flags
     enable_watermark: bool = True
     enable_c2pa: bool = False
