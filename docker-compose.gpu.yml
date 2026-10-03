@@ -45,12 +45,14 @@ services:
       # Needed on hosts whose egress IP is anonymously rate-limited (429)
       # and for gated repos (IndicF5). Unset => /dev/null => no token.
       HF_TOKEN_PATH: /run/secrets/hf_token
+      OMP_NUM_THREADS: "16"
+      MKL_NUM_THREADS: "16"
     volumes:
       - ${HF_TOKEN_FILE:-/dev/null}:/run/secrets/hf_token:ro
     deploy:
       resources:
         limits:
-          cpus: "16.0"
+          cpus: "32.0"
           memory: 64g
         reservations:
           devices:
@@ -73,13 +75,18 @@ services:
       KMP_AFFINITY: ""
       KMP_BLOCKTIME: ""
       HF_TOKEN_PATH: /run/secrets/hf_token
+      # torch sees all 344 host cores and spawned 172 intra-op threads
+      # inside an 8-CPU cgroup, which made every small CPU-side tensor op
+      # 10-20x slower than it should be. Match the thread pool to the quota.
+      OMP_NUM_THREADS: "16"
+      MKL_NUM_THREADS: "16"
     volumes:
       - ${HF_TOKEN_FILE:-/dev/null}:/run/secrets/hf_token:ro
     deploy:
       resources:
         limits:
-          cpus: "8.0"
-          memory: 32g
+          cpus: "32.0"
+          memory: 64g
         reservations:
           devices:
             - driver: nvidia
@@ -102,13 +109,15 @@ services:
       KMP_AFFINITY: ""
       KMP_BLOCKTIME: ""
       HF_TOKEN_PATH: /run/secrets/hf_token
+      OMP_NUM_THREADS: "16"
+      MKL_NUM_THREADS: "16"
     volumes:
       - ${HF_TOKEN_FILE:-/dev/null}:/run/secrets/hf_token:ro
     deploy:
       resources:
         limits:
-          cpus: "8.0"
-          memory: 64g
+          cpus: "32.0"
+          memory: 96g
         reservations:
           devices:
             - driver: nvidia

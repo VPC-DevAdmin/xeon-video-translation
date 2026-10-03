@@ -78,7 +78,9 @@ class FaceParsing:
             resized = image.resize(size, Image.BILINEAR)
             img = self.preprocess(resized).unsqueeze(0).to(self.device)
             out = self.net(img)[0]
-            parsing = out.squeeze(0).cpu().numpy().argmax(0)
+            # argmax on the device: moving the (19, 512, 512) logits to the
+            # host and reducing in numpy was ~100 ms/frame on the GPU box.
+            parsing = out.squeeze(0).argmax(0).to(torch.uint8).cpu().numpy()
 
             if mode == "neck":
                 parsing[np.isin(parsing, [1, 11, 12, 13, 14])] = 255

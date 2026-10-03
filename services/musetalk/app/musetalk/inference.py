@@ -492,7 +492,7 @@ def run(
     weight_paths: WeightPaths,
     progress: ProgressCallback | None = None,
     extra_margin: int = 10,
-    batch_size: int = 4,
+    batch_size: int | None = None,
     # Per-request quality knobs. `None` means "use the module-level default
     # resolved from env at import time". The Makefile's QUALITY ladder is
     # the intended producer.
@@ -506,11 +506,17 @@ def run(
 
     Parameters mirror the upstream script:
         extra_margin: pixels added to the bottom of each face crop (V1.5 default 10)
-        batch_size: frames per UNet forward pass. CPU memory bound.
+        batch_size: frames per UNet forward pass. None -> MUSETALK_BATCH_SIZE
+            env, else 4 on CPU (memory bound) / 32 on CUDA.
     """
     video_path = Path(video_path)
     audio_path = Path(audio_path)
     output_path = Path(output_path)
+
+    on_cuda = _resolve_device().type == "cuda"
+    if batch_size is None:
+        batch_size = int(os.environ.get("MUSETALK_BATCH_SIZE", "32" if on_cuda else "4"))
+    vae_batch_size = int(os.environ.get("MUSETALK_VAE_BATCH_SIZE", "32" if on_cuda else "4"))
 
     # Resolve per-request knobs. Fall through to module-level defaults.
     effective_blend_mode = (blend_mode or _blend_mode).strip().lower()
@@ -610,26 +616,32 @@ def run(
     face_boxes_filled = _smooth_boxes(face_boxes_filled, window=5)
 
     # --- 4. Per-frame VAE latents -----------------------------------------
-    log.info("Encoding face crops via VAE")
-    input_latents: list[torch.Tensor | None] = []
-    face_boxes: list[tuple[int, int, int, int] | None] = []
-    for frame, box in zip(frames, face_boxes_filled):
+    # Crops are gathered first, then encoded in batches: per-frame encode
+    # was ~270 ms on the GPU box (CPU-side preprocessing dominated), the
+    # batched path is ~25 ms/frame at B=32.
+    log.info("Encoding face crops via VAE (batch=%d)", vae_batch_size)
+    input_latents: list[torch.Tensor | None] = [None] * len(frames)
+    face_boxes: list[tuple[int, int, int, int] | None] = [None] * len(frames)
+    crop_idx: list[int] = []
+    crops: list[np.ndarray] = []
+    for i, (frame, box) in enumerate(zip(frames, face_boxes_filled)):
         if box is None:
-            input_latents.append(None)
-            face_boxes.append(None)
             continue
         x1, y1, x2, y2 = box
         # V1.5 adds a bottom margin so the chin is fully included.
         y2 = min(y2 + extra_margin, frame.shape[0])
         crop = frame[y1:y2, x1:x2]
         if crop.size == 0:
-            input_latents.append(None)
-            face_boxes.append(None)
             continue
-        crop_256 = cv2.resize(crop, (256, 256), interpolation=cv2.INTER_LANCZOS4)
-        latents = state.vae.get_latents_for_unet(crop_256)
-        input_latents.append(latents)
-        face_boxes.append((x1, y1, x2, y2))
+        crops.append(cv2.resize(crop, (256, 256), interpolation=cv2.INTER_LANCZOS4))
+        crop_idx.append(i)
+        face_boxes[i] = (x1, y1, x2, y2)
+    with torch.no_grad():
+        for start in range(0, len(crops), vae_batch_size):
+            batch = crops[start:start + vae_batch_size]
+            lat = state.vae.get_latents_for_unet_batch(batch)  # (B, 8, 32, 32)
+            for local, i in enumerate(crop_idx[start:start + vae_batch_size]):
+                input_latents[i] = lat[local:local + 1]
 
     # --- 5. Pair audio ↔ frames and run UNet -----------------------------
     n_video = len(frames)
