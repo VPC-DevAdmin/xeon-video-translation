@@ -220,11 +220,18 @@ def _ffmpeg(*args: str) -> None:
         raise RuntimeError(proc.stderr.strip()[-400:] or "ffmpeg failed")
 
 
-def _build(directory: Path, language: str, script: str) -> dict:
+def _build(directory: Path, language: str, script: str, stock_voice: str | None = None) -> dict:
     import numpy as np
     import soundfile as sf
     from ..pipeline import transcribe, tts
 
+    if stock_voice:
+        voice = {"ok": True, "mode": "stock", "speaker": stock_voice, "problems": []}
+        portrait = portrait_checks(directory / "portrait.png")
+        if portrait.get("face_box"):
+            portrait["render_crop"] = render_portrait(directory / "portrait.png", directory / "portrait_render.png", portrait["face_box"])
+        idle = _idle_clip(directory)
+        return {"voice": voice, "portrait": portrait, "idle": idle}
     _ffmpeg("-i", str(directory / "voice.upload"), "-ac", "1", "-ar", "24000", "-c:a", "pcm_s16le", str(directory / "voice.wav"))
     _ffmpeg("-i", str(directory / "voice.wav"), "-ar", "16000", "-c:a", "pcm_s16le", str(directory / "voice16.wav"))
     samples, rate = sf.read(str(directory / "voice.wav"), dtype="float32", always_2d=False)
@@ -244,27 +251,31 @@ def _build(directory: Path, language: str, script: str) -> dict:
     portrait = portrait_checks(directory / "portrait.png")
     if portrait.get("face_box"):
         portrait["render_crop"] = render_portrait(directory / "portrait.png", directory / "portrait_render.png", portrait["face_box"])
-    idle = None
-    if (directory / "idle.upload").exists():
-        encoder = os.environ.get("VIDEO_ENCODER", "libx264")
-        try:
-            _ffmpeg("-i", str(directory / "idle.upload"), "-an", "-vf", "fps=25", "-c:v", encoder, "-pix_fmt", "yuv420p", str(directory / "idle.mp4"))
-        except RuntimeError:
-            _ffmpeg("-i", str(directory / "idle.upload"), "-an", "-vf", "fps=25", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(directory / "idle.mp4"))
-        probe = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-count_frames", "-show_entries",
-                                "stream=nb_read_frames,width,height", "-of", "json", str(directory / "idle.mp4")],
-                               capture_output=True, text=True)
-        try:
-            stream = json.loads(probe.stdout)["streams"][0]
-            idle = {"frames": int(stream.get("nb_read_frames", 0)), "width": stream.get("width"), "height": stream.get("height")}
-        except (ValueError, KeyError, IndexError):
-            idle = {"frames": None}
+    idle = _idle_clip(directory)
     checks = {"voice": voice, "portrait": portrait, "idle": idle}
     if voice["ok"] and portrait["ok"]:
         reference = reference_span(directory, transcript)
         voice["reference"] = reference
         build_conditioning(directory)
     return checks
+
+
+def _idle_clip(directory: Path) -> dict | None:
+    if not (directory / "idle.upload").exists():
+        return None
+    encoder = os.environ.get("VIDEO_ENCODER", "libx264")
+    try:
+        _ffmpeg("-i", str(directory / "idle.upload"), "-an", "-vf", "fps=25", "-c:v", encoder, "-pix_fmt", "yuv420p", str(directory / "idle.mp4"))
+    except RuntimeError:
+        _ffmpeg("-i", str(directory / "idle.upload"), "-an", "-vf", "fps=25", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(directory / "idle.mp4"))
+    probe = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-count_frames", "-show_entries",
+                            "stream=nb_read_frames,width,height", "-of", "json", str(directory / "idle.mp4")],
+                           capture_output=True, text=True)
+    try:
+        stream = json.loads(probe.stdout)["streams"][0]
+        return {"frames": int(stream.get("nb_read_frames", 0)), "width": stream.get("width"), "height": stream.get("height")}
+    except (ValueError, KeyError, IndexError):
+        return {"frames": None}
 
 
 def reference_span(directory: Path, transcript, max_seconds: float = 25.0, pad: float = 0.2) -> dict:
@@ -320,6 +331,12 @@ def conditioning(persona_id: str, owner_id: str | None = None) -> dict:
     record = _load(persona_id)
     if owner_id is not None and record.get("owner_id", "local") != owner_id:
         raise HTTPException(404, "persona not found")
+    if record.get("voice_mode") == "stock":
+        speakers = tts._get_xtts().synthesizer.tts_model.speaker_manager.speakers
+        name = record.get("stock_voice")
+        if name not in speakers:
+            raise HTTPException(409, "the persona's stock voice is not available")
+        return speakers[name]
     directory = ROOT / persona_id
     path = directory / "voice.pt"
     if not (directory / "voice_ref.wav").exists() and (directory / "voice.wav").exists():
@@ -350,6 +367,7 @@ def _load(persona_id: str) -> dict:
 def _summary(record: dict) -> dict:
     checks = record.get("checks", {})
     return {"id": record["id"], "name": record["name"], "language": record["language"], "created_at": record["created_at"],
+            "voice_mode": record.get("voice_mode", "cloned"), "stock_voice": record.get("stock_voice"),
             "voice_seconds": (checks.get("voice") or {}).get("duration_seconds"),
             "script_match": (checks.get("voice") or {}).get("script_match"),
             "has_idle_clip": bool(checks.get("idle")), "status": record.get("status")}
@@ -357,17 +375,31 @@ def _summary(record: dict) -> dict:
 
 # ---------------------------------------------------------------- endpoints
 @router.get("/script")
-def script(language: str = "en") -> dict:
+async def script(language: str = "en") -> dict:
+    try:
+        voices = await blocking_call(stock_voices)
+    except Exception:
+        voices = []
     return {"language": language if language in SCRIPTS else "en", "text": script_for(language), "rules": RULES,
-            "consent": {"version": CONSENT_VERSION, "text": CONSENT_TEXT}}
+            "consent": {"version": CONSENT_VERSION, "text": CONSENT_TEXT}, "stock_voices": voices}
+
+
+def stock_voices() -> list[str]:
+    from ..pipeline import tts
+    return list(tts._get_xtts().synthesizer.tts_model.speaker_manager.speakers)
 
 
 @router.post("")
 async def create(name: str = Form(..., min_length=1, max_length=80), language: str = Form("en"),
-                 consent: str = Form(...), script: str = Form(..., max_length=2000),
-                 portrait: UploadFile = File(...), voice: UploadFile = File(...), idle: UploadFile | None = File(None)):
+                 consent: str = Form(...), script: str = Form("", max_length=2000),
+                 portrait: UploadFile = File(...), voice: UploadFile | None = File(None),
+                 stock_voice: str | None = Form(None, max_length=100), idle: UploadFile | None = File(None)):
     if consent.lower() not in ("yes", "true", "1", "on"):
         raise HTTPException(400, "consent is required")
+    if voice is None and not stock_voice:
+        raise HTTPException(400, "record a voice or choose a stock voice")
+    if stock_voice and stock_voice not in await blocking_call(stock_voices):
+        raise HTTPException(400, "unknown stock voice")
     from PIL import Image, ImageOps
     from io import BytesIO
 
@@ -379,9 +411,11 @@ async def create(name: str = Form(..., min_length=1, max_length=80), language: s
         picture.thumbnail((1024, 1024))
     except Exception as exc:
         raise HTTPException(422, "portrait is not a valid image") from exc
-    voice_bytes = await voice.read(40 * 1024 * 1024 + 1)
-    if len(voice_bytes) > 40 * 1024 * 1024:
-        raise HTTPException(413, "voice recording exceeds 40 MB")
+    voice_bytes = None
+    if voice is not None and not stock_voice:
+        voice_bytes = await voice.read(40 * 1024 * 1024 + 1)
+        if len(voice_bytes) > 40 * 1024 * 1024:
+            raise HTTPException(413, "voice recording exceeds 40 MB")
     idle_bytes = await idle.read(80 * 1024 * 1024 + 1) if idle is not None else None
     if idle_bytes is not None and len(idle_bytes) > 80 * 1024 * 1024:
         raise HTTPException(413, "idle clip exceeds 80 MB")
@@ -390,13 +424,14 @@ async def create(name: str = Form(..., min_length=1, max_length=80), language: s
     directory = ROOT / persona_id
     directory.mkdir(parents=True)
     picture.save(directory / "portrait.png")
-    (directory / "voice.upload").write_bytes(voice_bytes)
+    if voice_bytes:
+        (directory / "voice.upload").write_bytes(voice_bytes)
     if idle_bytes:
         (directory / "idle.upload").write_bytes(idle_bytes)
     owner_id = principal.get()
     try:
         async with speech_lock(0):
-            checks = await blocking_call(lambda: _build(directory, language, script))
+            checks = await blocking_call(lambda: _build(directory, language, script, stock_voice))
     except Exception as exc:
         shutil.rmtree(directory, ignore_errors=True)
         raise HTTPException(500, f"persona build failed: {type(exc).__name__}: {exc}")
@@ -405,9 +440,10 @@ async def create(name: str = Form(..., min_length=1, max_length=80), language: s
               "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
               "consent": {"version": CONSENT_VERSION, "text": CONSENT_TEXT, "accepted_at": time.time()},
               "script": script, "checks": checks, "status": "ready" if ok else "rejected",
+              "voice_mode": "stock" if stock_voice else "cloned", "stock_voice": stock_voice,
               "files": {"portrait": str(directory / "portrait.png"),
                         "portrait_render": str(directory / "portrait_render.png") if (directory / "portrait_render.png").exists() else None,
-                        "voice": str(directory / "voice.wav"),
+                        "voice": str(directory / "voice.wav") if (directory / "voice.wav").exists() else None,
                         "idle": str(directory / "idle.mp4") if (directory / "idle.mp4").exists() else None,
                         "conditioning": str(directory / "voice.pt") if (directory / "voice.pt").exists() else None}}
     for name_ in ("voice.upload", "idle.upload"):

@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 
 type Checks = { voice?: Record<string, unknown> & { problems?: string[]; warnings?: string[]; ok?: boolean }; portrait?: Record<string, unknown> & { problems?: string[]; warnings?: string[]; ok?: boolean }; idle?: unknown };
-type Script = { language: string; text: string; rules: { portrait: string; idle_seconds: number; voice_min_seconds: number; voice_target_seconds: number; voice_max_seconds: number }; consent: { version: string; text: string } };
+type Script = { language: string; text: string; rules: { portrait: string; idle_seconds: number; voice_min_seconds: number; voice_target_seconds: number; voice_max_seconds: number }; consent: { version: string; text: string }; stock_voices?: string[] };
 type Props = { language: string; onDone: (persona: { id: string; name: string }) => void; onCancel: () => void };
 
 const STEPS = ["consent", "portrait", "idle", "voice", "review"] as const;
@@ -21,6 +21,8 @@ export default function PersonaWizard({ language, onDone, onCancel }: Props) {
   const [idleLeft, setIdleLeft] = useState<number | null>(null);
   const [voice, setVoice] = useState<Blob | null>(null);
   const [voiceSeconds, setVoiceSeconds] = useState(0);
+  const [voiceMode, setVoiceMode] = useState<"record" | "stock">("record");
+  const [stockVoice, setStockVoice] = useState("");
   const [recording, setRecording] = useState(false);
   const [level, setLevel] = useState(0);
   const [busy, setBusy] = useState("");
@@ -119,12 +121,14 @@ export default function PersonaWizard({ language, onDone, onCancel }: Props) {
   function stopVoice() { recorder.current?.state === "recording" && recorder.current.stop(); }
 
   async function submit() {
-    if (!portrait || !voice || !script) return;
-    setBusy("Checking the portrait and the recording, building the voice…"); setError(""); setChecks(null);
+    const usingStock = voiceMode === "stock" && !!stockVoice;
+    if (!portrait || !script || (!voice && !usingStock)) return;
+    setBusy(usingStock ? "Checking the portrait…" : "Checking the portrait and the recording, building the voice…"); setError(""); setChecks(null);
     try {
       const form = new FormData();
       form.append("name", name || "New person"); form.append("language", language); form.append("consent", "yes"); form.append("script", script.text);
-      form.append("portrait", portrait, "portrait.png"); form.append("voice", voice, "voice.webm");
+      form.append("portrait", portrait, "portrait.png");
+      if (usingStock) form.append("stock_voice", stockVoice); else if (voice) form.append("voice", voice, "voice.webm");
       if (idle) form.append("idle", idle, "idle.webm");
       const response = await fetch("/api/personas", { method: "POST", body: form });
       const body = await response.json().catch(() => null);
@@ -183,26 +187,42 @@ export default function PersonaWizard({ language, onDone, onCancel }: Props) {
     </div>}
 
     {step === "voice" && script && <div className="space-y-3">
-      <p>Read this aloud at a natural pace (at least {script.rules.voice_min_seconds} seconds):</p>
-      <blockquote className="border-l-4 pl-3 text-lg leading-relaxed">{script.text}</blockquote>
-      <div className="flex gap-3 items-center">
-        {!recording ? <button className={PRIMARY} onClick={startVoice} disabled={!cameraReady}>{voice ? "Record again" : "Start recording"}</button> : <button className={PRIMARY} onClick={stopVoice}>Stop ({voiceSeconds.toFixed(0)} s)</button>}
-        <meter min={0} max={0.5} value={level} className="w-40" aria-label="microphone level" />
-        {voice && !recording && <span className="text-green-700">{voiceSeconds.toFixed(0)} s recorded</span>}
-        <button className={SECONDARY} disabled={!voice || recording} onClick={() => go("review")}>{retaking ? "Back to review" : "Next"}</button>
+      <div className="flex gap-4 text-sm">
+        <label className="flex items-center gap-1"><input type="radio" checked={voiceMode === "record"} onChange={() => setVoiceMode("record")} /> Record my voice</label>
+        <label className="flex items-center gap-1"><input type="radio" checked={voiceMode === "stock"} onChange={() => setVoiceMode("stock")} /> Use a stock voice</label>
       </div>
+      {voiceMode === "record" ? <>
+        <p>Read this aloud at a natural pace (at least {script.rules.voice_min_seconds} seconds):</p>
+        <blockquote className="border-l-4 pl-3 text-lg leading-relaxed">{script.text}</blockquote>
+        <div className="flex gap-3 items-center">
+          {!recording ? <button className={PRIMARY} onClick={startVoice} disabled={!cameraReady}>{voice ? "Record again" : "Start recording"}</button> : <button className={PRIMARY} onClick={stopVoice}>Stop ({voiceSeconds.toFixed(0)} s)</button>}
+          <meter min={0} max={0.5} value={level} className="w-40" aria-label="microphone level" />
+          {voice && !recording && <span className="text-green-700">{voiceSeconds.toFixed(0)} s recorded</span>}
+          <button className={SECONDARY} disabled={!voice || recording} onClick={() => go("review")}>{retaking ? "Back to review" : "Next"}</button>
+        </div>
+      </> : <>
+        <p>Pick one of the built-in voices. You can hear it in the preview on the next step.</p>
+        <div className="flex gap-3 items-center">
+          <select className="border px-2 py-1" value={stockVoice} onChange={e => setStockVoice(e.target.value)}>
+            <option value="">Choose a voice…</option>
+            {(script.stock_voices || []).map(v => <option key={v} value={v}>{v}</option>)}
+          </select>
+          <button className={SECONDARY} disabled={!stockVoice} onClick={() => go("review")}>{retaking ? "Back to review" : "Next"}</button>
+        </div>
+      </>}
     </div>}
 
     {step === "review" && <div className="space-y-3">
       <div className="flex gap-4 items-start">{portraitUrl && <img src={portraitUrl} alt="portrait" className="w-32 h-32 rounded object-cover" />}
-        <ul className="text-sm"><li>Portrait: {portrait ? "captured" : "missing"}</li><li>Idle clip: {idle ? "captured" : "skipped"}</li><li>Voice: {voice ? `${voiceSeconds.toFixed(0)} s` : "missing"}</li></ul></div>
-      {!persona && <button className={PRIMARY} disabled={!!busy || !portrait || !voice} onClick={submit}>{busy || (checks ? "Check again and build" : "Check and build this persona")}</button>}
+        <ul className="text-sm"><li>Portrait: {portrait ? "captured" : "missing"}</li><li>Idle clip: {idle ? "captured" : "skipped"}</li><li>Voice: {voiceMode === "stock" ? (stockVoice ? `stock voice “${stockVoice}”` : "no stock voice chosen") : voice ? `${voiceSeconds.toFixed(0)} s recorded` : "missing"}</li></ul></div>
+      {!persona && <button className={PRIMARY} disabled={!!busy || !portrait || (voiceMode === "stock" ? !stockVoice : !voice)} onClick={submit}>{busy || (checks ? "Check again and build" : "Check and build this persona")}</button>}
       {checks && <div className="grid gap-3 sm:grid-cols-2 text-sm">
         <div><h3 className="font-semibold">Portrait</h3>{problems(checks.portrait)}</div>
         <div><h3 className="font-semibold">Voice</h3>{problems(checks.voice)}
+          {checks.voice && "speaker" in checks.voice && <p className="text-ink-400">stock voice {String(checks.voice.speaker)}</p>}
           {checks.voice && "script_match" in checks.voice && <p className="text-ink-400">words matched: {Math.round(Number(checks.voice.script_match) * 100)}% · {String(checks.voice.duration_seconds)} s · {String(checks.voice.level_dbfs)} dBFS</p>}</div>
       </div>}
-      {checks && !persona && <div className="flex gap-3"><button className={SECONDARY} onClick={() => { setRetaking(true); go("portrait"); }}>Retake portrait</button><button className={SECONDARY} onClick={() => { setRetaking(true); go("voice"); }}>Re-record voice</button></div>}
+      {checks && !persona && <div className="flex gap-3"><button className={SECONDARY} onClick={() => { setRetaking(true); go("portrait"); }}>Retake portrait</button><button className={SECONDARY} onClick={() => { setRetaking(true); go("voice"); }}>Change voice</button></div>}
       {persona && <div className="space-y-2">
         <p className="text-green-700">Persona “{persona.name}” is ready.</p>
         {previewUrl ? <audio controls src={previewUrl} /> : <p className="text-sm text-ink-400">{busy || "No preview available."}</p>}
