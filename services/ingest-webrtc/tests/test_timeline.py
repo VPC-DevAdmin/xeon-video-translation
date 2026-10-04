@@ -114,3 +114,19 @@ def test_switching_between_idle_and_a_clip_is_a_dissolve():
     assert 0 < first < second < 90 and int(tl.frame_at(1.5)[0].reshape(-1)[0]) == 90
     back = int(tl.frame_at(3.0)[0].reshape(-1)[0])                            # clip over: back to idle, dissolving from 90
     assert 0 < back < 90 and int(tl.frame_at(3.75)[0].reshape(-1)[0]) == 0
+
+
+def test_idle_growth_waits_while_the_wrap_dissolve_is_on_screen():
+    """Appending while the loop shows its wrap dissolve would change the tail being
+    blended; the footage is staged until the cursor leaves that region."""
+    a = np.arange(0, 100, 10, dtype=np.uint8)[:, None, None, None]            # k = 2, play region 8 frames
+    tl = Timeline(fps=4, idle_frames=a, transition_seconds=0)
+    for t in range(8):
+        tl.frame_at(t / 4)                                                     # cursor 7, the last play frame
+    tl.frame_at(8 / 4)                                                         # cursor 8 -> wraps to j=0: in the dissolve
+    tl.add_idle(np.full((6, 1, 1, 1), 200, np.uint8), continuous=True)
+    assert len(tl.idle_segments[0]) == 10 and tl.idle_frame_count == 16       # staged, counted, not yet visible
+    tl.frame_at(9 / 4)                                                         # j=1, still dissolving
+    assert len(tl.idle_segments[0]) == 10
+    tl.frame_at(10 / 4)                                                        # j=2: out of the dissolve, publish
+    assert len(tl.idle_segments[0]) == 16 and not tl._pending_idle

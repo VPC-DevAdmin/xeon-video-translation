@@ -78,6 +78,10 @@ async def run(args):
     interrupt_at = [None]
     interrupt_ack = [None]
 
+    @channel.on("open")
+    def on_open():
+        marks.setdefault("channel_open", time.monotonic())
+
     @channel.on("message")
     def on_message(raw):
         value = json.loads(raw)
@@ -192,13 +196,14 @@ async def run(args):
                 """Frame-to-frame change over idle footage; a snap is a change far above the typical motion."""
                 if len(changes) < 10:
                     return None
-                values = np.array(changes)
+                values = np.array([c for _, c in changes])
                 median = float(np.median(values))
                 threshold = max(3.0 * median, 6.0)
                 return {"frames": len(values), "median": round(median, 2), "p99": round(float(np.percentile(values, 99)), 2),
-                        "max": round(float(values.max()), 2), "snaps": int((values > threshold).sum()), "snap_threshold": round(threshold, 2)}
-            idle_before = [c for t, c in frame_change if endpoint is None or t < endpoint - 0.5]
-            idle_after = [c for t, c in frame_change if reply_end and t > reply_end + 1.0]
+                        "max": round(float(values.max()), 2), "snaps": int((values > threshold).sum()), "snap_threshold": round(threshold, 2),
+                        "snap_times": [round(t - created_at, 2) for (t, c) in changes if c > threshold][:20]}
+            idle_before = [(t, c) for t, c in frame_change if endpoint is None or t < endpoint - 0.5]
+            idle_after = [(t, c) for t, c in frame_change if reply_end and t > reply_end + 1.0]
             report = {
                 "session": session, "connection": pc.connectionState, "prepare_seconds": round(prepare_seconds, 2),
                 "ready_after_seconds": round(marks["ready"] - created_at, 2) if "ready" in marks else None,
@@ -212,7 +217,9 @@ async def run(args):
                 "reply_mean_frame_change": round(float(np.mean(motion_in_reply)), 3) if motion_in_reply else None,
                 "idle_before_turn": idle_stats(idle_before), "idle_after_reply": idle_stats(idle_after),
                 "ack_ready_after_seconds": round(next((epoch + e["t"] for e in events if e.get("type") == "ack_ready"), created_at) - created_at, 2),
+                "event_times": [(e["type"], round(epoch + e["t"] - created_at, 2)) for e in events if e.get("type") not in ("transcript", "reply")][:40],
                 "released_after_seconds": round(marks["released"] - created_at, 2) if "released" in marks else None,
+                "channel_open_after_seconds": round(marks["channel_open"] - created_at, 2) if "channel_open" in marks else None,
                 "interrupt_ack_seconds": interrupt_ack[0],
                 "last_audio_after_interrupt_seconds": max([t - interrupt_at[0] for t in audio_active if interrupt_at[0] and t >= interrupt_at[0]], default=None),
                 "server": status.json(), "events": events,

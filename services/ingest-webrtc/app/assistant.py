@@ -524,7 +524,7 @@ class Assistant:
                             self.notify("reply", text=event["text"])
                         elif kind == "audio":
                             await queue.put(np.frombuffer(base64.b64decode(event["pcm_b64"]), dtype=np.int16))
-                            if "verified_match" in event and (event.get("fallback") or event["takes"] > 1 or event["verified_match"] < 1):
+                            if "verified_match" in event and (event.get("fallback") or event["takes"] > 1):
                                 check = {"text": event.get("text", "")[:80], "match": round(float(event["verified_match"]), 2),
                                          "takes": int(event["takes"]), "fallback": bool(event.get("fallback"))}
                                 self.metrics.setdefault("speech_checks", []).append(check)

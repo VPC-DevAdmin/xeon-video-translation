@@ -43,6 +43,7 @@ class Timeline:
         self.idle_frames_sent = 0
         self.scheduled_seconds = 0.0
         self._cursor = 0                # position in the idle loop
+        self._pending_idle: list = []   # footage waiting until the loop is outside its wrap dissolve
         self._last_index = None
         self._last = None               # (unblended image, source) shown at the previous frame
         self._blend = None              # (image to dissolve from, frame index of the switch)
@@ -53,18 +54,34 @@ class Timeline:
     # ------------------------------------------------------------------ idle
     def add_idle(self, frames, continuous: bool) -> None:
         """Append idle footage: to the last segment when the renderer's motion continued
-        it, otherwise as a new segment whose boundary the loop will dissolve across."""
+        it, otherwise as a new segment whose boundary the loop will dissolve across.
+
+        The wrap dissolve blends the first frames of the loop with the tail of the last
+        segment; changing that tail while the dissolve is on screen would be a visible
+        jump, so footage is staged until the cursor has left that region."""
         frames = np.asarray(frames)
         if not len(frames):
             return
-        if continuous and self.idle_segments:
-            self.idle_segments[-1] = np.concatenate([self.idle_segments[-1], frames])
-        else:
-            self.idle_segments.append(frames)
+        self._pending_idle.append((frames, continuous))
+        self._publish_idle()
+
+    def _publish_idle(self) -> None:
+        if not self._pending_idle:
+            return
+        if self.idle_segments:
+            segment, j, k = idle_loop_locate(self.idle_segments, self._cursor, self.idle_crossfade)
+            if segment == 0 and j < k:
+                return
+        for frames, continuous in self._pending_idle:
+            if continuous and self.idle_segments:
+                self.idle_segments[-1] = np.concatenate([self.idle_segments[-1], frames])
+            else:
+                self.idle_segments.append(frames)
+        self._pending_idle.clear()
 
     @property
     def idle_frame_count(self) -> int:
-        return sum(len(s) for s in self.idle_segments)
+        return sum(len(s) for s in self.idle_segments) + sum(len(f) for f, _ in self._pending_idle)
 
     def idle_seconds(self) -> float:
         return self.idle_frame_count / self.fps
@@ -116,6 +133,7 @@ class Timeline:
         if self._last_index is not None:
             self._cursor += max(0, index - self._last_index)
         self._last_index = index
+        self._publish_idle()
         clip = self.active(seconds)
         if clip is not None:
             frames = clip[3]
@@ -152,6 +170,20 @@ class Timeline:
         return out
 
 
+def idle_loop_locate(segments, position: int, crossfade: int):
+    """(segment index, frame within its play region, frames of the previous segment's
+    continuation that dissolve into this one) for a loop position."""
+    held = [max(0, min(int(crossfade), len(s) // 2 - 1)) for s in segments]
+    lengths = [len(s) - k for s, k in zip(segments, held)]
+    j = position % sum(lengths)
+    index = 0
+    for index, length in enumerate(lengths):
+        if j < length:
+            break
+        j -= length
+    return index, j, held[index - 1]                             # index 0 wraps to the last segment
+
+
 def idle_loop_frame(segments, position: int, crossfade: int):
     """Frame at `position` of a forward loop over continuous `segments`.
 
@@ -164,16 +196,9 @@ def idle_loop_frame(segments, position: int, crossfade: int):
     segments = [s for s in segments if len(s)]
     if not segments:
         return None
-    held = [max(0, min(int(crossfade), len(s) // 2 - 1)) for s in segments]
-    lengths = [len(s) - k for s, k in zip(segments, held)]
-    j = position % sum(lengths)
-    index = 0
-    for index, length in enumerate(lengths):
-        if j < length:
-            break
-        j -= length
+    index, j, k = idle_loop_locate(segments, position, crossfade)
     frame = segments[index][j]
-    previous, k = segments[index - 1], held[index - 1]          # index 0 wraps to the last segment
+    previous = segments[index - 1]
     if j >= k:
         return frame
     weight = 1.0 - (j + 1) / (k + 1)                            # 1 -> continuation, 0 -> head
