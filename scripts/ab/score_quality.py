@@ -198,9 +198,8 @@ if not args.skip_syncnet:
         aligned = []
         for frame in frames:
             try:
-                face, _, _ = processor.affine_transform(
-                    torch.from_numpy(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)).permute(2, 0, 1))
-                aligned.append(face)          # (3, 256, 256) uint8 tensor
+                face, _, _ = processor.affine_transform(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+                aligned.append(torch.as_tensor(face))   # (3, 256, 256) uint8
             except Exception:
                 aligned.append(None)
         mel = ls_audio.melspectrogram(wav.astype(np.float32) if sr == 16000 else
