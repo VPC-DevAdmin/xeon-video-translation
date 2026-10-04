@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
-from app.timeline import Timeline, head_start_required, idle_frame, idle_loop_frame  # noqa: E402
+from app.timeline import Timeline, head_start_required, idle_frame, idle_loop_frame, settle_frames  # noqa: E402
 
 
 def frames(n, value):
@@ -113,6 +113,7 @@ def test_switching_between_idle_and_a_clip_is_a_dissolve():
     first, second = (int(tl.frame_at(t)[0].reshape(-1)[0]) for t in (1.0, 1.25))
     assert 0 < first < second < 90 and int(tl.frame_at(1.5)[0].reshape(-1)[0]) == 90
     back = int(tl.frame_at(3.0)[0].reshape(-1)[0])                            # clip over: back to idle, dissolving from 90
+    assert tl.loop("front").cursor == 0                                        # the loop restarted at its anchor when the clip ended
     assert 0 < back < 90 and int(tl.frame_at(3.75)[0].reshape(-1)[0]) == 0
 
 
@@ -165,7 +166,7 @@ def test_truncate_cuts_tagged_clips_with_a_fade_and_keeps_the_reply():
     tl.schedule(1.0, np.full(96000, 1000, np.int16), frames(50, 1), gen, tag="filler")      # 1.0 - 3.0
     tl.schedule(3.5, np.full(48000, 1000, np.int16), frames(25, 1), gen, tag="filler")      # 3.5 - 4.5 dropped
     tl.schedule(2.5, np.full(48000, 7, np.int16), frames(25, 2), gen)                        # the reply, untouched
-    assert tl.truncate(2.2, "filler") == 2
+    assert tl.truncate(2.2, "filler") == (2, 2.2)
     fillers = tl.clips_tagged("filler")
     assert len(fillers) == 1 and fillers[0][1] == 2.2 and len(fillers[0][3]) == 30
     audio = fillers[0][2]
@@ -181,3 +182,23 @@ def test_turn_clips_get_a_short_dissolve():
     values = [int(tl.frame_at(1.0 + i / 25)[0].reshape(-1)[0]) for i in range(6)]
     assert tl.frame_at(1.0)[1] == "clip:turn"
     assert values[0] < values[3] and values[4] == 200 and values[5] == 200                   # fully there after 4 frames
+
+
+def test_settled_loop_wraps_with_a_hard_cut_and_truncate_settles_into_the_anchor():
+    a = np.arange(0, 100, 10, dtype=np.uint8)[:, None, None, None]            # anchor is frame 0 (value 0)
+    tl = Timeline(fps=4, idle_frames=a, transition_seconds=0)
+    loop = tl.loop("front")
+    assert loop.effective_crossfade() == 2 and not loop.settled[0]
+    for t in range(3):
+        tl.frame_at(t / 4)                                                     # cursor leaves the wrap dissolve so new footage publishes
+    loop.settle(3)                                                              # 3 frames dissolving 90 -> 0, last is the anchor
+    assert loop.settled == [True] and len(loop.segments[0]) == 13 and int(loop.segments[0][-1].reshape(-1)[0]) == 0
+    assert loop.effective_crossfade() == 0
+    shown = [int(tl.frame_at(t / 4)[0].reshape(-1)[0]) for t in range(3, 15)]
+    assert shown[:7] == list(range(30, 100, 10)) and shown[9] == 0 and shown[10] == 0 and shown[11] == 10   # wrap: anchor to anchor, no blend
+    tl2 = Timeline(fps=25, transition_seconds=0)
+    tl2.schedule(1.0, np.full(96000, 1000, np.int16), frames(50, 7), tl2.generation, tag="filler")
+    affected, end = tl2.truncate(2.0, "filler", settle_to=frames(1, 0)[0], settle_count=5)
+    clip = tl2.clips_tagged("filler")[0]
+    assert (affected, end) == (1, 2.2) and len(clip[3]) == 30 and int(clip[3][-1][0, 0, 0]) == 0 and 0 < int(clip[3][26][0, 0, 0]) < 7
+    assert settle_frames(frames(1, 10)[0], frames(1, 0)[0], 2)[0][0, 0, 0] == 5

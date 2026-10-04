@@ -61,7 +61,7 @@ def _load():
 def pose_portrait(image_bgr: np.ndarray, pitch: float, yaw: float, roll: float = 0.0,
                   eyes_x: float = 0.0, eyes_y: float = 0.0, scale: float = 2.3) -> np.ndarray:
     """The portrait with its head rotated by (pitch, yaw, roll) degrees and the gaze moved
-    by (eyes_x, eyes_y); positive pitch and eyes_y look down. Full-frame result, the face
+    by (eyes_x, eyes_y); positive pitch looks down, negative eyes_y lowers the gaze. Full-frame result, the face
     region pasted back into the original image."""
     return pose_sequence(image_bgr, pitch, yaw, roll, eyes_x, eyes_y, steps=1, scale=scale)[-1]
 

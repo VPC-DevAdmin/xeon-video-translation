@@ -69,7 +69,7 @@ services:
       ASSISTANT_RENDERER_URL: ${ASSISTANT_RENDERER_URL:-http://localhost:${FLASHHEAD_PORT:-8094}}
       ASSISTANT_HEAD_START: ${ASSISTANT_HEAD_START:-7}          # minimum; the reply starts when it can play without stalling
       ASSISTANT_WORKING_IDLE_SECONDS: ${ASSISTANT_WORKING_IDLE_SECONDS:-6}
-      ASSISTANT_WORKING_POSE: ${ASSISTANT_WORKING_POSE:-14,-14,0,-6,10}   # pitch,yaw,roll,eyes_x,eyes_y (degrees; positive pitch/eyes_y look down)
+      ASSISTANT_WORKING_POSE: ${ASSISTANT_WORKING_POSE:-14,-14,0,-6,-14}   # pitch,yaw,roll,eyes_x,eyes_y (degrees; positive pitch looks down, negative eyes_y lowers the gaze)
       ASSISTANT_MAX_HEAD_START: ${ASSISTANT_MAX_HEAD_START:-20}
       ASSISTANT_MAX_SESSIONS: ${ASSISTANT_MAX_SESSIONS:-1}
       AVATAR_VAD_BACKEND: ${AVATAR_VAD_BACKEND:-silero}

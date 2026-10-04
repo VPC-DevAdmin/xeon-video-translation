@@ -76,7 +76,7 @@ class PoseRequest(BaseModel):
     yaw: float = Field(-14.0, ge=-40, le=40)
     roll: float = Field(0.0, ge=-30, le=30)
     eyes_x: float = Field(-6.0, ge=-20, le=20)
-    eyes_y: float = Field(10.0, ge=-20, le=20, description="positive lowers the gaze")
+    eyes_y: float = Field(-14.0, ge=-20, le=20, description="negative lowers the gaze")
     steps: int = Field(1, ge=1, le=60, description="1: the posed portrait as PNG; more: that many frames turning the head, raw RGB")
     size: int = Field(0, ge=0, le=2048, description="side of the square frames returned for steps > 1 (0 keeps the portrait size)")
 

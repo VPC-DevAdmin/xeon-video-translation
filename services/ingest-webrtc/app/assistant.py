@@ -51,7 +51,7 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
 from .identity import owner, require
-from .timeline import Timeline, head_start_required
+from .timeline import Timeline, head_start_required, settle_frames
 
 router = APIRouter(prefix="/assistant", tags=["assistant"])
 _sessions: dict = {}
@@ -64,11 +64,12 @@ MAX_HEAD_START = float(os.getenv("ASSISTANT_MAX_HEAD_START", "20"))
 IDLE_CHUNKS = int(os.getenv("ASSISTANT_IDLE_CHUNKS", "2"))          # rendered before the session answers
 IDLE_SECONDS = float(os.getenv("ASSISTANT_IDLE_SECONDS", "12"))      # grown to this in the background, then looped
 WORKING_IDLE_SECONDS = float(os.getenv("ASSISTANT_WORKING_IDLE_SECONDS", "6"))
-_POSE_VALUES = [float(v) for v in os.getenv("ASSISTANT_WORKING_POSE", "14,-14,0,-6,10").split(",")]
+_POSE_VALUES = [float(v) for v in os.getenv("ASSISTANT_WORKING_POSE", "14,-14,0,-6,-14").split(",")]
 WORKING_POSE = dict(zip(("pitch", "yaw", "roll", "eyes_x", "eyes_y"), _POSE_VALUES + [0.0] * 5))
 WORKING_POSE_ENABLED = os.getenv("ASSISTANT_WORKING_POSE_ENABLED", "1") == "1"
 CACHE_DIR = Path(os.getenv("JOB_ARTIFACTS_DIR", "./jobs")).resolve() / "personas"
-CACHE_VERSION = 3                                                    # bump when cached footage changes meaning
+CACHE_VERSION = 4                                                    # bump when cached footage changes meaning
+SETTLE_FRAMES = int(os.getenv("ASSISTANT_SETTLE_FRAMES", "7"))       # frames a clip takes to settle back into the rest pose
 TURN_FRAMES = int(os.getenv("ASSISTANT_TURN_FRAMES", "12"))          # head turn to/from the tablet, at 25 fps
 RENDER_TIMEOUT = float(os.getenv("ASSISTANT_RENDER_TIMEOUT", "30"))
 FPS = 25
@@ -530,7 +531,8 @@ class Assistant:
         path = self._idle_file(pose)
         if path is None or not segments:
             return
-        await self._save_npz(path, count=len(segments), **{f"idle_{i}": seg for i, seg in enumerate(segments)})
+        await self._save_npz(path, count=len(segments), settled=np.array(self.timeline.loop(pose).settled, dtype=bool),
+                             **{f"idle_{i}": seg for i, seg in enumerate(segments)})
         for stale in path.parent.glob(f"idle-{pose}-*.npz"):
             if stale != path:
                 stale.unlink(missing_ok=True)
@@ -544,7 +546,9 @@ class Assistant:
             return False
         try:
             data = await asyncio.to_thread(np.load, str(path))
-            self.timeline.loop(pose).segments = [data[f"idle_{i}"] for i in range(int(data["count"]))]
+            loop = self.timeline.loop(pose)
+            loop.segments = [data[f"idle_{i}"] for i in range(int(data["count"]))]
+            loop.settled = [bool(v) for v in data["settled"]] if "settled" in data else [False] * len(loop.segments)
             return True
         except Exception:
             return False
@@ -638,15 +642,29 @@ class Assistant:
         frames = await self.render_all(resample(pcm, 24000, 16000), f"{kind}:{pose}", pose)
         if not len(frames):
             return
+        frames = self.settled(frames, pose)
         clip = Clip(kind, text, resample(pcm, 24000, 48000), frames, pose)
         self.clips[kind].append(clip)
         await self._save_clip(clip)
         self.notify("filler_ready", kind=kind, count=len(self.clips[kind]), clips=self.clip_count())
 
+    def anchor(self, pose: str):
+        """The rest frame of `pose`: the first idle frame, which every reset render starts from."""
+        return self.timeline.loop(pose).anchor
+
+    def settled(self, frames: np.ndarray, pose: str) -> np.ndarray:
+        """`frames` followed by a short settle into the pose's rest frame, so the clip can
+        be followed by anything that starts there (idle, another clip, the reply)."""
+        anchor = self.anchor(pose)
+        if anchor is None or not len(frames) or anchor.shape != frames.shape[1:]:
+            return frames
+        return np.concatenate([frames, settle_frames(frames[-1], anchor, SETTLE_FRAMES)])
+
     async def grow_idle(self, pose: str, target_seconds: float) -> None:
         """Grow the idle loop of `pose` to `target_seconds`, yielding to turns. Footage
-        extends the current segment while the renderer's motion still follows it and
-        starts a new segment after anything else rendered."""
+        extends the current segment while the renderer's motion still follows it; after
+        anything else rendered, the segment is settled into the anchor and a new one
+        starts from it, so the finished loop joins everywhere with hard cuts."""
         loop = self.timeline.loop(pose)
         target = int(target_seconds * FPS)
         motion = f"idle:{pose}"
@@ -660,8 +678,11 @@ class Assistant:
                 continuous = self.renderer.motion == motion
                 frames, _ = await self.renderer.render_locked(np.zeros(self.renderer.samples, np.int16), not continuous,
                                                               self.timeline.generation, motion, pose)
+            if not continuous:
+                loop.settle(SETTLE_FRAMES)
             loop.add(frames, continuous)
         if not self.closed:
+            loop.settle(SETTLE_FRAMES)
             await self._save_idle(pose)
 
     async def open_working_pose(self) -> bool:
@@ -760,10 +781,11 @@ class Assistant:
                     closer = self.pick("closer")
                     closer_len = closer.seconds if closer else 0.0
                     turn_len = len(self.turn_up) / FPS if (working and self.turn_up is not None) else 0.0
-                    cut_at = max(plan["opener_end"], start - 0.25 - turn_len - (closer_len + 0.15 if closer else 0.0))
-                    cut = tl.truncate(cut_at, "filler")
+                    settle_len = SETTLE_FRAMES / FPS
+                    cut_at = max(plan["opener_end"], start - 0.25 - turn_len - settle_len - (closer_len + 0.15 if closer else 0.0))
+                    cut, cut_end = tl.truncate(cut_at, "filler", settle_to=self.anchor("working" if working else "front"), settle_count=SETTLE_FRAMES)
                     tl.truncate(cut_at, "turn")
-                    back = self.turn_head(cut_at + 0.05, "up", generation) if working else cut_at
+                    back = self.turn_head(cut_end + 0.02, "up", generation) if working else cut_end
                     if closer and back + 0.1 + closer_len + 0.15 <= start:
                         tl.schedule(back + 0.1, closer.audio48, closer.frames, generation, tag="filler")
                         self.notify("filler", kind="closer", text=closer.text)
@@ -932,6 +954,8 @@ class Assistant:
                     return
                 state["chunks"] += 1
                 covered = int(round(len(frames) / FPS * 48000))
+                if state["tts_done"] and not len(pending24):
+                    frames = self.settled(frames, "front")          # the reply ends in the rest pose the idle loop restarts from
                 rendered.append((frames, resample(piece, 24000, 48000)[:covered]))
                 if state["reply_start"] is None and (state["tts_done"] or tl.now() >= t0 + HEAD_START - 2.0):
                     decide_start()

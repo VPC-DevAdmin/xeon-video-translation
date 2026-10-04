@@ -17,7 +17,14 @@ never moves the frame on screen. Switching between idle and a clip dissolves too
 There can be several idle loops ("front": listening; "working": looking down at a
 tablet) and the active one is switched at scheduled times, so the filler plan of a
 turn can send the persona to its tablet and back. Filler clips carry a tag so the
-plan can cut them off (with a short fade) the moment the reply is ready."""
+plan can cut them off (with a short fade) the moment the reply is ready.
+
+Anchors: every piece of pre-rendered footage starts from the renderer's rest pose
+(each clip and idle segment is rendered from a reset) and ends by settling back into
+that rest frame (`settle_frames`), so clips, idle segments and the loop wrap join
+with a hard cut instead of a dissolve between two different poses. Only switches
+that cannot be anchored (an opener landing mid-idle, a head-turn clip) get a very
+short dissolve."""
 
 from __future__ import annotations
 
@@ -27,24 +34,54 @@ import time
 import numpy as np
 
 
+def settle_frames(last_frame, anchor, count: int):
+    """`count` frames dissolving from `last_frame` into `anchor`, the last one the anchor
+    itself: appended to footage so it ends in the common rest pose."""
+    last = np.asarray(last_frame).astype(np.float32)
+    target = np.asarray(anchor).astype(np.float32)
+    out = []
+    for i in range(count):
+        w = (i + 1) / count
+        out.append(((1.0 - w) * last + w * target).astype(np.asarray(anchor).dtype))
+    return np.stack(out) if out else np.zeros((0,) + np.asarray(anchor).shape, np.asarray(anchor).dtype)
+
+
 class IdleLoop:
-    """Continuous segments of idle footage played as one loop with dissolved boundaries."""
+    """Continuous segments of idle footage played as one loop. Boundaries dissolve
+    while footage is still growing; once every segment is settled into the anchor
+    (its first frame), boundaries and the wrap are hard cuts."""
 
     def __init__(self, crossfade: int, frames=None):
         self.crossfade = int(crossfade)
         self.segments: list = []
+        self.settled: list = []         # per segment: ends in the anchor frame
         self.pending: list = []         # footage waiting until the loop is outside its wrap dissolve
         self.cursor = 0
         if frames is not None and len(frames):
             self.segments.append(np.asarray(frames))
+            self.settled.append(False)
 
     @property
     def ready(self) -> bool:
         return bool(self.segments)
 
     @property
+    def anchor(self):
+        """The rest pose every segment starts from (and settled ones end in)."""
+        return self.segments[0][0] if self.segments else None
+
+    def effective_crossfade(self) -> int:
+        return 0 if self.segments and all(self.settled) and not self.pending else self.crossfade
+
+    def settle(self, count: int) -> None:
+        """End the last segment in the anchor frame (no-op when already settled)."""
+        if self.segments and not self.settled[-1] and not self.pending:
+            self.pending.append((settle_frames(self.segments[-1][-1], self.anchor, count), True, True))
+            self.publish()
+
+    @property
     def frame_count(self) -> int:
-        return sum(len(s) for s in self.segments) + sum(len(f) for f, _ in self.pending)
+        return sum(len(s) for s in self.segments) + sum(len(f) for f, _, _ in self.pending)
 
     def add(self, frames, continuous: bool) -> None:
         """Append footage: to the last segment when the renderer's motion continued it,
@@ -56,36 +93,39 @@ class IdleLoop:
         frames = np.asarray(frames)
         if not len(frames):
             return
-        self.pending.append((frames, continuous))
+        self.pending.append((frames, continuous, False))
         self.publish()
 
     def publish(self) -> None:
         if not self.pending:
             return
         if self.segments:
-            segment, j, k = idle_loop_locate(self.segments, self.cursor, self.crossfade)
+            segment, j, k = idle_loop_locate(self.segments, self.cursor, self.effective_crossfade())
             if segment == 0 and j < k:
                 return
-        for frames, continuous in self.pending:
+        for frames, continuous, settles in self.pending:
             if continuous and self.segments:
                 self.segments[-1] = np.concatenate([self.segments[-1], frames])
+                if settles:
+                    self.settled[-1] = True
             else:
                 self.segments.append(frames)
+                self.settled.append(settles)
         self.pending.clear()
 
     def advance(self, delta: int) -> None:
         """Move the cursor by `delta` frames, kept inside the loop as it is now; footage
         published afterwards only extends the loop beyond it."""
         if self.segments:
-            self.cursor = (self.cursor + max(0, delta)) % idle_loop_length(self.segments, self.crossfade)
+            self.cursor = (self.cursor + max(0, delta)) % idle_loop_length(self.segments, self.effective_crossfade())
         self.publish()
 
     def frame(self):
-        return idle_loop_frame(self.segments, self.cursor, self.crossfade)
+        return idle_loop_frame(self.segments, self.cursor, self.effective_crossfade())
 
 
 class Timeline:
-    def __init__(self, fps: int = 25, still=None, idle_frames=None, audio_rate: int = 48000, transition_seconds: float = 0.5):
+    def __init__(self, fps: int = 25, still=None, idle_frames=None, audio_rate: int = 48000, transition_seconds: float = 0.16):
         self.epoch = time.monotonic()
         self.fps = int(fps)
         self.audio_rate = int(audio_rate)
@@ -123,6 +163,7 @@ class Timeline:
     @idle_segments.setter
     def idle_segments(self, segments) -> None:
         self.loops["front"].segments = list(segments)
+        self.loops["front"].settled = [False] * len(self.loops["front"].segments)
 
     def add_idle(self, frames, continuous: bool, name: str = "front") -> None:
         self.loop(name).add(frames, continuous)
@@ -170,10 +211,12 @@ class Timeline:
         self.promises = [(a, b) for a, b in self.promises if not (a < end and start < b)]
         return start, end
 
-    def truncate(self, seconds: float, tag: str, fade_seconds: float = 0.08) -> int:
+    def truncate(self, seconds: float, tag: str, fade_seconds: float = 0.08, settle_to=None, settle_count: int = 6):
         """Cut clips carrying `tag` at `seconds`: later ones are dropped, the one playing
-        across it ends there with a short audio fade. Returns how many were affected."""
-        kept, affected = [], 0
+        across it ends there with a short audio fade and, when `settle_to` is given, a
+        few frames settling into that anchor frame. Returns (affected, end) where `end`
+        is when the cut footage finishes (`seconds` when nothing was playing)."""
+        kept, affected, end_at = [], 0, seconds
         for start, end, audio, frames, clip_tag in self.clips:
             if clip_tag != tag or end <= seconds:
                 kept.append((start, end, audio, frames, clip_tag))
@@ -187,9 +230,13 @@ class Timeline:
             if fade:
                 audio[-fade:] = (audio[-fade:].astype(np.float32) * np.linspace(1.0, 0.0, fade, dtype=np.float32)).astype(audio.dtype)
             frames = frames[:max(1, int(round((seconds - start) * self.fps)))]
-            kept.append((start, seconds, audio, frames, clip_tag))
+            end_at = seconds
+            if settle_to is not None and settle_count and frames.shape[1:] == np.asarray(settle_to).shape:
+                frames = np.concatenate([frames, settle_frames(frames[-1], settle_to, settle_count)])
+                end_at = seconds + settle_count / self.fps
+            kept.append((start, end_at, audio, frames, clip_tag))
         self.clips = kept
-        return affected
+        return affected, end_at
 
     def clips_tagged(self, tag: str) -> list:
         return [c for c in self.clips if c[4] == tag]
@@ -235,11 +282,17 @@ class Timeline:
                 image, source = loop.frame(), f"idle:{name if loop is self.loops.get(name) else 'front'}"
             else:
                 image, source = self.still, "still"
-        if self._last is not None and source != self._last[1] and self.transition_frames and image is not None:
-            # A head-turn clip is footage of the pose change itself: only a few frames of
-            # dissolve at its ends, or the turn would be smeared.
-            frames_for_switch = min(self.transition_frames, 4) if any("turn" in name for name in (self._last[1], source)) else self.transition_frames
-            self._blend = (self._last[0], index, frames_for_switch)
+        if self._last is not None and source != self._last[1] and image is not None:
+            if source.startswith("idle"):
+                # Back from a clip: clips end settled in the rest pose, which is where every
+                # idle loop starts, so restart the loop there and the join is a hard cut.
+                for name, loop in self.loops.items():
+                    if source == f"idle:{name}":
+                        loop.cursor = 0
+                        image = loop.frame()
+            if self.transition_frames:
+                frames_for_switch = min(self.transition_frames, 4) if any("turn" in name for name in (self._last[1], source)) else self.transition_frames
+                self._blend = (self._last[0], index, frames_for_switch)
         self._last = (image, source)
         if self._blend is not None and image is not None:
             since = index - self._blend[1]
