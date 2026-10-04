@@ -73,6 +73,8 @@ def script_for(language: str) -> str:
 
 # ------------------------------------------------------------------ checks
 def normalize_words(text: str) -> list[str]:
+    """Lower-case words; curly apostrophes and quotes become plain so "Let’s" == "let's"."""
+    text = text.replace("\u2019", "'").replace("\u2018", "'").replace("\u201c", '"').replace("\u201d", '"')
     return re.findall(r"[\w']+", text.lower())
 
 

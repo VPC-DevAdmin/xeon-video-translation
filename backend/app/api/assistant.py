@@ -116,10 +116,7 @@ def _aligned_span(sentence: str, words):
     """(matched ratio, first word start, last word end) of the sentence inside the
     recognized words; babble before or after the sentence falls outside the span."""
     import difflib
-    import re
-
-    def norm(text):
-        return re.findall(r"[\w']+", text.lower())
+    from .personas import normalize_words as norm
 
     target = norm(sentence)
     heard = [(norm(w.text if hasattr(w, "text") else w.word), w.start, w.end) for w in words]
@@ -166,7 +163,9 @@ def _verified_sentence(model, conditioning, sentence: str, language: str, attemp
         matched, first, last = _aligned_span(sentence, words)
         heard = transcript.text.strip()
         if first is not None:
-            cut = audio[max(0, int((first - 0.1) * SAMPLE_RATE)): int((last + 0.25) * SAMPLE_RATE)]
+            # Whisper places the first word's start late and the last word's end early
+            # (initial consonants and final releases); pad so no word is clipped.
+            cut = audio[max(0, int((first - 0.3) * SAMPLE_RATE)): int((last + 0.35) * SAMPLE_RATE)]
         else:
             cut = audio
         if matched >= 0.85 and len(cut) / SAMPLE_RATE <= expected:
