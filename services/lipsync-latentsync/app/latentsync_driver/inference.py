@@ -277,6 +277,7 @@ def _run_impl(
     face_track_source: Path | str | None = None,
     face_track_offset_frames: int = 0,
     prepare_only: bool = False,
+    persona_key: str | None = None,
 ) -> InferenceResult:
     """Run LatentSync inference. All tensor ops are CPU float32.
 
@@ -685,6 +686,9 @@ def _run_impl(
             ),
             progress_callback=_write_progress,
             face_track=face_track,
+            # Resident persona conditioning on the workers (video assistant
+            # replies redraw the same footage every turn).
+            persona_key=persona_key,
         )
     elapsed = time.perf_counter() - started
     log.info("latentsync inference finished in %.1fs", elapsed)

@@ -35,6 +35,62 @@ import torch.multiprocessing as mp
 log = logging.getLogger("latentsync.shard")
 
 
+class _PersonaCache:
+    """Audio-independent conditioning (mask, masked-face and reference latents)
+    for a fixed persona clip, keyed by (persona_key, chunk_index).
+
+    A video assistant redraws the mouth on the same footage for every reply,
+    so the VAE encodes of that footage need to happen once per worker, not
+    once per chunk per reply. Bounded LRU; entries are a few MB each."""
+
+    def __init__(self, max_entries: int = 1024):
+        from collections import OrderedDict
+        self.max_entries = int(max_entries)
+        self._items = OrderedDict()
+        self.hits = 0
+        self.misses = 0
+
+    def get(self, key):
+        item = self._items.get(key)
+        if item is None:
+            self.misses += 1
+            return None
+        self._items.move_to_end(key)
+        self.hits += 1
+        return item
+
+    def put(self, key, value):
+        self._items[key] = value
+        self._items.move_to_end(key)
+        while len(self._items) > self.max_entries:
+            self._items.popitem(last=False)
+
+    def __len__(self):
+        return len(self._items)
+
+
+def encode_conditioning(vae, dtype, cfg: bool, masks, masked, ref):
+    """VAE-encode the masked and reference crops on this worker's device.
+
+    Returns ``(mask_latents, masked_image_latents, ref_latents)`` shaped for the
+    UNet (``1 c f h w``, duplicated along batch when ``cfg``)."""
+    import torch.nn.functional as F
+    from einops import rearrange
+
+    vsf = 2 ** (len(vae.config.block_out_channels) - 1)
+    ml = F.interpolate(masks, size=(masked.shape[-2] // vsf, masked.shape[-1] // vsf))
+    mil = vae.encode(masked.to(dtype)).latent_dist.sample()
+    mil = (mil - vae.config.shift_factor) * vae.config.scaling_factor
+    rl = vae.encode(ref.to(dtype)).latent_dist.sample()
+    rl = (rl - vae.config.shift_factor) * vae.config.scaling_factor
+    ml = rearrange(ml.to(dtype), "f c h w -> 1 c f h w")
+    mil = rearrange(mil, "f c h w -> 1 c f h w")
+    rl = rearrange(rl, "f c h w -> 1 c f h w")
+    if cfg:
+        ml, mil, rl = (torch.cat([x] * 2) for x in (ml, mil, rl))
+    return ml, mil, rl
+
+
 def _worker_main(dev_index: int, in_q, out_q, build: dict) -> None:  # pragma: no cover - runs in child
     """Child entry point. Loads models, then serves chunks until told to stop."""
     try:
@@ -66,6 +122,7 @@ def _worker_main(dev_index: int, in_q, out_q, build: dict) -> None:  # pragma: n
         scheduler = DDIMScheduler.from_pretrained(build["scheduler_dir"])
         out_q.put(("ready", dev_index, time.perf_counter() - t0))
 
+        persona_cache = _PersonaCache(int(os.environ.get("LATENTSYNC_PERSONA_CACHE_CHUNKS", "1024")))
         job_id = None
         timesteps = None
         guidance = 1.5
@@ -88,28 +145,34 @@ def _worker_main(dev_index: int, in_q, out_q, build: dict) -> None:  # pragma: n
             _, message_job, i, cond = msg
             if message_job != job_id:
                 continue
+            received = time.time()
+            cached = False
             try:
                 with torch.inference_mode():
-                    if len(cond) == 6 and cond[0] == "pixels":
+                    if len(cond) == 8 and cond[0] == "persona":
+                        # Resident persona: the footage conditioning for this
+                        # chunk is encoded once per worker and reused across
+                        # replies; only the noise latents and audio change.
+                        _, persona_key, chunk_index, lat, ae, masks, masked, ref = cond
+                        lat = lat.to(device, non_blocking=True)
+                        ae = None if ae is None else ae.to(device, non_blocking=True)
+                        entry = persona_cache.get((persona_key, int(chunk_index)))
+                        if entry is None:
+                            masks, masked, ref = (x.to(device, non_blocking=True) for x in (masks, masked, ref))
+                            entry = encode_conditioning(vae, dtype, cfg, masks, masked, ref)
+                            persona_cache.put((persona_key, int(chunk_index)), entry)
+                        else:
+                            cached = True
+                        ml, mil, rl = entry
+                    elif len(cond) == 6 and cond[0] == "pixels":
                         # Worker-side conditioning: the coordinator sends the
-                        # masks and 256 px pixel crops; this process encodes
-                        # them with its own VAE so the coordinator's single
-                        # thread no longer serialises a VAE pass per chunk.
+                        # masks and pixel crops; this process encodes them with
+                        # its own VAE so the coordinator's single thread no
+                        # longer serialises a VAE pass per chunk.
                         lat, masks, masked, ref, ae = (
                             None if x is None else x.to(device, non_blocking=True) for x in cond[1:]
                         )
-                        import torch.nn.functional as F
-                        vsf = 2 ** (len(vae.config.block_out_channels) - 1)
-                        ml = F.interpolate(masks, size=(masked.shape[-2] // vsf, masked.shape[-1] // vsf))
-                        mil = vae.encode(masked.to(dtype)).latent_dist.sample()
-                        mil = (mil - vae.config.shift_factor) * vae.config.scaling_factor
-                        rl = vae.encode(ref.to(dtype)).latent_dist.sample()
-                        rl = (rl - vae.config.shift_factor) * vae.config.scaling_factor
-                        ml = rearrange(ml.to(dtype), "f c h w -> 1 c f h w")
-                        mil = rearrange(mil, "f c h w -> 1 c f h w")
-                        rl = rearrange(rl, "f c h w -> 1 c f h w")
-                        if cfg:
-                            ml, mil, rl = (torch.cat([x] * 2) for x in (ml, mil, rl))
+                        ml, mil, rl = encode_conditioning(vae, dtype, cfg, masks, masked, ref)
                     else:
                         lat, ml, mil, rl, ae = (None if x is None else x.to(device, non_blocking=True) for x in cond)
                     step_kwargs = {"eta": eta} if accepts_eta else {}
@@ -126,7 +189,8 @@ def _worker_main(dev_index: int, in_q, out_q, build: dict) -> None:  # pragma: n
                     z = rearrange(z, "b c f h w -> (b f) c h w")
                     pixels = vae.decode(z).sample
                     torch.cuda.synchronize(device)
-                out_q.put(("done", job_id, i, pixels.to("cpu")))
+                timing = {"received": received, "done": time.time(), "device": dev_index, "persona_cached": cached}
+                out_q.put(("done", job_id, i, pixels.to("cpu"), timing))
             except Exception as e:  # report, keep serving
                 out_q.put(("error", job_id, i, f"{type(e).__name__}: {e}\n{traceback.format_exc()[-1500:]}"))
     except Exception as e:
@@ -142,6 +206,7 @@ class DenoisePool:
         self.out_q = out_q
         self.devices = devices
         self._results: dict[int, Any] = {}
+        self.timings: dict[int, dict] = {}
         self._next = 0
         self.size = len(workers)
         self.job_id = None
@@ -185,12 +250,15 @@ class DenoisePool:
     def begin_job(self, steps: int, guidance: float, cfg: bool, eta: float) -> None:
         self.job_id = uuid.uuid4().hex
         self._results.clear()
+        self.timings.clear()
         self._next = 0
         for q in self.in_queues:
             q.put(("job", self.job_id, int(steps), float(guidance), bool(cfg), float(eta)), timeout=10)
 
     def submit(self, i: int, cond: tuple) -> None:
-        """`cond` = (latents, mask_latents, masked_image_latents, ref_latents, audio_embeds) as CPU tensors."""
+        """`cond` = (latents, mask_latents, masked_image_latents, ref_latents, audio_embeds) as CPU tensors,
+        or the ("pixels", ...) / ("persona", key, index, ...) forms the worker encodes itself.
+        Chunk `i` always lands on worker `i % size`, so a persona cache keyed by chunk index is per-worker stable."""
         self.in_queues[self._next % self.size].put(("chunk", self.job_id, i, cond), timeout=60)
         self._next += 1
 
@@ -217,6 +285,8 @@ class DenoisePool:
                 continue
             if kind == "done":
                 self._results[msg[2]] = msg[3]
+                if len(msg) > 4 and isinstance(msg[4], dict):
+                    self.timings[msg[2]] = msg[4]
             elif kind == "error":
                 raise RuntimeError(f"denoise chunk {msg[2]} failed in worker: {msg[3]}")
             elif kind == "fatal":

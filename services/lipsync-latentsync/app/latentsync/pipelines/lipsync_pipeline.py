@@ -316,6 +316,34 @@ def _fill_missing_landmarks(
     return filled, missing_indices
 
 
+def chunk_timeline_report(chunk_times: dict, num_frames: int, fps: float, t0_wall: float,
+                          total_frames: int, persona_key=None) -> dict:
+    """Streaming margin of a chunked render, from per-chunk timestamps.
+
+    For playout at ``fps`` that starts ``H`` seconds after the render began,
+    chunk ``i`` is due at ``H + i * num_frames / fps``. The smallest ``H`` with
+    no stall is ``max_i(restored_i - i * num_frames / fps)``. Also reports the
+    first chunk's latency and the aggregate restored-frame rate."""
+    rows = []
+    for index in sorted(chunk_times):
+        row = {"chunk": index, **chunk_times[index]}
+        rows.append(row)
+    restored = [(r["chunk"], r["restored"]) for r in rows if "restored" in r]
+    report = {"event": "latentsync_chunks", "t0_wall": round(t0_wall, 3), "num_frames": num_frames,
+              "fps": fps, "frames": total_frames, "persona_key": persona_key, "chunks": rows}
+    if restored:
+        per_chunk = num_frames / float(fps)
+        report["first_chunk_restored_seconds"] = restored[0][1]
+        report["last_chunk_restored_seconds"] = restored[-1][1]
+        report["min_head_start_seconds"] = round(max(t - i * per_chunk for i, t in restored), 3)
+        span = restored[-1][1] - min(r.get("submit", restored[0][1]) for r in rows)
+        report["restored_fps_aggregate"] = round(total_frames / span, 2) if span > 0 else None
+        cached = [r.get("persona_cached") for r in rows if "persona_cached" in r]
+        if cached:
+            report["persona_cache_hits"] = int(sum(1 for c in cached if c))
+    return report
+
+
 class LipsyncPipeline(DiffusionPipeline):
     _optional_components = []
 
@@ -1002,6 +1030,15 @@ class LipsyncPipeline(DiffusionPipeline):
         if synced_video_frames_tensor is None:
             stage_started = time.perf_counter()
             profile = {}
+            # Per-chunk timeline (seconds since this call began, plus the wall
+            # clock origin) so a streaming consumer's playout margin can be
+            # computed offline: when each chunk was submitted, when its pixels
+            # came back, and when it was pasted into the full frames.
+            call_t0 = stage_started
+            call_t0_wall = time.time()
+            chunk_times: dict = {}
+            persona_key = kwargs.get("persona_key")
+            profile["persona_key"] = persona_key
             # Window inputs: decoded frames, warped faces (via the shared face
             # track when supplied), audio features. Prepared ahead by
             # /lipsync/prepare while the previous window denoised, otherwise
@@ -1169,6 +1206,7 @@ class LipsyncPipeline(DiffusionPipeline):
                 started_at = time.perf_counter()
                 out = self.restore_video(decoded[: b - a], video_frames[a:b], boxes[a:b], affine_matrices[a:b])
                 restore_seconds[0] += time.perf_counter() - started_at
+                chunk_times.setdefault(index, {})["restored"] = round(time.perf_counter() - call_t0, 3)
                 return out
 
             def collect_chunk(index):
@@ -1177,6 +1215,14 @@ class LipsyncPipeline(DiffusionPipeline):
                 if use_pool:
                     decoded = pool.result(index).to(device, dtype=weight_dtype)
                     done_count[0] += 1
+                    entry = chunk_times.setdefault(index, {})
+                    entry["result"] = round(time.perf_counter() - call_t0, 3)
+                    timing = pool.timings.get(index)
+                    if timing:
+                        entry["worker_received"] = round(timing["received"] - call_t0_wall, 3)
+                        entry["worker_done"] = round(timing["done"] - call_t0_wall, 3)
+                        entry["device"] = timing.get("device")
+                        entry["persona_cached"] = timing.get("persona_cached", False)
                 else:
                     ready[index].wait()
                     if failures:
@@ -1241,9 +1287,20 @@ class LipsyncPipeline(DiffusionPipeline):
                         cond = (latents, None, None, None, audio_embeds, ref_pixel_values, masks)
                         chunk_cond.append(cond)
                         todo_count[0] += 1
-                        pool.submit(i, ("pixels", *(
-                            x.detach().to("cpu") for x in (latents, masks, masked_pixel_values, ref_pixel_values)
-                        ), None if audio_embeds is None else audio_embeds.detach().to("cpu")))
+                        chunk_times.setdefault(i, {})["submit"] = round(time.perf_counter() - call_t0, 3)
+                        audio_cpu = None if audio_embeds is None else audio_embeds.detach().to("cpu")
+                        if persona_key:
+                            # Resident persona: the worker keeps this chunk's
+                            # footage latents after the first reply; the crops
+                            # still travel (cheap over /dev/shm) so a cold
+                            # worker can build them.
+                            pool.submit(i, ("persona", persona_key, i, latents.detach().to("cpu"), audio_cpu, *(
+                                x.detach().to("cpu") for x in (masks, masked_pixel_values, ref_pixel_values)
+                            )))
+                        else:
+                            pool.submit(i, ("pixels", *(
+                                x.detach().to("cpu") for x in (latents, masks, masked_pixel_values, ref_pixel_values)
+                            ), audio_cpu))
                     else:
                         # 7. Prepare mask latent variables
                         mask_latents, masked_image_latents = self.prepare_mask_latents(
@@ -1337,6 +1394,8 @@ class LipsyncPipeline(DiffusionPipeline):
                 # path is unwritable we log and continue — the live run still
                 # completes; only a future retry would miss the cache.
                 synced_video_frames_tensor = torch.cat(synced_video_frames)
+            print(json.dumps(chunk_timeline_report(chunk_times, num_frames, video_fps, call_t0_wall,
+                                                   len(whisper_chunks), persona_key)), flush=True)
             if denoise_checkpoint_path and synced_video_frames_tensor is not None:
                 try:
                     print(f"Saving denoise checkpoint: {denoise_checkpoint_path}")

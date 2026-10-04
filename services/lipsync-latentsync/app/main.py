@@ -151,6 +151,14 @@ class LipsyncRequest(BaseModel):
         None, ge=0,
         description="First frame of this window on the source's 25 fps grid.",
     )
+    persona_key: str | None = Field(
+        None, max_length=128, pattern=r"^[A-Za-z0-9._-]+$",
+        description=(
+            "Stable name for a fixed persona clip. Workers keep that clip's "
+            "audio-independent conditioning resident so repeated replies skip "
+            "the per-chunk VAE encodes."
+        ),
+    )
 
 
 class PrepareRequest(BaseModel):
@@ -466,6 +474,7 @@ def _lipsync_locked(req: LipsyncRequest) -> LipsyncResponse:
             seed=req.seed,
             face_track_source=req.face_track_source,
             face_track_offset_frames=req.face_track_offset_frames or 0,
+            persona_key=req.persona_key,
         )
     except FileNotFoundError as e:
         # Raised by the driver when an expected weight/config isn't on
