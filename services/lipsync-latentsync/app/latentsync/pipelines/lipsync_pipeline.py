@@ -1132,9 +1132,11 @@ class LipsyncPipeline(DiffusionPipeline):
                 for th in threads:
                     th.join()
 
-            if os.environ.get("GPU_PROFILE", "0") == "1":
-                profile.update(event="latentsync_stages", frames=len(whisper_chunks), steps=num_inference_steps, workers=pool.size if use_pool else len(replicas), prefetch=prefetch)
-                print(json.dumps(profile), flush=True)
+            # Always printed: perf_counter sums only, no stream syncs. This is
+            # the stage breakdown operators need to pick the next optimization.
+            profile.update(event="latentsync_stages", frames=len(whisper_chunks), steps=num_inference_steps, workers=pool.size if use_pool else len(replicas), prefetch=prefetch)
+            profile = {k: (round(v, 2) if isinstance(v, float) else v) for k, v in profile.items()}
+            print(json.dumps(profile), flush=True)
 
             # Consolidate all chunk outputs into one tensor, then save for
             # resume. Cache write is best-effort: if disk is full or the
@@ -1232,6 +1234,7 @@ class LipsyncPipeline(DiffusionPipeline):
                 print(f"affine dump (post-smooth) failed: {_e}")
 
         _emit_progress("restore", 0.90)
+        restore_started = time.perf_counter()
         synced_video_frames = self.restore_video(
             synced_video_frames_tensor, video_frames, boxes, affine_matrices,
             progress_callback=(
@@ -1254,9 +1257,13 @@ class LipsyncPipeline(DiffusionPipeline):
         _emit_progress("mux", 0.98)
         # GPU patch: one encode+mux pass (NVENC when available) instead of
         # imageio libx264 crf 13 followed by a second libx264 crf 18 pass.
+        write_started = time.perf_counter()
         sf.write(os.path.join(temp_dir, "audio.wav"), audio_samples, audio_sample_rate)
         write_video_with_audio(
             video_out_path, synced_video_frames, fps=video_fps,
             audio_wav_path=os.path.join(temp_dir, "audio.wav"),
         )
+        print(json.dumps({"event": "latentsync_finish", "frames": int(synced_video_frames.shape[0]),
+                          "restore_seconds": round(write_started - restore_started, 2),
+                          "write_seconds": round(time.perf_counter() - write_started, 2)}), flush=True)
         _emit_progress("done", 1.0)
