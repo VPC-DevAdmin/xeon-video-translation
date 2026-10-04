@@ -36,12 +36,15 @@ and must be single-quoted so Compose keeps the quotes:
 ```
 TURN_SHARED_SECRET=<random>
 TURN_PUBLIC_IP=100.67.151.209
-TURN_URLS_JSON='["turn:100.67.151.209:3478?transport=udp","turn:100.67.151.209:3478?transport=tcp","turn:localhost:3478?transport=tcp"]'
+TURN_URLS_JSON='["turn:100.67.151.209:3478?transport=udp","turn:100.67.151.209:3478?transport=tcp"]'
 ICE_SERVERS_JSON='[{"urls":["stun:100.67.151.209:3478"]}]'
 ```
 
-If UDP to the box is blocked entirely, add `-L 3478:localhost:3478` to the SSH
-command and the browser relays over TCP through the tunnel.
+The page sends its offer after at most 4 s of candidate gathering, so an
+unreachable server entry cannot stall the call. If UDP to the box is blocked
+entirely, add `"turn:localhost:3478?transport=tcp"` to `TURN_URLS_JSON`, add
+`-L 3478:localhost:3478` to the SSH command, and the browser relays over TCP
+through the tunnel.
 
 ## What happens on a turn
 

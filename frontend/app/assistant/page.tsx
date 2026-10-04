@@ -109,9 +109,12 @@ export default function AssistantPage() {
       stream.getAudioTracks().forEach(track => pc.addTrack(track, stream));
       pc.addTransceiver("video", { direction: "recvonly" });
       await pc.setLocalDescription(await pc.createOffer());
-      await new Promise<void>((resolve, reject) => {
-        const timeout = setTimeout(() => { pc.removeEventListener("icegatheringstatechange", check); reject(new Error("ICE gathering timed out")); }, 15000);
-        const check = () => { if (pc.iceGatheringState === "complete") { clearTimeout(timeout); pc.removeEventListener("icegatheringstatechange", check); resolve(); } };
+      // Gather for a bounded time: unreachable TURN entries would otherwise hold
+      // the offer for tens of seconds. Whatever candidates exist by then go out.
+      await new Promise<void>(resolve => {
+        const done = () => { pc.removeEventListener("icegatheringstatechange", check); resolve(); };
+        const timeout = setTimeout(done, 4000);
+        const check = () => { if (pc.iceGatheringState === "complete") { clearTimeout(timeout); done(); } };
         pc.addEventListener("icegatheringstatechange", check); check();
       });
       const response = await fetch(`${BASE}/assistant/sessions/${session.current}/offer`, {
