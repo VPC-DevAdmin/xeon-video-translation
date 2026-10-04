@@ -107,3 +107,19 @@ def test_review_audit_written_once_per_job(tmp_path, monkeypatch):
     t.translate(transcript, out, "es", backend_override="llm", quality_review=True)
     assert len(writes) == 1
     assert len(json.loads(out.with_suffix(".review.json").read_text())["segments"]) == 3
+
+
+def test_review_that_imports_context_is_rejected_and_draft_kept(tmp_path, monkeypatch):
+    monkeypatch.setattr(t.llm, "configured", lambda: True)
+    transcript = {"language": "en", "segments": [
+        {"start": 0, "end": 2, "text": "We keep the voice."},
+        {"start": 2, "end": 4, "text": "Then the mouth is regenerated to match the new words and everything runs on one server."}]}
+    bloated = "Mantenemos la voz. Luego la boca se regenera para coincidir con las nuevas palabras y todo funciona en un solo servidor con tarjetas gráficas."
+    replies = iter(["Mantenemos la voz.", json.dumps({"translation": bloated, "changes": ["added context"], "unresolved_issues": []}),
+                    "Luego la boca se regenera.", json.dumps({"translation": "Luego la boca se regenera.", "changes": [], "unresolved_issues": []})])
+    monkeypatch.setattr(t.llm, "chat", lambda *a, **k: next(replies))
+    out = tmp_path / "translation.json"
+    result = t.translate(transcript, out, "es", backend_override="llm", quality_review=True)
+    assert result.segments[0].text == "Mantenemos la voz."
+    audit = json.loads(out.with_suffix(".review.json").read_text())["segments"][0]
+    assert audit["rejected_revision"] == bloated and "expanded" in audit["rejection"]
