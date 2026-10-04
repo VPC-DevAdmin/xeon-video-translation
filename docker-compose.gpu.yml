@@ -7,9 +7,10 @@
 # same ports. It swaps images to the CUDA builds, hands each service its
 # own GPU(s), and adds the WebRTC ingest service.
 #
-# XE7740 layout (4 Oct 2026): fast lipsync workers on 3,2,0 (+1 when vLLM is
-# shrunk to 0.70), batch workers on 4,5,6,7; whisper/XTTS on 0, LLM on 1,
-# avatar renderer + codecs on 2 share their cards with a fast worker.
+# One mode is live at a time (scripts/mode.sh translate|avatar). Translation
+# mode: one LatentSync pool with a worker on every GPU (fast = 10 steps,
+# quality = 40 steps), whisper/XTTS on 0, LLM on 1. Avatar mode: the
+# docker-compose.avatar.yml services, with the pool stopped.
 # Apply docker-compose.avatar.yml for the dedicated avatar services.
 # Generate a UUID-based assignment overlay with scripts/gpu_layout.py.
 # The quality-audio profile needs GPU 7 excluded from LATENTSYNC_GPUS.
@@ -83,9 +84,6 @@ services:
       MAX_PENDING_JOBS: ${MAX_PENDING_JOBS:-32}
       MUSETALK_FRAME_BUDGET_MB: ${MUSETALK_FRAME_BUDGET_MB:-4096}
       LATENTSYNC_FRAME_BUDGET_MB: ${LATENTSYNC_FRAME_BUDGET_MB:-8192}
-      # The fast preset is 10-step LatentSync on its own renderer and lane.
-      # Without this URL fast jobs would queue in the batch lane.
-      LATENTSYNC_FAST_SERVICE_URL: ${LATENTSYNC_FAST_SERVICE_URL:-http://lipsync-fast:8000}
       TTS_SEGMENT_RETRIES: ${TTS_SEGMENT_RETRIES:-3}
       MAX_VIDEO_DURATION_SECONDS: ${MAX_VIDEO_DURATION_SECONDS:-120}
       # Final mux on the GPU's hardware encoder. Needs the `video` driver
@@ -116,69 +114,9 @@ services:
               device_ids: ["${BACKEND_GPU:-0}"]
               capabilities: [gpu]
 
-  # Fast LatentSync renderer (10 steps). Shards the UNet one worker process
-  # per GPU in LATENTSYNC_FAST_GPUS (comma list; the first entry also hosts
-  # the coordinator). Lipsync is an order of magnitude heavier than any
-  # other stage, so workers are co-located with the light services: the
-  # default 3,2,0 shares GPU 2 with the avatar renderer and GPU 0 with
-  # whisper/XTTS. All models stay resident; only SM time is shared. Keep
-  # the list disjoint from LATENTSYNC_GPUS.
-  lipsync-fast:
-    image: polyglot-demo/lipsync-latentsync:gpu
-    build:
-      context: ./services/lipsync-latentsync
-      additional_contexts:
-        gpu_shared: ./shared
-      dockerfile: Dockerfile.gpu
-    container_name: polyglot-lipsync-fast
-    restart: unless-stopped
-    runtime: nvidia
-    # Worker processes hand decoded chunks back through /dev/shm.
-    shm_size: "16gb"
-    environment:
-      DEVICE: cuda
-      GPU_REQUIRED: "true"
-      GPU_PROFILE: ${GPU_PROFILE:-0}
-      GPU_CUDNN_BENCHMARK: ${GPU_CUDNN_BENCHMARK:-0}
-      ORT_CUDNN_CONV_ALGO_SEARCH: ${ORT_CUDNN_CONV_ALGO_SEARCH:-HEURISTIC}
-      MODEL_CACHE_DIR: /models
-      JOB_ARTIFACTS_DIR: /jobs
-      HF_HOME: /models/huggingface
-      HF_TOKEN_PATH: /run/secrets/hf_token
-      NVIDIA_VISIBLE_DEVICES: ${LATENTSYNC_FAST_GPUS:-3,2,0}
-      CUDA_VISIBLE_DEVICES: "0,1,2,3,4,5,6,7"
-      NVIDIA_DRIVER_CAPABILITIES: compute,utility,video
-      LATENTSYNC_DTYPE: fp16
-      # Build pipeline, worker pool and detector sessions at startup (~75 s cold).
-      LATENTSYNC_WARMUP: ${LATENTSYNC_WARMUP:-1}
-      LATENTSYNC_VIDEO_ENCODER: h264_nvenc
-      LATENTSYNC_STEPS: "10"
-      LATENTSYNC_GUIDANCE: "1.5"
-      LATENTSYNC_ENABLE_DEEPCACHE: "0"
-      LATENTSYNC_SHARD_MODE: ${LATENTSYNC_SHARD_MODE:-process}
-      # 0 = one UNet replica per visible GPU.
-      LATENTSYNC_UNET_REPLICAS: "0"
-      LATENTSYNC_FRAME_BUDGET_MB: ${LATENTSYNC_FRAME_BUDGET_MB:-8192}
-      OMP_NUM_THREADS: "16"
-      MKL_NUM_THREADS: "16"
-    volumes:
-      - jobs:/jobs
-      - models:/models
-      - ${HF_TOKEN_FILE:-/dev/null}:/run/secrets/hf_token:ro
-    ports:
-      - "127.0.0.1:${LATENTSYNC_FAST_PORT:-8094}:8000"
-    healthcheck:
-      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5).read()"]
-      interval: 20s
-      timeout: 6s
-      retries: 6
-    deploy:
-      resources:
-        limits: {cpus: "32.0", memory: 96g}
-
   # MuseTalk is no longer used by any mode preset (fast = 10-step LatentSync).
-  # Kept behind a profile for A/B comparisons. MUSETALK_GPU must not be in
-  # LATENTSYNC_FAST_GPUS or LATENTSYNC_GPUS when the profile is enabled.
+  # Kept behind a profile for A/B comparisons; stop the pool or shrink
+  # LATENTSYNC_GPUS before enabling it.
   lipsync-musetalk:
     profiles: [draft-lipsync]
     build:
@@ -248,7 +186,11 @@ services:
       GPU_PROFILE: ${GPU_PROFILE:-0}
       GPU_CUDNN_BENCHMARK: ${GPU_CUDNN_BENCHMARK:-0}
       ORT_CUDNN_CONV_ALGO_SEARCH: ${ORT_CUDNN_CONV_ALGO_SEARCH:-HEURISTIC}
-      NVIDIA_VISIBLE_DEVICES: ${LATENTSYNC_GPUS:-4,5,6,7}
+      # Modes are exclusive (scripts/mode.sh): in translation mode the pool
+      # owns every GPU. The first entry hosts the coordinator; GPU 1 shares
+      # with the LLM (vLLM at 0.70) and GPU 0 with whisper/XTTS. Fast and
+      # quality are the same pool at 10 vs 40 steps.
+      NVIDIA_VISIBLE_DEVICES: ${LATENTSYNC_GPUS:-2,3,4,5,6,7,1,0}
       # The base compose file blanks CUDA_VISIBLE_DEVICES; re-expose every
       # card the runtime passed in (CUDA ignores indices that don't exist).
       CUDA_VISIBLE_DEVICES: "0,1,2,3,4,5,6,7"

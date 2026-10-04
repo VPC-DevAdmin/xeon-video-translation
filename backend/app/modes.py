@@ -4,7 +4,6 @@ MODES = {
     "fast": {
         "lipsync_backend": "latentsync",
         "latentsync_steps": 10,
-        "latentsync_service_tier": "fast",
         "tts_backend": "auto",
         "enable_output_stabilization": "false",
     },

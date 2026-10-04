@@ -25,7 +25,7 @@ def isolated(tmp_path, monkeypatch):
         values.clear()
 
 
-@pytest.mark.parametrize("mode,steps,tier", [("fast", 10, "fast"), ("quality", 40, None)])
+@pytest.mark.parametrize("mode,steps,tier", [("fast", 10, None), ("quality", 40, None)])
 def test_submission_persists_render_settings(mode, steps, tier):
     client = TestClient(app)
     response = client.post(

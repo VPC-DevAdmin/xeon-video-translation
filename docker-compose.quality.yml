@@ -1,12 +1,9 @@
-# Optional tuning on top of docker-compose.gpu.yml (which already starts the
-# dedicated lipsync-fast renderer on LATENTSYNC_FAST_GPUS and gates MuseTalk
-# behind the draft-lipsync profile). Apply after gpu, llm and avatar overlays.
-# GPUs on the XE7740: 0 translation and avatar speech; 1 LLM; 2 avatar
-# render/codecs; fast diffusion workers on 3,2,0(,1); batch on 4,5,6,7.
+# Optional tuning on top of docker-compose.gpu.yml. Apply after gpu, llm and
+# avatar overlays. Modes are exclusive; see scripts/mode.sh.
 services:
   backend:
     environment:
       TTS_SEGMENT_RETRIES: "3"
-  lipsync-fast:
+  lipsync-latentsync:
     environment:
       LATENTSYNC_PREFETCH_PER_WORKER: ${LATENTSYNC_PREFETCH_PER_WORKER:-1}
