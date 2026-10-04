@@ -172,16 +172,22 @@ ASR of the recording and the XTTS conditioning; all checks passed; voice preview
 - FlashHead renders 512×512 from the portrait; expression follows the audio,
   texture is softer than a recording. A restoration or upscale pass is the
   quality lever; SageAttention or FlashAttention the speed lever (r 0.84 today).
-- Filler clips, idle segments and the reply are separate generations, joined
-  through a common anchor: each starts from the renderer's rest pose (every
-  render begins with a reset) and ends by settling into that rest frame over
-  7 frames, so clips, idle segments, the loop wrap and the reply's end join
-  with hard cuts, not dissolves between two poses. A cut-off filler settles
-  before the head turns back. Only joins that cannot be anchored (an opener
-  landing mid-idle, the head-turn footage) get a 4-frame dissolve. The pose
-  change is footage of the head turning (LivePortrait, 12 frames). While an
-  idle loop is still growing, its boundaries dissolve; once every segment is
-  settled they are cuts.
+- Filler clips and the reply are separate generations joined through a common
+  anchor: each starts from the renderer's rest pose (every render begins with
+  a reset) and, after its trailing silence, settles into that rest frame over
+  10 frames, so clips, the idle loop and the reply's end join with cuts, not
+  dissolves between two poses. A cut-off filler settles before the head turns
+  back. Only joins that cannot be anchored (an opener landing mid-idle, the
+  head-turn footage) get a 4-frame dissolve.
+- The front idle loop is one continuous take (12 s) cut at the frame that best
+  matches its first frame, so the wrap is a natural continuation with a
+  two-frame blend and the loop never returns to centre. While the take is
+  still growing (first use of a persona) the wrap crossfades. The working idle
+  is a LivePortrait reading loop of the posed portrait (eyes scanning the
+  page, a line down and back, slight head drift, two blinks), periodic by
+  construction; frame 0 is the pose the 12-frame head turn arrives at.
+- Reply sentences end with a 20 ms fade and a 0.45 s pause (0.65 s after a
+  question), so separately verified sentences sound like one stream.
 - Background preparation order is the first opener (about 5 s after the face
   appears), the front idle loop to 12 s, the posed portrait plus turn footage,
   the working idle loop to 6 s, then beats, closers and bridges, then the rest
