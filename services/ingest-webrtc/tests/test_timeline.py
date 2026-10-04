@@ -87,7 +87,7 @@ def test_idle_loop_grows_without_moving_the_frame_on_screen():
     assert int(tl.frame_at(5 / 4)[0].reshape(-1)[0]) == 50                    # continues, no modulo jump
     tl.add_idle(np.full((8, 1, 1, 1), 200, np.uint8), continuous=False)        # a new segment after a reply
     assert int(tl.frame_at(6 / 4)[0].reshape(-1)[0]) == 60
-    assert shown[2:] == [20, 30, 40] and 0 < shown[0] < shown[1] < 90      # head frames dissolve from the tail (80, 90)
+    assert shown[2:] == [20, 30, 40] and 0 < shown[1] < shown[0] < 90      # head frames dissolve from the tail (80, 90)
 
 
 def test_idle_loop_dissolves_across_segments_and_the_wrap():
