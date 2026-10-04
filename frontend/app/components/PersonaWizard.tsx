@@ -161,9 +161,12 @@ export default function PersonaWizard({ language, onDone, onCancel }: Props) {
         <video ref={video} autoPlay playsInline muted className="rounded bg-black w-full aspect-square object-cover" />
         <div aria-hidden className="pointer-events-none absolute inset-0 flex items-center justify-center"><div className="border-2 border-white/80 rounded-[50%] w-[44%] h-[58%] -translate-y-[6%]" /></div>
       </div>
-      <p className="text-sm text-ink-400">Fill the oval with your face. Light should fall on your face, not come from behind you.</p>
-      <div className="flex gap-3 items-center">
+      <p className="text-sm text-ink-400">Fill the oval with your face. Light should fall on your face, not come from behind you. A sharp phone photo (front camera, good light) gives the renderer much more detail than a webcam frame.</p>
+      <div className="flex gap-3 items-center flex-wrap">
         <button className={PRIMARY} onClick={capturePortrait} disabled={!cameraReady}>{portrait ? "Capture again" : "Capture portrait"}</button>
+        <label className={SECONDARY + " cursor-pointer"}>Upload a photo instead
+          <input type="file" accept="image/*" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) { setPortrait(f); setPortraitUrl(URL.createObjectURL(f)); } }} />
+        </label>
         {portraitUrl && <img src={portraitUrl} alt="captured portrait" className="w-24 h-24 rounded object-cover" />}
         <button className={SECONDARY} disabled={!portrait} onClick={() => go(retaking ? "review" : "idle")}>{retaking ? "Back to review" : "Next"}</button>
       </div>

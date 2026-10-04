@@ -681,6 +681,21 @@ async def create(image: UploadFile | None = File(None), language: str = Form("en
             raise HTTPException(413, "image exceeds 5 MB")
     else:
         raise HTTPException(400, "upload a portrait or choose a persona")
+    original = payload
+    enhanced = False
+    if os.getenv("ASSISTANT_ENHANCE_PORTRAIT", "1") == "1":
+        # Restore the still once before it conditions the renderer (see /portrait/enhance).
+        try:
+            async with httpx.AsyncClient(timeout=120) as client:
+                response = await client.post(f"{RENDERER}/portrait/enhance", json={
+                    "image_b64": base64.b64encode(payload).decode(),
+                    "fidelity": float(os.getenv("ASSISTANT_ENHANCE_FIDELITY", "0.7")),
+                    "blend": float(os.getenv("ASSISTANT_ENHANCE_BLEND", "0.85"))})
+            if response.status_code == 200 and response.content:
+                payload = response.content
+                enhanced = True
+        except httpx.HTTPError:
+            pass
     try:
         picture = Image.open(BytesIO(payload))
         if picture.width * picture.height > 20_000_000:
@@ -693,12 +708,15 @@ async def create(image: UploadFile | None = File(None), language: str = Form("en
     directory = ROOT / identifier
     directory.mkdir(parents=True)
     picture.save(directory / "image.png")
+    if enhanced:
+        (directory / "image-original.png").write_bytes(original)
     still = np.asarray(picture.resize((512, 512))).copy()
     session = Assistant(identifier, directory, still, language, voice if isinstance(voice, str) and voice else None,
                         persona_id or None)
     session.owner = owner.get()
     (directory / "owner.json").write_text(json.dumps({"owner_id": session.owner}))
     _sessions[identifier] = session
+    session.metrics["portrait_enhanced"] = enhanced
     try:
         prepared = await session.prepare()
     except Exception as exc:

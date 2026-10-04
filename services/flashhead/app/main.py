@@ -62,6 +62,12 @@ class Session(BaseModel):
     seed: int = 42
 
 
+class EnhanceRequest(BaseModel):
+    image_b64: str = Field(..., description="PNG or JPEG portrait")
+    fidelity: float = Field(0.7, ge=0.0, le=1.0, description="CodeFormer w: 1 keeps identity, 0 maximises detail")
+    blend: float = Field(0.85, ge=0.0, le=1.0, description="how much of the restored face replaces the original")
+
+
 class RenderRequest(BaseModel):
     pcm_b64: str = Field(..., description="PCM16 mono at the chunk sample rate; up to samples_per_chunk")
     reset: bool = Field(False, description="start this reply from the portrait pose")
@@ -213,6 +219,50 @@ def render(session_id: str, body: RenderRequest) -> Response:
                "X-Width": str(frames.shape[2]) if frames.size else str(_pipeline.target_w),
                "X-Seconds": f"{seconds:.3f}", "X-Generation": str(body.generation), "X-Fps": str(_spec.fps)}
     return Response(content=frames.tobytes(), media_type="application/octet-stream", headers=headers)
+
+
+def _five_points(image_bgr: np.ndarray):
+    """Eyes, nose tip and mouth corners from MediaPipe FaceMesh, in CodeFormer's order
+    (left-in-image eye, right eye, nose, left mouth corner, right mouth corner)."""
+    import cv2
+    import mediapipe as mp
+
+    h, w = image_bgr.shape[:2]
+    with mp.solutions.face_mesh.FaceMesh(static_image_mode=True, max_num_faces=1, refine_landmarks=True) as mesh:
+        result = mesh.process(cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB))
+    if not result.multi_face_landmarks:
+        return None
+    pts = np.array([(v.x * w, v.y * h) for v in result.multi_face_landmarks[0].landmark], dtype=np.float32)
+    eyes = sorted([pts[[33, 133]].mean(axis=0), pts[[362, 263]].mean(axis=0)], key=lambda p: p[0])
+    mouth = sorted([pts[61], pts[291]], key=lambda p: p[0])
+    return np.array([eyes[0], eyes[1], pts[1], mouth[0], mouth[1]], dtype=np.float32)
+
+
+@app.post("/portrait/enhance")
+def enhance(body: EnhanceRequest) -> Response:
+    """One-time face restoration of a portrait before it conditions the renderer.
+    FlashHead reproduces the texture of its reference, so a soft webcam frame yields a
+    soft face; restoring the still once is temporally safe (no per-frame flicker)."""
+    import base64
+    import cv2
+    import torch
+    from .codeformer import restore_frame
+
+    raw = np.frombuffer(base64.b64decode(body.image_b64), dtype=np.uint8)
+    image = cv2.imdecode(raw, cv2.IMREAD_COLOR)
+    if image is None:
+        raise HTTPException(422, "could not decode the portrait")
+    kps = _five_points(image)
+    if kps is None:
+        raise HTTPException(422, "no face found in the portrait")
+    started = time.perf_counter()
+    with _LOCK:
+        restored = restore_frame(image, kps, torch.device("cuda"), fidelity=body.fidelity, blend=body.blend)
+    ok, png = cv2.imencode(".png", restored)
+    if not ok:
+        raise HTTPException(500, "could not encode the restored portrait")
+    return Response(content=png.tobytes(), media_type="image/png",
+                    headers={"X-Seconds": f"{time.perf_counter() - started:.2f}", "X-Face-Points": "mediapipe"})
 
 
 @app.delete("/sessions/{session_id}")
