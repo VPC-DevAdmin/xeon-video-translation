@@ -72,11 +72,13 @@ class EnhanceRequest(BaseModel):
 
 class PoseRequest(BaseModel):
     image_b64: str = Field(..., description="PNG or JPEG portrait")
-    pitch: float = Field(12.0, ge=-30, le=30, description="degrees; positive looks down")
-    yaw: float = Field(-10.0, ge=-40, le=40)
+    pitch: float = Field(14.0, ge=-30, le=30, description="degrees; positive looks down")
+    yaw: float = Field(-14.0, ge=-40, le=40)
     roll: float = Field(0.0, ge=-30, le=30)
-    eyes_x: float = Field(-4.0, ge=-20, le=20)
-    eyes_y: float = Field(9.0, ge=-20, le=20, description="positive lowers the gaze")
+    eyes_x: float = Field(-6.0, ge=-20, le=20)
+    eyes_y: float = Field(10.0, ge=-20, le=20, description="positive lowers the gaze")
+    steps: int = Field(1, ge=1, le=60, description="1: the posed portrait as PNG; more: that many frames turning the head, raw RGB")
+    size: int = Field(0, ge=0, le=2048, description="side of the square frames returned for steps > 1 (0 keeps the portrait size)")
 
 
 class RenderRequest(BaseModel):
@@ -294,13 +296,20 @@ def pose(body: PoseRequest) -> Response:
     started = time.perf_counter()
     try:
         with _LOCK:
-            posed = pose_module.pose_portrait(image, body.pitch, body.yaw, body.roll, body.eyes_x, body.eyes_y)
+            frames = pose_module.pose_sequence(image, body.pitch, body.yaw, body.roll, body.eyes_x, body.eyes_y, steps=body.steps)
     except Exception as exc:
         raise HTTPException(422, f"pose edit failed: {type(exc).__name__}: {exc}")
-    ok, png = cv2.imencode(".png", posed)
-    if not ok:
-        raise HTTPException(500, "could not encode the posed portrait")
-    return Response(content=png.tobytes(), media_type="image/png", headers={"X-Seconds": f"{time.perf_counter() - started:.2f}"})
+    seconds = f"{time.perf_counter() - started:.2f}"
+    if body.steps == 1:
+        ok, png = cv2.imencode(".png", frames[-1])
+        if not ok:
+            raise HTTPException(500, "could not encode the posed portrait")
+        return Response(content=png.tobytes(), media_type="image/png", headers={"X-Seconds": seconds})
+    if body.size:
+        frames = [cv2.resize(f, (body.size, body.size), interpolation=cv2.INTER_AREA) for f in frames]
+    rgb = np.ascontiguousarray(np.stack([cv2.cvtColor(f, cv2.COLOR_BGR2RGB) for f in frames]))
+    return Response(content=rgb.tobytes(), media_type="application/octet-stream",
+                    headers={"X-Frames": str(rgb.shape[0]), "X-Height": str(rgb.shape[1]), "X-Width": str(rgb.shape[2]), "X-Seconds": seconds})
 
 
 @app.delete("/sessions/{session_id}")

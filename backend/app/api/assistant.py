@@ -117,14 +117,39 @@ def _synthesize(model, conditioning, text: str, language: str):
             return
 
 
+# Spellings the recognizer and the script may legitimately disagree on. Each side is
+# mapped to one canonical token sequence before alignment so a take is not rejected
+# (and re-synthesized) for saying "I'm" where the text says "I am".
+_CANON = {
+    "i'm": ["i", "am"], "you're": ["you", "are"], "we're": ["we", "are"], "they're": ["they", "are"], "it's": ["it", "is"],
+    "that's": ["that", "is"], "here's": ["here", "is"], "there's": ["there", "is"], "what's": ["what", "is"], "let's": ["let", "us"],
+    "i've": ["i", "have"], "we've": ["we", "have"], "i'll": ["i", "will"], "we'll": ["we", "will"], "i'd": ["i", "would"],
+    "don't": ["do", "not"], "doesn't": ["does", "not"], "didn't": ["did", "not"], "can't": ["can", "not"], "cannot": ["can", "not"],
+    "won't": ["will", "not"], "isn't": ["is", "not"], "aren't": ["are", "not"], "wasn't": ["was", "not"],
+    "alright": ["all", "right"], "okay": ["ok"], "mm-hmm": ["hmm"], "mmhmm": ["hmm"], "mhm": ["hmm"], "mmm": ["hmm"], "mm": ["hmm"],
+    "hm": ["hmm"], "uh-huh": ["hmm"], "um": ["hmm"], "uh": ["hmm"], "gonna": ["going", "to"], "wanna": ["want", "to"],
+}
+
+
+def canon(tokens):
+    """Normalized tokens with contractions expanded and interjections unified."""
+    out = []
+    for token in tokens:
+        out.extend(_CANON.get(token, [token]))
+    return out
+
+
 def _aligned_span(sentence: str, words):
     """(matched ratio, first word start, last word end) of the sentence inside the
     recognized words; babble before or after the sentence falls outside the span."""
     import difflib
     from .personas import normalize_words as norm
 
-    target = norm(sentence)
-    heard = [(norm(w.text if hasattr(w, "text") else w.word), w.start, w.end) for w in words]
+    target = canon(norm(sentence))
+    heard = []
+    for w in words:
+        for token in canon(norm(w.text if hasattr(w, "text") else w.word)):
+            heard.append(([token], w.start, w.end))
     heard = [(h[0][0], h[1], h[2]) for h in heard if h[0] and h[1] is not None and h[2] is not None]
     if not target or not heard:
         return 0.0, None, None

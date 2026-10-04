@@ -63,14 +63,28 @@ def pose_portrait(image_bgr: np.ndarray, pitch: float, yaw: float, roll: float =
     """The portrait with its head rotated by (pitch, yaw, roll) degrees and the gaze moved
     by (eyes_x, eyes_y); positive pitch and eyes_y look down. Full-frame result, the face
     region pasted back into the original image."""
+    return pose_sequence(image_bgr, pitch, yaw, roll, eyes_x, eyes_y, steps=1, scale=scale)[-1]
+
+
+def pose_sequence(image_bgr: np.ndarray, pitch: float, yaw: float, roll: float = 0.0, eyes_x: float = 0.0,
+                  eyes_y: float = 0.0, steps: int = 1, scale: float = 2.3) -> list[np.ndarray]:
+    """`steps` frames turning the head from the portrait's pose to the target: an eased
+    path, the eyes leading the head a little, as a person glancing down at a tablet does.
+    One frame is the posed portrait itself."""
     import cv2
 
     pipeline = _load()
+    frames = []
     with tempfile.TemporaryDirectory(prefix="pose-") as directory:
         path = str(Path(directory) / "portrait.png")
         cv2.imwrite(path, image_bgr)
         eye_ratio, lip_ratio = pipeline.init_retargeting_image(scale, 0, 0, path)
-        _, blended = pipeline.execute_image_retargeting(
-            eye_ratio, lip_ratio, float(pitch), float(yaw), float(roll), 0.0, 0.0, 1.0,
-            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, float(eyes_x), float(eyes_y), path, scale, True, True)
-    return cv2.cvtColor(np.asarray(blended), cv2.COLOR_RGB2BGR)
+        for index in range(1, max(1, int(steps)) + 1):
+            t = index / max(1, int(steps))
+            head = t * t * (3 - 2 * t)                              # smoothstep
+            eyes = min(1.0, t * 1.4) ** 2 * (3 - 2 * min(1.0, t * 1.4))  # the gaze arrives first
+            _, blended = pipeline.execute_image_retargeting(
+                eye_ratio, lip_ratio, float(pitch) * head, float(yaw) * head, float(roll) * head, 0.0, 0.0, 1.0,
+                0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, float(eyes_x) * eyes, float(eyes_y) * eyes, path, scale, True, True)
+            frames.append(cv2.cvtColor(np.asarray(blended), cv2.COLOR_RGB2BGR))
+    return frames

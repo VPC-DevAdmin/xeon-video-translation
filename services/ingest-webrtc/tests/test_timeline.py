@@ -171,3 +171,13 @@ def test_truncate_cuts_tagged_clips_with_a_fade_and_keeps_the_reply():
     audio = fillers[0][2]
     assert len(audio) == 48000 * 12 // 10 and audio[-1] == 0 and audio[-3840] == 1000       # 80 ms fade to silence
     assert tl.clips_tagged("reply")[0][1] == 3.5 and tl.audio_packet(2.6, 960)[0] == 7
+
+
+def test_turn_clips_get_a_short_dissolve():
+    idle = np.zeros((8, 1, 1, 1), np.uint8)
+    tl = Timeline(fps=25, idle_frames=idle, transition_seconds=0.5)      # 12-frame dissolve for ordinary switches
+    tl.schedule(1.0, np.zeros(48000, np.int16), np.full((25, 1, 1, 1), 200, np.uint8), tl.generation, tag="turn")
+    tl.frame_at(0.9)
+    values = [int(tl.frame_at(1.0 + i / 25)[0].reshape(-1)[0]) for i in range(6)]
+    assert tl.frame_at(1.0)[1] == "clip:turn"
+    assert values[0] < values[3] and values[4] == 200 and values[5] == 200                   # fully there after 4 frames

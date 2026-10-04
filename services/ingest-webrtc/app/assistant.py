@@ -64,11 +64,12 @@ MAX_HEAD_START = float(os.getenv("ASSISTANT_MAX_HEAD_START", "20"))
 IDLE_CHUNKS = int(os.getenv("ASSISTANT_IDLE_CHUNKS", "2"))          # rendered before the session answers
 IDLE_SECONDS = float(os.getenv("ASSISTANT_IDLE_SECONDS", "12"))      # grown to this in the background, then looped
 WORKING_IDLE_SECONDS = float(os.getenv("ASSISTANT_WORKING_IDLE_SECONDS", "6"))
-_POSE_VALUES = [float(v) for v in os.getenv("ASSISTANT_WORKING_POSE", "12,-10,0,-4,9").split(",")]
+_POSE_VALUES = [float(v) for v in os.getenv("ASSISTANT_WORKING_POSE", "14,-14,0,-6,10").split(",")]
 WORKING_POSE = dict(zip(("pitch", "yaw", "roll", "eyes_x", "eyes_y"), _POSE_VALUES + [0.0] * 5))
 WORKING_POSE_ENABLED = os.getenv("ASSISTANT_WORKING_POSE_ENABLED", "1") == "1"
 CACHE_DIR = Path(os.getenv("JOB_ARTIFACTS_DIR", "./jobs")).resolve() / "personas"
 CACHE_VERSION = 3                                                    # bump when cached footage changes meaning
+TURN_FRAMES = int(os.getenv("ASSISTANT_TURN_FRAMES", "12"))          # head turn to/from the tablet, at 25 fps
 RENDER_TIMEOUT = float(os.getenv("ASSISTANT_RENDER_TIMEOUT", "30"))
 FPS = 25
 
@@ -367,15 +368,18 @@ class Assistant:
         self.clips: dict[str, list[Clip]] = {kind: [] for kind in KIND_POSE}
         self.last_used: dict[str, str] = {}
         self.working_pose = False                       # a posed portrait is open on the renderer
+        self.turn_down: np.ndarray | None = None        # head turning from the camera to the tablet (frames)
+        self.turn_up: np.ndarray | None = None
         self.client = httpx.AsyncClient(headers={"x-internal-key": os.getenv("INTERNAL_API_KEY", "")})
         self.renderer = Renderer(self.client)
         self.metrics = {"turns": 0, "interruptions": 0, "renderer_errors": 0, "prepare": {},
                         "ack_start_seconds": [], "reply_start_seconds": [], "head_start_seconds": [],
                         "reply_seconds": [], "render_ratio": [], "stalls": 0, "fillers": []}
 
-    def notify(self, kind, **values):
+    def notify(self, event: str, **values):
+        """Send an event to the browser over the data channel (dropped when it is not open)."""
         if self.channel and self.channel.readyState == "open":
-            self.channel.send(json.dumps({"type": kind, **values}))
+            self.channel.send(json.dumps({"type": event, **values}))
 
     # ------------------------------------------------------------- session setup
     async def speak(self, text: str) -> np.ndarray:
@@ -457,6 +461,61 @@ class Assistant:
         if directory is None:
             return None
         return directory / f"portrait-working-{self._fingerprint(kind='portrait', posed=WORKING_POSE)}.png"
+
+    def _turn_file(self) -> Path | None:
+        directory = self._cache_dir()
+        if directory is None:
+            return None
+        return directory / f"turn-{self._fingerprint(kind='turn', posed=WORKING_POSE, steps=TURN_FRAMES)}.npz"
+
+    async def load_turn(self) -> bool:
+        path = self._turn_file()
+        if path is None or not path.exists():
+            return False
+        try:
+            data = await asyncio.to_thread(np.load, str(path))
+            self.turn_down = data["down"]
+            self.turn_up = self.turn_down[::-1].copy()
+            return True
+        except Exception:
+            return False
+
+    async def make_turn(self) -> bool:
+        """Frames of the head turning from the camera to the tablet (LivePortrait), sized
+        like the renderer's frames; played forward to look down and backward to look up."""
+        if not self.working_pose:
+            return False
+        try:
+            response = await self.client.post(f"{RENDERER}/portrait/pose", json={
+                "image_b64": base64.b64encode((self.directory / "image.png").read_bytes()).decode(), **WORKING_POSE,
+                "steps": TURN_FRAMES, "size": int(self.renderer.spec.get("height") or 512)}, timeout=120)
+            if response.status_code != 200:
+                return False
+            count, height, width = (int(response.headers[k]) for k in ("X-Frames", "X-Height", "X-Width"))
+            self.turn_down = np.frombuffer(response.content, dtype=np.uint8).reshape(count, height, width, 3).copy()
+            self.turn_up = self.turn_down[::-1].copy()
+            path = self._turn_file()
+            if path is not None:
+                await self._save_npz(path, down=self.turn_down)
+                for stale in path.parent.glob("turn-*.npz"):
+                    if stale != path:
+                        stale.unlink(missing_ok=True)
+            return True
+        except (httpx.HTTPError, ValueError, OSError) as exc:
+            self.metrics["prepare"]["turn_error"] = f"{type(exc).__name__}: {exc}"
+            return False
+
+    def turn(self, at: float, direction: str, generation: int) -> float:
+        """Schedule the head turn starting at `at` and switch the idle loop with it.
+        Returns when the turn ends (= `at` when no turn footage exists)."""
+        frames = self.turn_down if direction == "down" else self.turn_up
+        mode = "working" if direction == "down" else "front"
+        if frames is None or not len(frames):
+            self.timeline.set_mode(at, mode, generation)
+            return at
+        placed = self.timeline.schedule(at, np.zeros(int(len(frames) / FPS * 48000), np.int16), frames, generation, tag="turn")
+        self.timeline.set_mode(at, mode, generation)
+        return placed[1] if placed else at
 
     async def _save_npz(self, path: Path | None, **arrays) -> None:
         if path is None:
@@ -541,6 +600,7 @@ class Assistant:
             try:
                 await self.renderer.open(self.directory / "image-working.png", "working")
                 self.working_pose = True
+                await self.load_turn()
             except httpx.HTTPError:
                 self.working_pose = False
         cached = {"idle": await self._load_idle("front"), "working_idle": self.working_pose and await self._load_idle("working"),
@@ -646,6 +706,8 @@ class Assistant:
             self.metrics["prepare"].update(idle_seconds_final=round(self.timeline.idle_seconds(), 2),
                                            idle_segments=len(self.timeline.idle_segments))
             if await self.open_working_pose():
+                if self.turn_down is None:
+                    await self.make_turn()
                 await self.grow_idle("working", WORKING_IDLE_SECONDS)
                 self.metrics["prepare"]["working_idle_seconds"] = round(self.timeline.idle_seconds("working"), 2)
             for kind, text in plan:
@@ -659,6 +721,8 @@ class Assistant:
             raise
         except Exception as exc:
             self.metrics["renderer_errors"] += 1
+            self.metrics["prepare"]["error"] = f"{type(exc).__name__}: {exc}"
+            print(json.dumps({"event": "assistant_prepare_failed", "session": self.id, "error": f"{type(exc).__name__}: {exc}"}), flush=True)
             self.notify("error", message=f"background preparation failed: {exc}")
 
     # ------------------------------------------------------------------- turns
@@ -695,20 +759,20 @@ class Assistant:
                 if start is not None:
                     closer = self.pick("closer")
                     closer_len = closer.seconds if closer else 0.0
-                    cut_at = max(plan["opener_end"], start - 0.25 - (closer_len + 0.15 if closer else 0.0))
+                    turn_len = len(self.turn_up) / FPS if (working and self.turn_up is not None) else 0.0
+                    cut_at = max(plan["opener_end"], start - 0.25 - turn_len - (closer_len + 0.15 if closer else 0.0))
                     cut = tl.truncate(cut_at, "filler")
-                    if closer and cut_at + 0.1 + closer_len + 0.15 <= start:
-                        tl.schedule(cut_at + 0.1, closer.audio48, closer.frames, generation, tag="filler")
-                        tl.set_mode(cut_at + 0.1, "front", generation)
+                    tl.truncate(cut_at, "turn")
+                    back = self.turn(cut_at + 0.05, "up", generation) if working else cut_at
+                    if closer and back + 0.1 + closer_len + 0.15 <= start:
+                        tl.schedule(back + 0.1, closer.audio48, closer.frames, generation, tag="filler")
                         self.notify("filler", kind="closer", text=closer.text)
-                        self.metrics["fillers"].append({"kind": "closer", "text": closer.text, "at": round(cut_at + 0.1 - t0, 2)})
-                    else:
-                        tl.set_mode(max(cut_at, start - 0.6), "front", generation)
-                    self.metrics["fillers"].append({"kind": "cut", "at": round(cut_at - t0, 2), "clips_cut": cut})
+                        self.metrics["fillers"].append({"kind": "closer", "text": closer.text, "at": round(back + 0.1 - t0, 2)})
+                    self.metrics["fillers"].append({"kind": "cut", "at": round(cut_at - t0, 2), "clips_cut": cut, "turn_back": working})
                     return
                 now = tl.now()
                 if not working and tl.loop("working").ready and now >= plan["opener_end"] - 0.5:
-                    tl.set_mode(plan["opener_end"] + 0.1, "working", generation)
+                    cursor = max(cursor, self.turn(plan["opener_end"] + 0.1, "down", generation))
                     working = True
                     self.notify("working")
                 if cursor - now < 1.5 and cursor < t0 + MAX_HEAD_START - 1.0:

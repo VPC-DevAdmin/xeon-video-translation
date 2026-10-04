@@ -69,3 +69,13 @@ def test_verified_sentence_keeps_the_word_span_and_falls_back_to_the_stock_voice
     audio, match, heard, takes, fallback = assistant._verified_sentence(Model(), clone, sentence, "en")
     assert fallback is False and takes == 3 and match == 0.0
     assert abs(len(audio) / 24000 - ((1.4 + 0.35) - 0.2)) < 0.02         # the babble's own word span, not 0.09*len+1.5
+
+
+def test_alignment_accepts_contractions_and_interjection_spellings():
+    words = [_Word("I'm", 0.2, 0.4), _Word("going", 0.4, 0.6), _Word("to", 0.6, 0.7), _Word("look", 0.7, 0.9), _Word("that", 0.9, 1.0), _Word("up.", 1.0, 1.3)]
+    matched, first, last = assistant._aligned_span("I am going to look that up.", words)
+    assert matched == 1.0 and (first, last) == (0.2, 1.3)
+    matched, _, _ = assistant._aligned_span("Mm-hmm, getting closer.", [_Word("Mmm,", 0.1, 0.5), _Word("getting", 0.5, 0.8), _Word("closer.", 0.8, 1.2)])
+    assert matched == 1.0
+    matched, _, _ = assistant._aligned_span("Alright, here we go.", [_Word("All", 0.1, 0.2), _Word("right,", 0.2, 0.4), _Word("here", 0.4, 0.5), _Word("we", 0.5, 0.6), _Word("go.", 0.6, 0.8)])
+    assert matched == 1.0

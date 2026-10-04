@@ -217,7 +217,7 @@ class Timeline:
     # ----------------------------------------------------------------- output
     def frame_at(self, seconds: float):
         """The frame to show at `seconds` and its source ("clip", "idle" or "still")."""
-        index = int(seconds * self.fps)
+        index = int(seconds * self.fps + 1e-6)          # seconds come from index / fps; floor must not lose a frame
         delta = index - self._last_index if self._last_index is not None else 0
         self._last_index = index
         for loop in self.loops.values():
@@ -225,7 +225,7 @@ class Timeline:
         clip = self.active(seconds)
         if clip is not None:
             frames = clip[3]
-            image, source = frames[min(len(frames) - 1, int((seconds - clip[0]) * self.fps))], "clip"
+            image, source = frames[min(len(frames) - 1, int((seconds - clip[0]) * self.fps))], "clip:turn" if clip[4] == "turn" else "clip"
         else:
             if self.promised(seconds):
                 self.stalls += 1
@@ -236,12 +236,16 @@ class Timeline:
             else:
                 image, source = self.still, "still"
         if self._last is not None and source != self._last[1] and self.transition_frames and image is not None:
-            self._blend = (self._last[0], index)
+            # A head-turn clip is footage of the pose change itself: only a few frames of
+            # dissolve at its ends, or the turn would be smeared.
+            frames_for_switch = min(self.transition_frames, 4) if any("turn" in name for name in (self._last[1], source)) else self.transition_frames
+            self._blend = (self._last[0], index, frames_for_switch)
         self._last = (image, source)
         if self._blend is not None and image is not None:
             since = index - self._blend[1]
-            if 0 <= since < self.transition_frames and self._blend[0] is not None and self._blend[0].shape == image.shape:
-                weight = 1.0 - (since + 1) / (self.transition_frames + 1)
+            length = self._blend[2]
+            if 0 <= since < length and self._blend[0] is not None and self._blend[0].shape == image.shape:
+                weight = 1.0 - (since + 1) / (length + 1)
                 image = (weight * self._blend[0].astype(np.float32) + (1.0 - weight) * image.astype(np.float32)).astype(image.dtype)
             else:
                 self._blend = None
