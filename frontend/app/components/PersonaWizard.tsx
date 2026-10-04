@@ -3,14 +3,14 @@ import { useEffect, useRef, useState } from "react";
 
 type Checks = { voice?: Record<string, unknown> & { problems?: string[]; warnings?: string[]; ok?: boolean }; portrait?: Record<string, unknown> & { problems?: string[]; warnings?: string[]; ok?: boolean }; idle?: unknown };
 type Script = { language: string; text: string; rules: { portrait: string; idle_seconds: number; voice_min_seconds: number; voice_target_seconds: number; voice_max_seconds: number }; consent: { version: string; text: string }; stock_voices?: string[] };
-type Props = { language: string; onDone: (persona: { id: string; name: string }) => void; onCancel: () => void };
+type Props = { language: string; onDone: (persona: { id: string; name: string }) => void };
 
 const STEPS = ["consent", "portrait", "idle", "voice", "review"] as const;
 type Step = typeof STEPS[number];
-const PRIMARY = "rounded bg-ink-900 px-4 py-2 text-white disabled:opacity-40 disabled:cursor-not-allowed";
-const SECONDARY = "rounded border border-ink-300 px-4 py-2 disabled:opacity-40 disabled:cursor-not-allowed";
+const PRIMARY = "aurora-wizard-primary";
+const SECONDARY = "aurora-wizard-secondary";
 
-export default function PersonaWizard({ language, onDone, onCancel }: Props) {
+export default function PersonaWizard({ language, onDone }: Props) {
   const [step, setStep] = useState<Step>("consent");
   const [script, setScript] = useState<Script | null>(null);
   const [name, setName] = useState("");
@@ -79,7 +79,8 @@ export default function PersonaWizard({ language, onDone, onCancel }: Props) {
     async function setup() {
       setCameraReady(false);
       if (step === "portrait" || step === "idle") await openMedia("camera");
-      else if (step === "voice") await openMedia("microphone");
+      else if (step === "voice" && voiceMode === "record") await openMedia("microphone");
+      else if (step === "voice") { stopStream(); setCameraReady(true); return; }
       else { stopStream(); return; }
       if (cancelled) return;
       if (video.current && stream.current) { video.current.srcObject = stream.current; await video.current.play().catch(() => undefined); }
@@ -88,7 +89,7 @@ export default function PersonaWizard({ language, onDone, onCancel }: Props) {
     setup().catch(e => setError((step === "voice" ? "Microphone" : "Camera") + " access failed: " + String(e)));
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [step]);
+  }, [step, voiceMode]);
 
   function go(next: Step) { setError(""); setStep(next); }
 
@@ -156,16 +157,15 @@ export default function PersonaWizard({ language, onDone, onCancel }: Props) {
     {c?.warnings?.length ? <ul className="list-disc ml-5 text-amber-600">{c.warnings.map((p, i) => <li key={i}>{p}</li>)}</ul> : null}
   </>;
 
-  return <section className="rounded border border-ink-200 p-4 space-y-3">
-    <div className="flex items-center justify-between"><h2 className="text-xl font-semibold">Use this person</h2><button className={SECONDARY} onClick={() => { stopStream(); revokeUrls(); onCancel(); }}>Close</button></div>
-    <ol className="flex gap-3 text-sm">{STEPS.map(s => <li key={s} className={s === step ? "font-semibold underline" : "text-ink-400"}>{s}</li>)}</ol>
+  return <section className="aurora-wizard">
+    <ol className="aurora-wizard-steps" aria-label="Setup progress">{STEPS.map((s, i) => <li key={s} className={s === step ? "is-current" : ""} title={s}>{i + 1}</li>)}</ol>
     {error && <p role="alert" className="text-red-600">{error}</p>}
 
     {step === "consent" && script && <div className="space-y-3">
       <label className="block">Name <input className="border px-2 py-1 ml-2" value={name} onChange={e => setName(e.target.value)} placeholder="How should we call this persona?" /></label>
       <p className="text-sm">{script.consent.text}</p>
       <label className="flex gap-2 items-start"><input type="checkbox" checked={consent} onChange={e => setConsent(e.target.checked)} /> <span>I agree (consent version {script.consent.version})</span></label>
-      <p className="text-sm text-ink-400">You will take a portrait, record {script.rules.idle_seconds} seconds of sitting still, and read a short script (about {script.rules.voice_target_seconds} seconds).</p>
+      <p className="text-sm text-ink-400">You will take a portrait and choose a voice. An {script.rules.idle_seconds}-second idle clip is optional.</p>
       <button className={PRIMARY} disabled={!consent} onClick={() => go("portrait")}>Start</button>
     </div>}
 
