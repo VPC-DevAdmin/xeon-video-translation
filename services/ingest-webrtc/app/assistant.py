@@ -790,6 +790,12 @@ class Assistant:
                 await asyncio.sleep(0.1)
         except asyncio.CancelledError:
             raise
+        except Exception as exc:
+            import traceback
+            print(json.dumps({"event": "assistant_filler_failed", "session": self.id, "error": f"{type(exc).__name__}: {exc}",
+                              "trace": traceback.format_exc()[-1500:]}), flush=True)
+            self.metrics["renderer_errors"] += 1
+            self.notify("error", message=f"filler plan failed: {exc}")
 
     async def reply(self, samples: np.ndarray, generation: int):
         tl = self.timeline

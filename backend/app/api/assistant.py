@@ -132,10 +132,14 @@ _CANON = {
 
 
 def canon(tokens):
-    """Normalized tokens with contractions expanded and interjections unified."""
+    """Normalized tokens with contractions expanded and interjections unified; a run of
+    interjections ("mm-hmm" tokenizes as "mm", "hmm") counts once."""
     out = []
     for token in tokens:
-        out.extend(_CANON.get(token, [token]))
+        for mapped in _CANON.get(token, [token]):
+            if mapped == "hmm" and out and out[-1] == "hmm":
+                continue
+            out.append(mapped)
     return out
 
 

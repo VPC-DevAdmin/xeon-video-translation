@@ -62,11 +62,38 @@ Components:
 
 | Piece | Where | Notes |
 | --- | --- | --- |
-| Render service | `services/flashhead/app` | FlashHead Pro compiled, one GPU; sessions hold motion state; PCM in, raw RGB frames out; `/health` reports chunk spec and timings |
+| Render service | `services/flashhead/app` | FlashHead Pro compiled, one GPU; sessions hold motion state; PCM in, raw RGB frames out; `/health` reports chunk spec and timings; `/portrait/enhance` (CodeFormer) and `/portrait/pose` (LivePortrait head pose, gaze, head-turn frames) |
 | Turn endpoints | `backend/app/api/assistant.py` | plan-then-speak; `/assistant/speak` for the acknowledgement and previews; `persona_id` selects a cloned voice |
 | Session | `services/ingest-webrtc/app/assistant.py`, `timeline.py` | timeline with future clips, idle loop, promises and stall counting; deadline rule in `head_start_required` |
 | Personas | `backend/app/api/personas.py`, `frontend/app/components/PersonaWizard.tsx` | capture, checks, XTTS conditioning, preview |
 | Mode | `docker-compose.assistant.yml`, `scripts/mode.sh assistant` | renderer runs in the FlashHead lab container today (see below) |
+
+## Filling the wait
+
+The gap between the end of speech and the reply is planned the way a person
+looking something up behaves (`Assistant.fill_gap` in the ingest service):
+
+1. An opener plays at once ("Hold on, let me find that for you."; five in
+   English, rotated so the same one is not used twice in a row).
+2. The head turns to a tablet (LivePortrait edit of the portrait: pitch 14,
+   yaw -14, gaze down-right; `ASSISTANT_WORKING_POSE`), and the working idle
+   loop shows the persona reading. Short progress utterances ("Hmm, let me
+   see.", "Okay, almost there.") and the occasional longer bridge ("Bear with
+   me, I want to make sure I get this right.") play with 0.7 to 1.5 s pauses,
+   scheduled just in time so the plan can adapt.
+3. The reply start is decided as soon as the first reply chunk is rendered: the
+   earliest moment the reply can play without stalling given the measured
+   render rate, not before `ASSISTANT_HEAD_START` (7 s) and not after the cap.
+   Whatever filler is still being said is cut off with an 80 ms fade, the head
+   turns back, a short closer plays facing the user ("Okay, so."), and the
+   reply starts. The reply prompt tells the model the listener heard a look-up
+   phrase, so it begins with the answer.
+
+Phrases live in `FILLERS` (English, Spanish, French, German; other languages
+have openers only) and can be overridden per kind and language with
+`ASSISTANT_<OPENER|BEAT|BRIDGE|CLOSER>_TEXT_<LANG>` ("|"-separated). Every
+phrase has at least three words because XTTS babbles on one-word prompts; the
+verifier aligns on canonical tokens so "I'm" for "I am" is not a retake.
 
 ## Measured (ingest-side WebRTC client, same box, Oct 4)
 
@@ -144,24 +171,33 @@ ASR of the recording and the XTTS conditioning; all checks passed; voice preview
 - FlashHead renders 512×512 from the portrait; expression follows the audio,
   texture is softer than a recording. A restoration or upscale pass is the
   quality lever; SageAttention or FlashAttention the speed lever (r 0.84 today).
-- Acknowledgement, idle and reply are separate generations. Every switch
-  between idle footage and a clip is a half-second dissolve on the timeline,
-  and idle footage is a list of continuous segments whose boundaries (and the
-  loop wrap) dissolve the same way; motion state is not carried across them.
-- Background preparation order is acknowledgement first (about 4 s after the
-  face appears), then idle growth to 12 s, then two more acknowledgements that
-  rotate across turns. All renderer calls of a session go through one lock, and
-  the renderer records which footage its motion state continues, so idle growth
-  extends the current segment only when nothing else rendered in between.
-- Cached idle and acknowledgement footage is keyed by the uploaded portrait,
-  the restoration settings, the renderer model and chunk spec, the frame rate,
-  and (acknowledgements) the voice conditioning and phrases; one idle loop and
-  one acknowledgement set are kept per persona.
+- Filler clips, idle and reply are separate generations. Every switch between
+  idle footage and a clip is a half-second dissolve on the timeline, and idle
+  footage is a list of continuous segments whose boundaries (and the loop wrap)
+  dissolve the same way; motion state is not carried across them. The pose
+  change is footage of the head turning (LivePortrait, 12 frames), not a
+  dissolve between two heads.
+- Background preparation order is the first opener (about 5 s after the face
+  appears), the front idle loop to 12 s, the posed portrait plus turn footage,
+  the working idle loop to 6 s, then beats, closers and bridges, then the rest
+  of the repertoire (20 clips in English). Cold, with one turn in between, this
+  takes about 100 s; everything is cached per persona. All renderer calls of a
+  session go through one lock, and the renderer records which footage its
+  motion state continues, so idle growth extends the current segment only when
+  nothing else rendered in between.
+- Cached footage is keyed by the uploaded portrait, the restoration settings,
+  the renderer model and chunk spec, the frame rate, the working pose and (for
+  clips) the voice conditioning; one idle loop per pose, one turn sequence and
+  one clip set are kept per persona, and a changed setting evicts the rest.
 - Speech verification keeps a take only when at least 90 percent of the
   sentence's words are recognized; a cloned voice that fails three takes is
   replaced by the stock voice for that sentence, and the UI shows a note.
 - One assistant session per box (`ASSISTANT_MAX_SESSIONS`); the renderer holds
-  one portrait at a time and re-prepares on switch (0.2 s).
+  one portrait at a time and re-prepares on switch (0.2 s); an assistant session
+  uses two renderer sessions (front and working pose).
+- LivePortrait lives in the lab container (`/experiment/LivePortrait`, weights
+  under `/experiment-models/liveportrait`, a `gradio` stand-in module in
+  `/experiment/liveportrait_shim`); it belongs in the FlashHead Dockerfile.
 - The idle clip is captured and stored but not yet used by any renderer.
-- Head start is fixed at 10 s minimum by design; replies longer than about
-  60 s at r 0.84 would push it toward the 20 s cap.
+- The minimum head start is 7 s (`ASSISTANT_HEAD_START`, compose); the filler
+  plan fills whatever the wait is, up to the 20 s cap.
