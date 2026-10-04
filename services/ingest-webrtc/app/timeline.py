@@ -99,10 +99,13 @@ class IdleLoop:
     def publish(self) -> None:
         if not self.pending:
             return
+        before = None
         if self.segments:
-            segment, j, k = idle_loop_locate(self.segments, self.cursor, self.effective_crossfade())
+            crossfade = self.effective_crossfade()
+            segment, j, k = idle_loop_locate(self.segments, self.cursor, crossfade)
             if segment == 0 and j < k:
                 return
+            before = (crossfade, segment, j)
         for frames, continuous, settles in self.pending:
             if continuous and self.segments:
                 self.segments[-1] = np.concatenate([self.segments[-1], frames])
@@ -112,6 +115,13 @@ class IdleLoop:
                 self.segments.append(frames)
                 self.settled.append(settles)
         self.pending.clear()
+        if before is not None and self.effective_crossfade() != before[0]:
+            # The loop just became fully settled: boundaries stop holding frames back for a
+            # dissolve, which shifts every position after the first segment. Keep the
+            # cursor on the same frame under the new layout.
+            crossfade, segment, j = before
+            held = _held(self.segments, self.effective_crossfade())
+            self.cursor = sum(len(s) - k for s, k in zip(self.segments[:segment], held[:segment])) + min(j, len(self.segments[segment]) - held[segment] - 1)
 
     def advance(self, delta: int) -> None:
         """Move the cursor by `delta` frames, kept inside the loop as it is now; footage

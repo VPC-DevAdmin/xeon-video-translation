@@ -202,3 +202,21 @@ def test_settled_loop_wraps_with_a_hard_cut_and_truncate_settles_into_the_anchor
     clip = tl2.clips_tagged("filler")[0]
     assert (affected, end) == (1, 2.2) and len(clip[3]) == 30 and int(clip[3][-1][0, 0, 0]) == 0 and 0 < int(clip[3][26][0, 0, 0]) < 7
     assert settle_frames(frames(1, 10)[0], frames(1, 0)[0], 2)[0][0, 0, 0] == 5
+
+
+def test_settling_the_last_segment_keeps_the_cursor_on_the_same_frame():
+    a = np.arange(0, 100, 10, dtype=np.uint8)[:, None, None, None]            # segment 0: 0..90, k = 2 while growing
+    tl = Timeline(fps=4, idle_frames=a, transition_seconds=0)
+    loop = tl.loop("front")
+    loop.settle(2)                                                              # cursor 0 is in the wrap dissolve: staged
+    for t in range(3):
+        tl.frame_at(t / 4)                                                     # cursor 2: published, settled, crossfade now 0
+    loop.add(np.full((8, 1, 1, 1), 200, np.uint8), continuous=False)          # segment 1 (unsettled: crossfade back to 2)
+    for t in range(3, 14):
+        tl.frame_at(t / 4)                                                     # cursor 13: segment 0 plays 10 (12 - 2), so segment 1, j = 3
+    seg, j, _ = __import__("app.timeline", fromlist=["idle_loop_locate"]).idle_loop_locate(loop.segments, loop.cursor, loop.effective_crossfade())
+    assert (seg, j) == (1, 3)
+    loop.settle(2)                                                              # all settled: layout changes, cursor remapped
+    assert loop.effective_crossfade() == 0
+    seg2, j2, _ = __import__("app.timeline", fromlist=["idle_loop_locate"]).idle_loop_locate(loop.segments, loop.cursor, 0)
+    assert (seg2, j2) == (1, 3) and loop.cursor == 15

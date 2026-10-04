@@ -76,7 +76,8 @@ looking something up behaves (`Assistant.fill_gap` in the ingest service):
 1. An opener plays at once ("Hold on, let me find that for you."; five in
    English, rotated so the same one is not used twice in a row).
 2. The head turns to a tablet (LivePortrait edit of the portrait: pitch 14,
-   yaw -14, gaze down-right; `ASSISTANT_WORKING_POSE`), and the working idle
+   yaw -14, gaze lowered; `ASSISTANT_WORKING_POSE`, where a negative eyes_y
+   lowers the gaze), and the working idle
    loop shows the persona reading. Short progress utterances ("Hmm, let me
    see.", "Okay, almost there.") and the occasional longer bridge ("Bear with
    me, I want to make sure I get this right.") play with 0.7 to 1.5 s pauses,
@@ -171,12 +172,16 @@ ASR of the recording and the XTTS conditioning; all checks passed; voice preview
 - FlashHead renders 512×512 from the portrait; expression follows the audio,
   texture is softer than a recording. A restoration or upscale pass is the
   quality lever; SageAttention or FlashAttention the speed lever (r 0.84 today).
-- Filler clips, idle and reply are separate generations. Every switch between
-  idle footage and a clip is a half-second dissolve on the timeline, and idle
-  footage is a list of continuous segments whose boundaries (and the loop wrap)
-  dissolve the same way; motion state is not carried across them. The pose
-  change is footage of the head turning (LivePortrait, 12 frames), not a
-  dissolve between two heads.
+- Filler clips, idle segments and the reply are separate generations, joined
+  through a common anchor: each starts from the renderer's rest pose (every
+  render begins with a reset) and ends by settling into that rest frame over
+  7 frames, so clips, idle segments, the loop wrap and the reply's end join
+  with hard cuts, not dissolves between two poses. A cut-off filler settles
+  before the head turns back. Only joins that cannot be anchored (an opener
+  landing mid-idle, the head-turn footage) get a 4-frame dissolve. The pose
+  change is footage of the head turning (LivePortrait, 12 frames). While an
+  idle loop is still growing, its boundaries dissolve; once every segment is
+  settled they are cuts.
 - Background preparation order is the first opener (about 5 s after the face
   appears), the front idle loop to 12 s, the posed portrait plus turn footage,
   the working idle loop to 6 s, then beats, closers and bridges, then the rest
