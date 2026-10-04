@@ -33,6 +33,7 @@ class Turn(BaseModel):
     audio_path: str
     language: str = "en"
     voice: str | None = Field(None, max_length=100)
+    persona_id: str | None = Field(None, pattern=r"^[0-9a-f]{32}$", description="cloned voice from /personas")
     history: list[dict[str, str]] = Field(default_factory=list, max_length=12)
 
 
@@ -40,6 +41,7 @@ class Speak(BaseModel):
     text: str = Field(..., min_length=1, max_length=800)
     language: str = "en"
     voice: str | None = Field(None, max_length=100)
+    persona_id: str | None = Field(None, pattern=r"^[0-9a-f]{32}$")
 
 
 def split_sentences(text: str, max_len: int = 220) -> list[str]:
@@ -66,8 +68,11 @@ def pcm_event(audio, sentence_id: int, final: bool, text: str) -> dict:
             "samples": int(len(clipped)), "sentence_id": sentence_id, "final": final, "text": text}
 
 
-def _speaker(voice):
+def _speaker(voice, persona_id=None):
     model = tts._get_xtts().synthesizer.tts_model
+    if persona_id:
+        from . import personas
+        return model, personas.conditioning(persona_id)
     speakers = model.speaker_manager.speakers
     name = voice or os.getenv("AVATAR_SPEAKER") or next(iter(speakers))
     if name not in speakers:
@@ -98,8 +103,8 @@ def _synthesize(model, conditioning, text: str, language: str):
             return
 
 
-def _speak_events(text: str, language: str, voice):
-    model, conditioning = _speaker(voice)
+def _speak_events(text: str, language: str, voice, persona_id=None):
+    model, conditioning = _speaker(voice, persona_id)
     sentences = split_sentences(text)
     for sentence_id, sentence in enumerate(sentences):
         chunks = list(_synthesize(model, conditioning, sentence, language))
@@ -129,7 +134,7 @@ def _generate(body: Turn, path: Path):
         yield {"type": "done", "reply": ""}
         return
     yield {"type": "reply", "text": reply, "sentences": len(split_sentences(reply))}
-    yield from _speak_events(reply, body.language, body.voice)
+    yield from _speak_events(reply, body.language, body.voice, body.persona_id)
     yield {"type": "done", "reply": reply}
 
 
@@ -165,6 +170,9 @@ async def respond(body: Turn):
     check_owner(json.loads(ownership.read_text()))
     if body.language not in tts.XTTS_LANG_CODES:
         raise HTTPException(400, "voice does not support this language")
+    if body.persona_id:
+        from . import personas
+        check_owner(personas._load(body.persona_id))
     return await _ndjson(lambda: _generate(body, path))
 
 
@@ -172,4 +180,8 @@ async def respond(body: Turn):
 async def speak(body: Speak):
     if body.language not in tts.XTTS_LANG_CODES:
         raise HTTPException(400, "voice does not support this language")
-    return await _ndjson(lambda: _speak_events(body.text, body.language, body.voice))
+    if body.persona_id:
+        from . import personas
+        from ..security import check_owner
+        check_owner(personas._load(body.persona_id))
+    return await _ndjson(lambda: _speak_events(body.text, body.language, body.voice, body.persona_id))

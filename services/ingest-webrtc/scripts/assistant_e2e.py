@@ -107,8 +107,11 @@ async def run(args):
     async with httpx.AsyncClient(base_url=args.ingest, headers=headers, timeout=300) as client:
         try:
             created_at = time.monotonic()
-            result = await client.post("/assistant/sessions", files={"image": ("portrait.png", Path(args.image).read_bytes(), "image/png")},
-                                       data={"language": "en"})
+            if args.persona:
+                result = await client.post("/assistant/sessions", data={"language": "en", "persona_id": args.persona})
+            else:
+                result = await client.post("/assistant/sessions", files={"image": ("portrait.png", Path(args.image).read_bytes(), "image/png")},
+                                           data={"language": "en"})
             result.raise_for_status()
             body = result.json()
             session = body["session_id"]
@@ -139,12 +142,16 @@ async def run(args):
             status = await client.get(f"/assistant/sessions/{session}")
             status.raise_for_status()
             endpoint = marks.get("thinking")
-            speaking = marks.get("speaking")
-            reply_video = [t for t in video_times if speaking and t >= speaking and t <= marks.get("listening_after_reply", t)]
+            # First turn window from the event trace (second turn is the interrupted one).
+            def first(kind, after=0.0):
+                return next((epoch + e["t"] for e in events if e.get("type") == kind and e["t"] >= after), None)
+            speaking = first("speaking")
+            reply_end = first("listening", (speaking - epoch) if speaking else 0.0) if speaking else None
+            reply_video = [t for t in video_times if speaking and t >= speaking and (reply_end is None or t <= reply_end)]
             span = reply_video[-1] - reply_video[0] if len(reply_video) > 1 else 0
             first_ack_audio = next((t for t in audio_active if endpoint and t >= endpoint), None)
             reply_audio = next((t for t in audio_active if speaking and t >= speaking), None)
-            motion_in_reply = [c for t, c in frame_change if speaking and t >= speaking]
+            motion_in_reply = [c for t, c in frame_change if speaking and t >= speaking and (reply_end is None or t <= reply_end)]
             report = {
                 "session": session, "connection": pc.connectionState, "prepare_seconds": round(prepare_seconds, 2),
                 "server_prepare": body.get("prepare"),
@@ -173,7 +180,8 @@ async def run(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--image", required=True)
+    parser.add_argument("--image", help="portrait upload (or use --persona)")
+    parser.add_argument("--persona", help="persona id from the backend /personas API")
     parser.add_argument("--audio", required=True)
     parser.add_argument("--interrupt-audio", help="second utterance; its reply is interrupted after 2 s")
     parser.add_argument("--ingest", default="http://localhost:8091")

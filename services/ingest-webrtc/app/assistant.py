@@ -186,8 +186,9 @@ class Renderer:
 
 
 class Assistant:
-    def __init__(self, identifier, directory: Path, still, language, voice):
+    def __init__(self, identifier, directory: Path, still, language, voice, persona_id=None):
         self.id, self.directory, self.language, self.voice = identifier, directory, language, voice
+        self.persona_id = persona_id
         self.timeline = Timeline(FPS, still=still)
         self.pc = None
         self.channel = None
@@ -213,7 +214,8 @@ class Assistant:
         """Synthesize `text` with the session voice; PCM16 at 24 kHz."""
         parts = []
         async with self.client.stream("POST", f"{BACKEND}/assistant/speak",
-                                      json={"text": text, "language": self.language, "voice": self.voice},
+                                      json={"text": text, "language": self.language, "voice": self.voice,
+                                            "persona_id": self.persona_id},
                                       headers={"x-owner-id": self.owner}, timeout=120) as response:
             response.raise_for_status()
             async for line in response.aiter_lines():
@@ -295,6 +297,7 @@ class Assistant:
                 async with self.client.stream(
                     "POST", f"{BACKEND}/assistant/respond",
                     json={"audio_path": str(path), "language": self.language, "voice": self.voice,
+                          "persona_id": self.persona_id,
                           "history": [m for m in self.history[-12:] if m.get("content")]},
                     headers={"x-owner-id": self.owner}, timeout=120,
                 ) as response:
@@ -497,16 +500,41 @@ async def require_warm():
     raise HTTPException(503, "The renderer is not ready yet; retry shortly.", headers={"Retry-After": "5"})
 
 
+async def _persona_portrait(persona_id: str, owner_id: str) -> bytes:
+    """The persona's portrait as the backend recorded it (same /jobs volume)."""
+    async with httpx.AsyncClient(timeout=10, headers={"x-internal-key": os.getenv("INTERNAL_API_KEY", ""),
+                                                      "x-owner-id": owner_id}) as client:
+        response = await client.get(f"{BACKEND}/personas/{persona_id}")
+        if response.status_code == 404:
+            raise HTTPException(404, "persona not found")
+        response.raise_for_status()
+        record = response.json()
+    if record.get("status") != "ready":
+        raise HTTPException(409, "persona is not ready")
+    portrait = Path(record["files"]["portrait"])
+    if not portrait.is_relative_to(ROOT.parent) or not portrait.exists():
+        raise HTTPException(502, "persona portrait is not visible to the media service")
+    return portrait.read_bytes()
+
+
 @router.post("/sessions")
-async def create(image: UploadFile = File(...), language: str = Form("en"), voice: str | None = Form(None)):
+async def create(image: UploadFile | None = File(None), language: str = Form("en"), voice: str | None = Form(None),
+                 persona_id: str | None = Form(None)):
     if len(_sessions) >= MAX_SESSIONS:
         raise HTTPException(429, "assistant capacity reached")
     await require_warm()
     if language not in {"en", "es", "fr", "de", "it", "pt", "pl", "tr", "ru", "nl", "cs", "ar", "hu", "ko", "ja", "hi", "zh"}:
         raise HTTPException(400, "unsupported language")
-    payload = await image.read(5 * 1024 * 1024 + 1)
-    if len(payload) > 5 * 1024 * 1024:
-        raise HTTPException(413, "image exceeds 5 MB")
+    if persona_id and not __import__("re").fullmatch(r"[0-9a-f]{32}", persona_id):
+        raise HTTPException(400, "invalid persona id")
+    if persona_id:
+        payload = await _persona_portrait(persona_id, owner.get())
+    elif image is not None:
+        payload = await image.read(5 * 1024 * 1024 + 1)
+        if len(payload) > 5 * 1024 * 1024:
+            raise HTTPException(413, "image exceeds 5 MB")
+    else:
+        raise HTTPException(400, "upload a portrait or choose a persona")
     try:
         picture = Image.open(BytesIO(payload))
         if picture.width * picture.height > 20_000_000:
@@ -520,7 +548,8 @@ async def create(image: UploadFile = File(...), language: str = Form("en"), voic
     directory.mkdir(parents=True)
     picture.save(directory / "image.png")
     still = np.asarray(picture.resize((512, 512))).copy()
-    session = Assistant(identifier, directory, still, language, voice if isinstance(voice, str) and voice else None)
+    session = Assistant(identifier, directory, still, language, voice if isinstance(voice, str) and voice else None,
+                        persona_id or None)
     session.owner = owner.get()
     (directory / "owner.json").write_text(json.dumps({"owner_id": session.owner}))
     _sessions[identifier] = session

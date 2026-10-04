@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
+import PersonaWizard from "../components/PersonaWizard";
 
 const BASE = process.env.NEXT_PUBLIC_INGEST_BASE_URL || "/ingest";
 
@@ -17,6 +18,9 @@ export default function AssistantPage() {
   const [schedule, setSchedule] = useState<Schedule | null>(null);
   const [countdown, setCountdown] = useState<number | null>(null);
   const [stats, setStats] = useState<{ stalls: number; frames_sent: number } | null>(null);
+  const [personas, setPersonas] = useState<{ id: string; name: string }[]>([]);
+  const [personaId, setPersonaId] = useState("");
+  const [wizard, setWizard] = useState(false);
   const video = useRef<HTMLVideoElement>(null);
   const peer = useRef<RTCPeerConnection | null>(null);
   const microphone = useRef<MediaStream | null>(null);
@@ -32,6 +36,10 @@ export default function AssistantPage() {
     setStatus("idle"); setSchedule(null); setCountdown(null);
   }
   useEffect(() => () => stop(), []);
+  async function loadPersonas() {
+    try { const r = await fetch("/api/personas"); if (r.ok) setPersonas((await r.json()).personas); } catch { /* list stays empty */ }
+  }
+  useEffect(() => { void loadPersonas(); }, []);
   useEffect(() => {
     const timer = setInterval(() => {
       if (scheduledAt.current === null) return;
@@ -43,10 +51,11 @@ export default function AssistantPage() {
   }, []);
 
   async function start() {
-    if (!image) return;
+    if (!image && !personaId) return;
     setError(""); setStatus("preparing the assistant (portrait, idle motion, acknowledgement)"); setMessages([]); setStats(null);
     try {
-      const form = new FormData(); form.append("image", image); form.append("language", language); if (voice) form.append("voice", voice);
+      const form = new FormData(); form.append("language", language);
+      if (personaId) form.append("persona_id", personaId); else { if (image) form.append("image", image); if (voice) form.append("voice", voice); }
       const created = await fetch(`${BASE}/assistant/sessions`, { method: "POST", body: form });
       if (!created.ok) throw new Error(await created.text());
       const body = await created.json();
@@ -107,8 +116,16 @@ export default function AssistantPage() {
 
   return <main className="mx-auto max-w-3xl p-6 space-y-4">
     <h1 className="text-2xl font-semibold">Video assistant</h1>
-    <p>Choose a portrait and speak. The assistant acknowledges at once, thinks, and its reply video starts after a short head start. Speak again or press Interrupt to cut it off.</p>
-    <input type="file" accept="image/png,image/jpeg,image/webp" disabled={status !== "idle"} onChange={e => setImage(e.target.files?.[0] || null)} />
+    <p>Choose a person, then speak. The assistant acknowledges at once, thinks, and its reply video starts after a short head start. Speak again or press Interrupt to cut it off.</p>
+    <div className="flex flex-wrap gap-3 items-center">
+      <select aria-label="Persona" value={personaId} disabled={status !== "idle"} onChange={e => setPersonaId(e.target.value)}>
+        <option value="">Portrait upload + bundled voice</option>
+        {personas.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+      </select>
+      <button disabled={status !== "idle"} onClick={() => setWizard(true)}>Use this person…</button>
+    </div>
+    {wizard && <PersonaWizard language={language} onCancel={() => setWizard(false)} onDone={p => { setWizard(false); setPersonaId(p.id); void loadPersonas(); }} />}
+    {!personaId && <input type="file" accept="image/png,image/jpeg,image/webp" disabled={status !== "idle"} onChange={e => setImage(e.target.files?.[0] || null)} />}
     <select value={language} disabled={status !== "idle"} onChange={e => setLanguage(e.target.value)}>
       {[["en", "English"], ["es", "Spanish"], ["fr", "French"], ["de", "German"], ["it", "Italian"], ["pt", "Portuguese"], ["ja", "Japanese"], ["zh", "Chinese"]].map(([value, label]) => <option key={value} value={value}>{label}</option>)}
     </select>
@@ -122,7 +139,7 @@ export default function AssistantPage() {
     {stats && <p className="text-sm text-ink-400">Last reply: {stats.stalls} stalled frames of {stats.frames_sent} sent</p>}
     {prepare && <p className="text-sm text-ink-400">Prepared in {String((prepare as { total_seconds?: number }).total_seconds)} s</p>}
     <div className="flex gap-4">
-      <button disabled={!image || status !== "idle"} onClick={start}>Start conversation</button>
+      <button disabled={(!image && !personaId) || status !== "idle"} onClick={start}>Start conversation</button>
       <button disabled={status === "idle"} onClick={() => channel.current?.readyState === "open" && channel.current.send("interrupt")}>Interrupt</button>
       <button disabled={status === "idle"} onClick={stop}>End conversation</button>
     </div>
