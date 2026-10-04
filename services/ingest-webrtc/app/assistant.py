@@ -220,7 +220,7 @@ class Assistant:
         parts = []
         async with self.client.stream("POST", f"{BACKEND}/assistant/speak",
                                       json={"text": text, "language": self.language, "voice": self.voice,
-                                            "persona_id": self.persona_id},
+                                            "persona_id": self.persona_id, "verify": True},
                                       headers={"x-owner-id": self.owner}, timeout=120) as response:
             response.raise_for_status()
             async for line in response.aiter_lines():

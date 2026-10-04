@@ -71,6 +71,7 @@ async def run(args):
     events, tasks = [], []
     marks = {}
     video_times, audio_active = [], []
+    recorded = []                                   # (monotonic time, int16 48 kHz samples)
     frame_change = []
     last_pixels = [None]
     listening_after_reply = asyncio.Event()
@@ -107,7 +108,10 @@ async def run(args):
                         frame_change.append((now, float(np.abs(pixels - last_pixels[0]).mean())))
                     last_pixels[0] = pixels
                 else:
-                    rms = float(np.sqrt(np.mean(frame.to_ndarray().astype(np.float32) ** 2)))
+                    pcm = frame.to_ndarray().reshape(-1)
+                    if args.record:
+                        recorded.append((now, pcm.astype(np.int16)))
+                    rms = float(np.sqrt(np.mean(pcm.astype(np.float32) ** 2)))
                     if rms > 100:
                         audio_active.append(now)
         except Exception as exc:
@@ -190,6 +194,13 @@ async def run(args):
                 "last_audio_after_interrupt_seconds": max([t - interrupt_at[0] for t in audio_active if interrupt_at[0] and t >= interrupt_at[0]], default=None),
                 "server": status.json(), "events": events,
             }
+            if args.record and recorded:
+                import wave as _wave
+                with _wave.open(args.record, "wb") as out:
+                    out.setparams((1, 2, 48000, 0, "NONE", "nc"))
+                    out.writeframes(np.concatenate([p for _, p in recorded]).tobytes())
+                report["recording"] = {"path": args.record, "seconds": round(sum(len(p) for _, p in recorded) / 48000, 2),
+                                       "starts_at_client_seconds": round(recorded[0][0] - epoch, 3)}
             Path(args.output).write_text(json.dumps(report, indent=2) + "\n")
             print(json.dumps({k: v for k, v in report.items() if k not in ("server", "events")}, indent=2), flush=True)
             return 0 if speaking and report["reply_video_fps"] else 1
@@ -211,5 +222,6 @@ if __name__ == "__main__":
     parser.add_argument("--ingest", default="http://localhost:8091")
     parser.add_argument("--timeout", type=float, default=120)
     parser.add_argument("--wait-ready", type=float, default=0, help="hold the utterance until the session reports ready (seconds max)")
+    parser.add_argument("--record", help="write the received audio (48 kHz mono) to this wav")
     parser.add_argument("--output", required=True)
     raise SystemExit(asyncio.run(run(parser.parse_args())))

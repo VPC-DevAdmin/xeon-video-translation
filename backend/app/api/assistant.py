@@ -44,6 +44,7 @@ class Speak(BaseModel):
     language: str = "en"
     voice: str | None = Field(None, max_length=100)
     persona_id: str | None = Field(None, pattern=r"^[0-9a-f]{32}$")
+    verify: bool = Field(True, description="check each sentence with the recognizer and re-synthesize a bad take")
 
 
 def split_sentences(text: str, max_len: int = 220) -> list[str]:
@@ -105,13 +106,52 @@ def _synthesize(model, conditioning, text: str, language: str):
             return
 
 
-def _speak_events(text: str, language: str, voice, persona_id=None):
+def _verified_sentence(model, conditioning, sentence: str, language: str, attempts: int = 2):
+    """Synthesize one sentence and check it with the recognizer; XTTS occasionally
+    produces a garbled take, especially for cloned voices, and a bad take must not
+    be spoken (or cached as the acknowledgement). Returns (audio, match, heard)."""
+    import tempfile
+    import numpy as np
+    import soundfile as sf
+    import torch
+    from .personas import script_match
+
+    best = None
+    for attempt in range(attempts):
+        with torch.inference_mode():
+            result = model.inference(sentence, tts.XTTS_LANG_CODES[language], conditioning["gpt_cond_latent"],
+                                     conditioning["speaker_embedding"], temperature=0.65 + 0.1 * attempt)
+        audio = np.asarray(result["wav"], dtype=np.float32)
+        with tempfile.TemporaryDirectory(prefix="speak-") as directory:
+            wav = Path(directory) / "take.wav"
+            sf.write(str(wav), audio, SAMPLE_RATE)
+            heard = transcribe.transcribe(wav, wav.with_suffix(".json"), language).text.strip()
+        match = script_match(sentence, heard)
+        if best is None or match > best[1]:
+            best = (audio, match, heard)
+        if match >= 0.6:
+            break
+        log.warning("tts take rejected (%.2f): wanted %r heard %r", match, sentence[:80], heard[:80])
+    return best
+
+
+def _speak_events(text: str, language: str, voice, persona_id=None, verify: bool = True):
+    import numpy as np
     model, conditioning = _speaker(voice, persona_id)
     sentences = split_sentences(text)
     for sentence_id, sentence in enumerate(sentences):
-        chunks = list(_synthesize(model, conditioning, sentence, language))
-        for index, audio in enumerate(chunks):
-            yield pcm_event(audio, sentence_id, index == len(chunks) - 1, sentence)
+        if verify:
+            audio, match, heard = _verified_sentence(model, conditioning, sentence, language)
+            chunks = [audio[i: i + CHUNK_SAMPLES] for i in range(0, len(audio), CHUNK_SAMPLES)] or [np.zeros(0, np.float32)]
+            for index, chunk in enumerate(chunks):
+                event = pcm_event(chunk, sentence_id, index == len(chunks) - 1, sentence)
+                if index == len(chunks) - 1:
+                    event["verified_match"] = match
+                yield event
+        else:
+            chunks = list(_synthesize(model, conditioning, sentence, language))
+            for index, audio in enumerate(chunks):
+                yield pcm_event(audio, sentence_id, index == len(chunks) - 1, sentence)
 
 
 def _generate(body: Turn, path: Path):
@@ -188,4 +228,4 @@ async def speak(body: Speak):
         from . import personas
         from ..security import check_owner
         check_owner(personas._load(body.persona_id))
-    return await _ndjson(lambda: _speak_events(body.text, body.language, body.voice, body.persona_id))
+    return await _ndjson(lambda: _speak_events(body.text, body.language, body.voice, body.persona_id, body.verify))
