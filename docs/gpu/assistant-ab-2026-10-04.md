@@ -121,21 +121,49 @@ What the frames show (sheets in `artifacts/bench/assistant-ab-2026-10-04/scores/
   its higher identity-vs-portrait score is the smoothness, not fidelity.
   Fast enough for anything, not good enough for this product.
 
-## Decision
+## Decision (revised after viewing the videos)
 
-For a single assistant session where quality is the top priority,
-**LatentSync at 10 steps with a resident persona** is the renderer: the
-best sync, the person's real pixels everywhere but the mouth, and a
-measured head start of 5 s for a 14 s reply and 12 s for a 60 s reply,
-inside the 10 to 20 s contract. Its costs are the whole box (2.4 to 2.7
-kW for one session) and a softer mouth than the recording.
+The first draft of this section picked LatentSync on the metric table. The
+videos in motion say otherwise, and the mouth-openness traces explain why
+the metrics missed it (`scores/*.openness.npy`, MediaPipe lip gap in
+face-height units, differences normalised by each trace's own IQR):
 
-**FlashHead Pro compiled is the one-GPU alternative**: 3 s and 10.5 s head
-starts, generated head and eye motion, seven GPUs left for other sessions
-at a fifth of the power. It loses on identity fidelity and texture.
+| Run | Median mouth opening | Frame-to-frame change p95 (IQR) | Jump at chunk boundary vs inside |
+| --- | ---: | ---: | ---: |
+| FlashHead Pro, 14 s / 60 s | 0.027 / 0.016 | 0.82 / 0.69 | 1.41 / 0.57 |
+| FlashHead Lite, 14 s | 0.018 | 0.66 | 1.51 |
+| LatentSync 10 steps, 14 s / 60 s | 0.0028 / 0.0013 | 1.05 / 1.26 | 1.25 / 1.44 |
+| Real footage | 0.0010 | 1.92 (landmark noise on a nearly closed mouth) | |
 
-Not candidates after this trial: FlashHead Lite (quality) and LatentSync
-at 20 steps (no visible gain for 1.5× the time).
+LatentSync's mouth opens about a tenth as far as FlashHead Pro's, jitters
+more from frame to frame relative to that small range, and jumps at the
+16-frame chunk seams. SyncNet and the openness correlation are scale-free,
+so they rewarded the timing and ignored the amplitude and the jitter; the
+identity-vs-footage score trivially favours the renderer that reuses the
+footage. Those were the wrong headline metrics for "does it look like a
+person talking".
+
+Rubric for the assistant (quality first, speed second), 0 to 10 per
+criterion, weights in parentheses:
+
+| | Motion (30) | Identity and texture (25) | Sync timing (15) | Head-start contract (15) | Cost (10) | Risk (5) | Score |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| FlashHead Pro, compiled | 8 | 6 | 7 | 8 | 9 | 7 | **74** |
+| FlashHead Lite | 5 | 4 | 5 | 10 | 10 | 8 | 62 |
+| LatentSync 10 steps, resident | 4 | 8 | 8 | 6 | 3 | 5 | 59 |
+| LatentSync 20 steps, resident | 4 | 8 | 8 | 4 | 2 | 5 | 54 |
+
+**FlashHead Pro compiled is the renderer for the video assistant.**
+Articulated, smooth mouth; generated head and eye motion; 3.3 s and 10.5 s
+head starts on one GPU at 530 W. Its gaps are texture (waxy 512 px, identity
+0.92) and the occasional eye closure, which restoration or an upscale pass
+and a watch-through should address. FlashHead Lite is the fast fallback:
+smooth but soft and under-articulated. LatentSync, as it stands, is not the
+assistant renderer: real pixels but a small, jittery mouth with chunk
+seams. The one cheap LatentSync experiment left is guidance above 1.5,
+which is the knob that pushes mouth amplitude; the structural fixes (cross-
+chunk conditioning, paste-back on workers) are larger than the payoff
+justifies for this product while FlashHead Pro is available.
 
 ## What the trial does not settle
 
