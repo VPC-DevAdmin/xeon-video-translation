@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .api import speech as speech_api, diagnostics as diagnostics_api
 from .api import studio as studio_api
 from .api import avatar as avatar_api
+from .api import assistant as assistant_api
 from .api import jobs as jobs_api
 from .api import stream as stream_api
 from .config import settings
@@ -64,6 +65,7 @@ app.include_router(studio_api.router)
 app.include_router(speech_api.router)
 app.include_router(diagnostics_api.router)
 app.include_router(avatar_api.router)
+app.include_router(assistant_api.router)
 app.include_router(stream_api.router)
 
 _maintenance_task = None

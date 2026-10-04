@@ -391,5 +391,7 @@ async def shutdown():
 
 
 from .avatar import router as avatar_router
+from .assistant import router as assistant_router
 
 app.include_router(avatar_router)
+app.include_router(assistant_router)

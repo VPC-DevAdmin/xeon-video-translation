@@ -1,0 +1,55 @@
+# Video assistant mode: FlashHead render service + the assistant endpoints in the
+# backend and ingest. Apply after the base, GPU and LLM compose files:
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml -f docker-compose.llm.yml \
+#     -f docker-compose.assistant.yml up -d backend llm-gpu frontend ingest-webrtc flashhead
+# or `scripts/mode.sh assistant`.
+#
+# The FlashHead image is the qualified lab environment committed as
+# polyglot-demo/flashhead:lab (torch 2.7.1+cu128, xfuser, mediapipe). The model
+# source tree (flash_head package) and weights are bind-mounted read-only from the
+# release directory and the models volume the lab used.
+services:
+  flashhead:
+    image: ${FLASHHEAD_IMAGE:-polyglot-demo/flashhead:lab}
+    container_name: polyglot-flashhead
+    restart: unless-stopped
+    network_mode: host            # ingest runs on the host network and reaches it at localhost:8094
+    working_dir: /experiment
+    command: ["bash", "-lc", "cd /experiment && PYTHONPATH=/experiment:/service python -m uvicorn app.main:app --host 0.0.0.0 --port ${FLASHHEAD_PORT:-8094}"]
+    environment:
+      FLASHHEAD_MODEL: ${FLASHHEAD_MODEL:-pro}
+      FLASHHEAD_COMPILE: ${FLASHHEAD_COMPILE:-1}
+      FLASHHEAD_SOURCE: /experiment
+      FLASHHEAD_MODEL_ROOT: /experiment-models
+      FLASHHEAD_WARMUP_IMAGE: ${AVATAR_WARMUP_IMAGE_PATH:-/models/avatar-warmup/portrait.png}
+      JOB_ARTIFACTS_DIR: /jobs
+      NVIDIA_VISIBLE_DEVICES: ${FLASHHEAD_GPU:-2}
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility,video
+      TORCHINDUCTOR_CACHE_DIR: /experiment/.inductor-cache
+    volumes:
+      - ./services/flashhead/app:/service/app:ro
+      - ${FLASHHEAD_SOURCE_DIR:-/home/user/xeon-video-translation-releases/codex-20261003T211852Z/flashhead}:/experiment
+      - flashhead-models:/experiment-models:ro
+      - jobs:/jobs:ro
+      - models:/models:ro
+    deploy:
+      resources:
+        limits: {cpus: "16.0", memory: 48g}
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${FLASHHEAD_GPU:-2}"]
+              capabilities: [gpu]
+  ingest-webrtc:
+    environment:
+      ASSISTANT_BACKEND_URL: ${ASSISTANT_BACKEND_URL:-http://localhost:${BACKEND_PORT:-8088}}
+      ASSISTANT_RENDERER_URL: ${ASSISTANT_RENDERER_URL:-http://localhost:${FLASHHEAD_PORT:-8094}}
+      ASSISTANT_HEAD_START: ${ASSISTANT_HEAD_START:-10}
+      ASSISTANT_MAX_HEAD_START: ${ASSISTANT_MAX_HEAD_START:-20}
+      ASSISTANT_MAX_SESSIONS: ${ASSISTANT_MAX_SESSIONS:-1}
+      AVATAR_VAD_BACKEND: ${AVATAR_VAD_BACKEND:-silero}
+      AVATAR_ENDPOINT_SECONDS: ${AVATAR_ENDPOINT_SECONDS:-0.5}
+volumes:
+  flashhead-models:
+    name: xeon-video-translation_flashhead-models
+    external: true
