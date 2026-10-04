@@ -7,6 +7,8 @@ type Props = { language: string; onDone: (persona: { id: string; name: string })
 
 const STEPS = ["consent", "portrait", "idle", "voice", "review"] as const;
 type Step = typeof STEPS[number];
+const PRIMARY = "rounded bg-ink-900 px-4 py-2 text-white disabled:opacity-40 disabled:cursor-not-allowed";
+const SECONDARY = "rounded border border-ink-300 px-4 py-2 disabled:opacity-40 disabled:cursor-not-allowed";
 
 export default function PersonaWizard({ language, onDone, onCancel }: Props) {
   const [step, setStep] = useState<Step>("consent");
@@ -26,6 +28,7 @@ export default function PersonaWizard({ language, onDone, onCancel }: Props) {
   const [checks, setChecks] = useState<Checks | null>(null);
   const [persona, setPersona] = useState<{ id: string; name: string } | null>(null);
   const [cameraReady, setCameraReady] = useState(false);
+  const [retaking, setRetaking] = useState(false);          // came from review: go straight back
   const [previewUrl, setPreviewUrl] = useState("");
   const video = useRef<HTMLVideoElement>(null);
   const stream = useRef<MediaStream | null>(null);
@@ -137,7 +140,7 @@ export default function PersonaWizard({ language, onDone, onCancel }: Props) {
   const problems = (c?: { problems?: string[] }) => c?.problems?.length ? <ul className="list-disc ml-5 text-red-600">{c.problems.map((p, i) => <li key={i}>{p}</li>)}</ul> : <p className="text-green-700">OK</p>;
 
   return <section className="rounded border border-ink-200 p-4 space-y-3">
-    <div className="flex items-center justify-between"><h2 className="text-xl font-semibold">Use this person</h2><button onClick={() => { stopStream(); onCancel(); }}>Close</button></div>
+    <div className="flex items-center justify-between"><h2 className="text-xl font-semibold">Use this person</h2><button className={SECONDARY} onClick={() => { stopStream(); onCancel(); }}>Close</button></div>
     <ol className="flex gap-3 text-sm">{STEPS.map(s => <li key={s} className={s === step ? "font-semibold underline" : "text-ink-400"}>{s}</li>)}</ol>
     {error && <p role="alert" className="text-red-600">{error}</p>}
 
@@ -146,7 +149,7 @@ export default function PersonaWizard({ language, onDone, onCancel }: Props) {
       <p className="text-sm">{script.consent.text}</p>
       <label className="flex gap-2 items-start"><input type="checkbox" checked={consent} onChange={e => setConsent(e.target.checked)} /> <span>I agree (consent version {script.consent.version})</span></label>
       <p className="text-sm text-ink-400">You will take a portrait, record {script.rules.idle_seconds} seconds of sitting still, and read a short script (about {script.rules.voice_target_seconds} seconds).</p>
-      <button disabled={!consent} onClick={() => go("portrait")}>Start</button>
+      <button className={PRIMARY} disabled={!consent} onClick={() => go("portrait")}>Start</button>
     </div>}
 
     {step === "portrait" && script && <div className="space-y-3">
@@ -156,9 +159,9 @@ export default function PersonaWizard({ language, onDone, onCancel }: Props) {
         <div aria-hidden className="pointer-events-none absolute inset-0 flex items-center justify-center"><div className="border-2 border-white/80 rounded-[50%] w-[38%] h-[80%]" /></div>
       </div>
       <div className="flex gap-3 items-center">
-        <button onClick={capturePortrait} disabled={!cameraReady}>Capture portrait</button>
+        <button className={PRIMARY} onClick={capturePortrait} disabled={!cameraReady}>{portrait ? "Capture again" : "Capture portrait"}</button>
         {portraitUrl && <img src={portraitUrl} alt="captured portrait" className="w-24 h-24 rounded object-cover" />}
-        <button disabled={!portrait} onClick={() => go("idle")}>Next</button>
+        <button className={SECONDARY} disabled={!portrait} onClick={() => go(retaking ? "review" : "idle")}>{retaking ? "Back to review" : "Next"}</button>
       </div>
     </div>}
 
@@ -166,9 +169,9 @@ export default function PersonaWizard({ language, onDone, onCancel }: Props) {
       <p>Now sit as you would while listening: look at the camera, breathe and blink normally, don&apos;t talk. We record {script.rules.idle_seconds} seconds. This clip is optional; it feeds the footage-based renderer later.</p>
       <video ref={video} autoPlay playsInline muted className="rounded bg-black w-full max-w-md aspect-video" />
       <div className="flex gap-3 items-center">
-        <button disabled={idleLeft !== null || !cameraReady} onClick={recordIdle}>{idleLeft !== null ? `Recording… ${idleLeft}` : idle ? "Record again" : "Record idle clip"}</button>
+        <button className={PRIMARY} disabled={idleLeft !== null || !cameraReady} onClick={recordIdle}>{idleLeft !== null ? `Recording… ${idleLeft}` : idle ? "Record again" : "Record idle clip"}</button>
         {idle && <span className="text-green-700">clip captured</span>}
-        <button onClick={() => go("voice")}>{idle ? "Next" : "Skip"}</button>
+        <button className={SECONDARY} onClick={() => go("voice")}>{idle ? "Next" : "Skip"}</button>
       </div>
     </div>}
 
@@ -176,27 +179,27 @@ export default function PersonaWizard({ language, onDone, onCancel }: Props) {
       <p>Read this aloud at a natural pace (at least {script.rules.voice_min_seconds} seconds):</p>
       <blockquote className="border-l-4 pl-3 text-lg leading-relaxed">{script.text}</blockquote>
       <div className="flex gap-3 items-center">
-        {!recording ? <button onClick={startVoice} disabled={!cameraReady}>{voice ? "Record again" : "Start recording"}</button> : <button onClick={stopVoice}>Stop ({voiceSeconds.toFixed(0)} s)</button>}
+        {!recording ? <button className={PRIMARY} onClick={startVoice} disabled={!cameraReady}>{voice ? "Record again" : "Start recording"}</button> : <button className={PRIMARY} onClick={stopVoice}>Stop ({voiceSeconds.toFixed(0)} s)</button>}
         <meter min={0} max={0.5} value={level} className="w-40" aria-label="microphone level" />
         {voice && !recording && <span className="text-green-700">{voiceSeconds.toFixed(0)} s recorded</span>}
-        <button disabled={!voice || recording} onClick={() => go("review")}>Next</button>
+        <button className={SECONDARY} disabled={!voice || recording} onClick={() => go("review")}>{retaking ? "Back to review" : "Next"}</button>
       </div>
     </div>}
 
     {step === "review" && <div className="space-y-3">
       <div className="flex gap-4 items-start">{portraitUrl && <img src={portraitUrl} alt="portrait" className="w-32 h-32 rounded object-cover" />}
         <ul className="text-sm"><li>Portrait: {portrait ? "captured" : "missing"}</li><li>Idle clip: {idle ? "captured" : "skipped"}</li><li>Voice: {voice ? `${voiceSeconds.toFixed(0)} s` : "missing"}</li></ul></div>
-      {!persona && <button disabled={!!busy || !portrait || !voice} onClick={submit}>{busy || "Check and build this persona"}</button>}
+      {!persona && <button className={PRIMARY} disabled={!!busy || !portrait || !voice} onClick={submit}>{busy || (checks ? "Check again and build" : "Check and build this persona")}</button>}
       {checks && <div className="grid gap-3 sm:grid-cols-2 text-sm">
         <div><h3 className="font-semibold">Portrait</h3>{problems(checks.portrait)}</div>
         <div><h3 className="font-semibold">Voice</h3>{problems(checks.voice)}
           {checks.voice && "script_match" in checks.voice && <p className="text-ink-400">words matched: {Math.round(Number(checks.voice.script_match) * 100)}% · {String(checks.voice.duration_seconds)} s · {String(checks.voice.level_dbfs)} dBFS</p>}</div>
       </div>}
-      {checks && !persona && <div className="flex gap-3"><button onClick={() => go("portrait")}>Retake portrait</button><button onClick={() => go("voice")}>Re-record voice</button></div>}
+      {checks && !persona && <div className="flex gap-3"><button className={SECONDARY} onClick={() => { setRetaking(true); go("portrait"); }}>Retake portrait</button><button className={SECONDARY} onClick={() => { setRetaking(true); go("voice"); }}>Re-record voice</button></div>}
       {persona && <div className="space-y-2">
         <p className="text-green-700">Persona “{persona.name}” is ready.</p>
         {previewUrl ? <audio controls src={previewUrl} /> : <p className="text-sm text-ink-400">{busy || "No preview available."}</p>}
-        <button onClick={() => { stopStream(); onDone(persona); }}>Use this persona</button>
+        <button className={PRIMARY} onClick={() => { stopStream(); onDone(persona); }}>Use this persona</button>
       </div>}
     </div>}
   </section>;
