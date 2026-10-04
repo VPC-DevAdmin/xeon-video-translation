@@ -29,7 +29,9 @@ def encoder(width, height, bitrate=2000000):
     codec.framerate = fractions.Fraction(30)
     codec.time_base = fractions.Fraction(1, 30)
     codec.max_b_frames = 0
-    codec.gop_size = 50
+    # One keyframe per second: a lost packet corrupts at most a second of picture
+    # before the next IDR (the browser's picture-loss request usually arrives sooner).
+    codec.gop_size = int(os.getenv("WEBRTC_GOP_FRAMES", "25"))
     codec.options = {
         "preset": "p1",
         "tune": "ull",

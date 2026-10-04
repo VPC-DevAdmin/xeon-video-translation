@@ -197,6 +197,7 @@ class Assistant:
         self.consumer = None
         self.turn = None
         self.background = None
+        self.monitor_task = None
         self.expiry = None
         self.closed = False
         self.owner = "local"
@@ -540,7 +541,7 @@ class Assistant:
         self.closed = True
         self.timeline.interrupt()
         current = asyncio.current_task()
-        tasks = [t for t in (self.consumer, self.turn, self.expiry, self.background) if t and t is not current]
+        tasks = [t for t in (self.consumer, self.turn, self.expiry, self.background, self.monitor_task) if t and t is not current]
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
@@ -549,6 +550,43 @@ class Assistant:
         if self.pc:
             await self.pc.close()
         _sessions.pop(self.id, None)
+
+    async def rtc_stats(self) -> dict:
+        """Sender-side view of the video path: what we sent and what the browser reported back."""
+        out: dict = {}
+        if not self.pc:
+            return out
+        for sender in self.pc.getSenders():
+            if sender.track is None:
+                continue
+            try:
+                report = await sender.getStats()
+            except Exception:
+                continue
+            entry: dict = {}
+            for stat in report.values():
+                if stat.type == "outbound-rtp":
+                    entry.update(packets_sent=stat.packetsSent, bytes_sent=stat.bytesSent)
+                elif stat.type == "remote-inbound-rtp":
+                    entry.update(packets_lost=stat.packetsLost, fraction_lost=round(float(stat.fractionLost), 4),
+                                 jitter_ms=round(float(stat.jitter) * 1000, 1), rtt_ms=round(float(stat.roundTripTime) * 1000, 1))
+            out[sender.track.kind] = entry
+        return out
+
+    async def monitor(self) -> None:
+        """Log the transport and timeline every 10 s while connected (operators read docker logs)."""
+        try:
+            while not self.closed and self.pc and self.pc.connectionState != "closed":
+                await asyncio.sleep(10)
+                stats = await self.rtc_stats()
+                tl = self.timeline
+                print(json.dumps({"event": "assistant_rtc", "session": self.id, "connection": self.pc.connectionState if self.pc else None,
+                                  "rtc": stats, "frames_sent": tl.frames_sent, "frames_skipped": tl.frames_skipped,
+                                  "stalls": tl.stalls, "now": round(tl.now(), 1)}), flush=True)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            pass
 
     def status(self) -> dict:
         tl = self.timeline
@@ -681,6 +719,11 @@ async def offer(identifier: str, body: Offer):
 
     @pc.on("connectionstatechange")
     async def changed():
+        if pc.connectionState == "connected" and session.monitor_task is None:
+            session.monitor_task = asyncio.create_task(session.monitor())
+            print(json.dumps({"event": "assistant_connected", "session": session.id,
+                              "video_codec": next((t.sender._rtp_codec.mimeType if getattr(t.sender, "_rtp_codec", None) else None
+                                                   for t in pc.getTransceivers() if t.kind == "video"), None)}), flush=True)
         if pc.connectionState == "failed":
             await session.close()
 
@@ -705,7 +748,7 @@ async def delete(identifier: str):
 @router.get("/sessions/{identifier}")
 async def status(identifier: str):
     session = require(_sessions.get(identifier))
-    return session.status()
+    return {**session.status(), "rtc": await session.rtc_stats()}
 
 
 @router.on_event("shutdown")

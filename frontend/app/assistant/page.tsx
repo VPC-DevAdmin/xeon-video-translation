@@ -20,6 +20,8 @@ export default function AssistantPage() {
   const [error, setError] = useState("");
   const [countdown, setCountdown] = useState<number | null>(null);
   const [showSelf, setShowSelf] = useState(true);
+  const [rx, setRx] = useState<{ fps: number; lost: number; pli: number; nack: number; jitter: number; codec: string; dropped: number } | null>(null);
+  const rxPrev = useRef<{ frames: number; t: number } | null>(null);
   const stage = useRef<HTMLVideoElement>(null);
   const selfView = useRef<HTMLVideoElement>(null);
   const peer = useRef<RTCPeerConnection | null>(null);
@@ -46,6 +48,25 @@ export default function AssistantPage() {
       const left = (replyAt.current - Date.now()) / 1000;
       if (left <= 0) { replyAt.current = null; setCountdown(null); } else setCountdown(left);
     }, 100);
+    return () => clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    const timer = setInterval(async () => {
+      const pc = peer.current; if (!pc || pc.connectionState !== "connected") return;
+      const report = await pc.getStats();
+      let codec = ""; const codecs: Record<string, string> = {};
+      report.forEach(s => { if (s.type === "codec") codecs[s.id] = s.mimeType; });
+      report.forEach(s => {
+        if (s.type === "inbound-rtp" && s.kind === "video") {
+          const now = Date.now(); const prev = rxPrev.current;
+          const fps = prev ? ((s.framesDecoded - prev.frames) * 1000) / Math.max(1, now - prev.t) : 0;
+          rxPrev.current = { frames: s.framesDecoded, t: now };
+          codec = codecs[s.codecId] || "";
+          setRx({ fps: Math.round(fps * 10) / 10, lost: s.packetsLost ?? 0, pli: s.pliCount ?? 0, nack: s.nackCount ?? 0, jitter: Math.round((s.jitter ?? 0) * 1000), codec, dropped: s.framesDropped ?? 0 });
+        }
+      });
+    }, 2000);
     return () => clearInterval(timer);
   }, []);
 
@@ -179,6 +200,7 @@ export default function AssistantPage() {
     {wizard && <PersonaWizard language={language} onCancel={() => setWizard(false)} onDone={p => { setWizard(false); setUploadMode(false); setPersonaId(p.id); void loadPersonas(); }} />}
     {error && <p role="alert" className="text-red-600">{error}</p>}
     <div aria-live="polite" className="space-y-1">{messages.map((m, i) => <p key={i}><span className="font-semibold">{m.who}:</span> {m.text}</p>)}</div>
+    {live && rx && <p className="text-xs text-ink-400">video {rx.codec.replace("video/", "")} · {rx.fps} fps decoded · {rx.lost} packets lost · {rx.pli} picture-loss requests · {rx.nack} retransmit requests · jitter {rx.jitter} ms · {rx.dropped} frames dropped</p>}
     <p className="text-xs text-ink-400">Start chat turns on your microphone (and camera for your own preview only). The assistant answers after a short pause while its reply video renders.</p>
   </main>;
 }

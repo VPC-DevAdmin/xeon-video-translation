@@ -47,7 +47,6 @@ export default function PersonaWizard({ language, onDone, onCancel }: Props) {
     stopStream();
     const media = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" }, audio: withAudio ? { echoCancellation: true, noiseSuppression: true } : false });
     stream.current = media;
-    if (video.current) { video.current.srcObject = media; await video.current.play().catch(() => undefined); }
     if (withAudio) {
       const context = new AudioContext();
       const source = context.createMediaStreamSource(media);
@@ -57,14 +56,22 @@ export default function PersonaWizard({ language, onDone, onCancel }: Props) {
     }
   }
 
-  async function go(next: Step) {
-    setError("");
-    if (next === "portrait") await openCamera(false).catch(e => setError("Camera access failed: " + String(e)));
-    if (next === "idle") await openCamera(false).catch(e => setError("Camera access failed: " + String(e)));
-    if (next === "voice") await openCamera(true).catch(e => setError("Microphone access failed: " + String(e)));
-    if (next === "review") stopStream();
-    setStep(next);
-  }
+  // The preview <video> is rendered per step, so the camera is opened (and the
+  // stream re-attached) after the step has mounted, not before.
+  useEffect(() => {
+    let cancelled = false;
+    async function setup() {
+      if (step === "portrait" || step === "idle") await openCamera(false);
+      else if (step === "voice") await openCamera(true);
+      else stopStream();
+      if (!cancelled && video.current && stream.current) { video.current.srcObject = stream.current; await video.current.play().catch(() => undefined); }
+    }
+    setup().catch(e => setError((step === "voice" ? "Microphone" : "Camera") + " access failed: " + String(e)));
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step]);
+
+  function go(next: Step) { setError(""); setStep(next); }
 
   function capturePortrait() {
     const el = video.current; if (!el || !el.videoWidth) return;
@@ -144,7 +151,7 @@ export default function PersonaWizard({ language, onDone, onCancel }: Props) {
         <div aria-hidden className="pointer-events-none absolute inset-0 flex items-center justify-center"><div className="border-2 border-white/80 rounded-[50%] w-[38%] h-[80%]" /></div>
       </div>
       <div className="flex gap-3 items-center">
-        <button onClick={capturePortrait}>Capture portrait</button>
+        <button onClick={capturePortrait} disabled={!stream.current}>Capture portrait</button>
         {portraitUrl && <img src={portraitUrl} alt="captured portrait" className="w-24 h-24 rounded object-cover" />}
         <button disabled={!portrait} onClick={() => go("idle")}>Next</button>
       </div>
