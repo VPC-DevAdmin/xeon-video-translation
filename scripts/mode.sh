@@ -13,7 +13,9 @@ C=(docker compose -f docker-compose.yml -f docker-compose.gpu.yml -f docker-comp
 case "${1:-status}" in
   translate)
     "${C[@]}" stop backend-avatar musetalk-avatar >/dev/null 2>&1 || true
-    "${C[@]}" up -d backend llm-gpu lipsync-latentsync frontend ingest-webrtc
+    # --no-deps: the avatar overlay makes ingest depend on the avatar
+    # services, which must stay down in translation mode.
+    "${C[@]}" up -d --no-deps backend llm-gpu lipsync-latentsync frontend ingest-webrtc
     echo "waiting for the LatentSync pool warm-up"
     for _ in $(seq 1 40); do
       s=$(curl -s -m 5 "localhost:${LATENTSYNC_PORT:-8090}/health" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("warmup",{}).get("status"))' 2>/dev/null || true)
