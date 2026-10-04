@@ -60,7 +60,7 @@ async def run(args):
         samples = np.frombuffer(wav.readframes(wav.getnframes()), np.int16)
     pc = RTCPeerConnection()
     mic = Microphone(samples)
-    if args.wait_ready:
+    if args.wait_ready or args.start_after:
         mic.hold = True
     else:
         mic.samples = np.concatenate([mic.samples, samples])
@@ -147,10 +147,18 @@ async def run(args):
                 if mic.hold:
                     events.append({"type": "ready_timeout", "t": round(time.monotonic() - epoch, 3)})
                     mic.release()
+            if args.start_after:
+                # Speak at a chosen moment of the cold preparation (after the first
+                # acknowledgement, during idle growth) instead of waiting for "ready".
+                await asyncio.sleep(max(0.0, args.start_after - (time.monotonic() - created_at)))
+                marks.setdefault("released", time.monotonic())
+                mic.release()
             try:
                 await asyncio.wait_for(listening_after_reply.wait(), args.timeout)
             except asyncio.TimeoutError:
                 events.append({"type": "test_timeout"})
+            if args.hold_after_reply:
+                await asyncio.sleep(args.hold_after_reply)        # watch the idle loop (and background work) afterwards
             if args.interrupt_audio:
                 # Second turn, interrupted two seconds into its reply.
                 with wave.open(args.interrupt_audio) as wav:
@@ -179,6 +187,18 @@ async def run(args):
             first_ack_audio = next((t for t in audio_active if endpoint and t >= endpoint), None)
             reply_audio = next((t for t in audio_active if speaking and t >= speaking), None)
             motion_in_reply = [c for t, c in frame_change if speaking and t >= speaking and (reply_end is None or t <= reply_end)]
+
+            def idle_stats(changes):
+                """Frame-to-frame change over idle footage; a snap is a change far above the typical motion."""
+                if len(changes) < 10:
+                    return None
+                values = np.array(changes)
+                median = float(np.median(values))
+                threshold = max(3.0 * median, 6.0)
+                return {"frames": len(values), "median": round(median, 2), "p99": round(float(np.percentile(values, 99)), 2),
+                        "max": round(float(values.max()), 2), "snaps": int((values > threshold).sum()), "snap_threshold": round(threshold, 2)}
+            idle_before = [c for t, c in frame_change if endpoint is None or t < endpoint - 0.5]
+            idle_after = [c for t, c in frame_change if reply_end and t > reply_end + 1.0]
             report = {
                 "session": session, "connection": pc.connectionState, "prepare_seconds": round(prepare_seconds, 2),
                 "ready_after_seconds": round(marks["ready"] - created_at, 2) if "ready" in marks else None,
@@ -190,6 +210,9 @@ async def run(args):
                 "reply_video_fps": round((len(reply_video) - 1) / span, 2) if span else None,
                 "reply_frames": len(reply_video),
                 "reply_mean_frame_change": round(float(np.mean(motion_in_reply)), 3) if motion_in_reply else None,
+                "idle_before_turn": idle_stats(idle_before), "idle_after_reply": idle_stats(idle_after),
+                "ack_ready_after_seconds": round(next((epoch + e["t"] for e in events if e.get("type") == "ack_ready"), created_at) - created_at, 2),
+                "released_after_seconds": round(marks["released"] - created_at, 2) if "released" in marks else None,
                 "interrupt_ack_seconds": interrupt_ack[0],
                 "last_audio_after_interrupt_seconds": max([t - interrupt_at[0] for t in audio_active if interrupt_at[0] and t >= interrupt_at[0]], default=None),
                 "server": status.json(), "events": events,
@@ -222,6 +245,8 @@ if __name__ == "__main__":
     parser.add_argument("--ingest", default="http://localhost:8091")
     parser.add_argument("--timeout", type=float, default=120)
     parser.add_argument("--wait-ready", type=float, default=0, help="hold the utterance until the session reports ready (seconds max)")
+    parser.add_argument("--start-after", type=float, default=0, help="hold the utterance until this many seconds after session creation")
+    parser.add_argument("--hold-after-reply", type=float, default=0, help="keep the session open this long after the reply to observe the idle loop")
     parser.add_argument("--record", help="write the received audio (48 kHz mono) to this wav")
     parser.add_argument("--output", required=True)
     raise SystemExit(asyncio.run(run(parser.parse_args())))
