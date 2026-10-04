@@ -344,6 +344,9 @@ class Assistant:
             reply_seconds = total_seconds if state["tts_done"] else max(total_seconds, words / 2.5)
             required = head_start_required(reply_seconds, self.renderer.ratio, self.renderer.first_chunk_seconds or 1.5)
             start = max(ack_end + 0.3, t0 + min(MAX_HEAD_START, max(HEAD_START, required)))
+            # A late decision (slow transcript or first chunk) must not schedule into the
+            # past, or the opening of the reply would be skipped.
+            start = max(start, tl.now() + 0.15)
             state["reply_start"] = start
             tl.promise(start, start + reply_seconds, generation)
             self.metrics["reply_start_seconds"].append(round(start - t0, 2))

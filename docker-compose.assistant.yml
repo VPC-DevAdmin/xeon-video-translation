@@ -40,6 +40,12 @@ services:
             - driver: nvidia
               device_ids: ["${FLASHHEAD_GPU:-2}"]
               capabilities: [gpu]
+  backend:
+    environment:
+      # Exercise ASR, streaming TTS and the batched whisper path at start so the
+      # first assistant turn does not pay ~9 s of lazy initialisation.
+      AVATAR_WARMUP_INFERENCE: "1"
+      AVATAR_WARMUP_AUDIO_PATH: ${AVATAR_WARMUP_AUDIO_PATH:-/models/avatar-warmup/speech.wav}
   ingest-webrtc:
     environment:
       ASSISTANT_BACKEND_URL: ${ASSISTANT_BACKEND_URL:-http://localhost:${BACKEND_PORT:-8088}}

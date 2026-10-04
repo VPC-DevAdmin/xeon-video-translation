@@ -126,7 +126,9 @@ async def run(args):
                 with wave.open(args.interrupt_audio) as wav:
                     second = np.frombuffer(wav.readframes(wav.getnframes()), np.int16)
                 marks.pop("speaking", None); listening_after_reply.clear()
-                mic.samples = np.concatenate([mic.samples[:mic.index], np.zeros(8000, np.int16), second, np.zeros(16000 * 60, np.int16)])
+                played = np.zeros(mic.index, np.int16)          # everything up to now, silence beyond the first clip
+                played[:min(len(mic.samples), mic.index)] = mic.samples[:mic.index]
+                mic.samples = np.concatenate([played, np.zeros(8000, np.int16), second, np.zeros(16000 * 60, np.int16)])
                 deadline = time.monotonic() + args.timeout
                 while "speaking" not in marks and time.monotonic() < deadline:
                     await asyncio.sleep(0.1)
