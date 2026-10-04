@@ -60,7 +60,13 @@ def split_sentences(text: str, max_len: int = 220) -> list[str]:
             part = part[cut + 1:].strip()
         if part:
             out.append(part)
-    return out
+    merged: list[str] = []
+    for part in out:
+        if merged and (len(merged[-1]) < 25 or len(part) < 25) and len(merged[-1]) + len(part) <= max_len:
+            merged[-1] = f"{merged[-1]} {part}"
+        else:
+            merged.append(part)
+    return merged
 
 
 def pcm_event(audio, sentence_id: int, final: bool, text: str) -> dict:
@@ -106,19 +112,43 @@ def _synthesize(model, conditioning, text: str, language: str):
             return
 
 
+def _aligned_span(sentence: str, words):
+    """(matched ratio, first word start, last word end) of the sentence inside the
+    recognized words; babble before or after the sentence falls outside the span."""
+    import difflib
+    import re
+
+    def norm(text):
+        return re.findall(r"[\w']+", text.lower())
+
+    target = norm(sentence)
+    heard = [(norm(w.text if hasattr(w, "text") else w.word), w.start, w.end) for w in words]
+    heard = [(h[0][0], h[1], h[2]) for h in heard if h[0] and h[1] is not None and h[2] is not None]
+    if not target or not heard:
+        return 0.0, None, None
+    matcher = difflib.SequenceMatcher(a=target, b=[h[0] for h in heard], autojunk=False)
+    blocks = [b for b in matcher.get_matching_blocks() if b.size]
+    if not blocks:
+        return 0.0, None, None
+    matched = sum(b.size for b in blocks) / len(target)
+    first = heard[blocks[0].b][1]
+    last = heard[blocks[-1].b + blocks[-1].size - 1][2]
+    return matched, float(first), float(last)
+
+
 def _verified_sentence(model, conditioning, sentence: str, language: str, attempts: int = 3):
-    """Synthesize one sentence and keep only a take whose recognized words are exactly
-    the sentence, trimmed to those words (the generation pipeline's rule). Cloned
-    voices sometimes babble, repeat or trail off; such takes are re-synthesized.
-    Falls back to the shortest fuzzy-matching take when every attempt fails."""
+    """Synthesize one sentence and keep a take whose recognized words are the sentence,
+    cut to the span of those words. Cloned voices babble before or after the text,
+    especially on short sentences; the cut removes it and a take that still does not
+    carry the words is re-synthesized. Returns (audio, matched ratio, heard, takes)."""
     import tempfile
     import numpy as np
     import soundfile as sf
     import torch
-    from .personas import script_match
-    from ..pipeline.tts import _trim_tail_via_whisper, _trim_to_speech
+    from ..pipeline.tts import _trim_tail_via_whisper
 
     fallback = None
+    expected = 0.09 * len(sentence) + 1.5
     for attempt in range(attempts):
         with torch.inference_mode():
             result = model.inference(sentence, tts.XTTS_LANG_CODES[language], conditioning["gpt_cond_latent"],
@@ -128,23 +158,25 @@ def _verified_sentence(model, conditioning, sentence: str, language: str, attemp
         with tempfile.TemporaryDirectory(prefix="speak-") as directory:
             wav = Path(directory) / "take.wav"
             sf.write(str(wav), audio, SAMPLE_RATE)
-            verdict = _trim_tail_via_whisper(wav, language, sentence)
-            if verdict is True:
+            if _trim_tail_via_whisper(wav, language, sentence) is True:
                 trimmed, _ = sf.read(str(wav), dtype="float32", always_2d=False)
                 return trimmed, 1.0, sentence, attempt + 1
-            heard = transcribe.transcribe(wav, wav.with_suffix(".json"), language).text.strip()
-            match = script_match(sentence, heard)
-            expected = 0.09 * len(sentence) + 1.5
-            if verdict is None and match >= 0.6 and len(audio) / SAMPLE_RATE <= expected:
-                _trim_to_speech(wav)
-                trimmed, _ = sf.read(str(wav), dtype="float32", always_2d=False)
-                return trimmed, match, heard, attempt + 1
-            if fallback is None or (match, -len(audio)) > (fallback[1], -len(fallback[0])):
-                fallback = (audio, match, heard)
-        log.warning("tts take %d rejected (%s, match %.2f): wanted %r heard %r", attempt + 1, verdict, match, sentence[:60], heard[:60])
-    audio, match, heard = fallback
-    limit = int((0.09 * len(sentence) + 1.5) * SAMPLE_RATE)
-    return audio[:limit], match, heard, attempts
+            transcript = transcribe.transcribe(wav, wav.with_suffix(".json"), language)
+        words = [w for seg in transcript.segments for w in seg.words]
+        matched, first, last = _aligned_span(sentence, words)
+        heard = transcript.text.strip()
+        if first is not None:
+            cut = audio[max(0, int((first - 0.1) * SAMPLE_RATE)): int((last + 0.25) * SAMPLE_RATE)]
+        else:
+            cut = audio
+        if matched >= 0.85 and len(cut) / SAMPLE_RATE <= expected:
+            return cut, matched, heard, attempt + 1
+        if fallback is None or matched > fallback[1]:
+            fallback = (cut, matched, heard)
+        log.warning("tts take %d rejected (match %.2f, %.1fs): wanted %r heard %r", attempt + 1, matched,
+                    len(cut) / SAMPLE_RATE, sentence[:60], heard[:80])
+    audio, matched, heard = fallback
+    return audio[: int(expected * SAMPLE_RATE)], matched, heard, attempts
 
 
 def _speak_events(text: str, language: str, voice, persona_id=None, verify: bool = True):

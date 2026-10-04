@@ -9,7 +9,8 @@ from app.api.assistant import pcm_event, split_sentences
 
 def test_split_sentences_keeps_units_and_cuts_run_ons_at_clauses():
     text = "Sure thing. Here is what I found! Does that help?"
-    assert split_sentences(text) == ["Sure thing.", "Here is what I found!", "Does that help?"]
+    assert split_sentences(text) == ["Sure thing. Here is what I found!", "Does that help?"]   # short units merge
+    assert split_sentences("Good morning! It's great to see you all here today, really.") == ["Good morning! It's great to see you all here today, really."]
     long = ", ".join(["clause number %d is here" % i for i in range(12)]) + "."
     parts = split_sentences(long, max_len=80)
     assert len(parts) > 1 and all(len(p) <= 81 for p in parts)
