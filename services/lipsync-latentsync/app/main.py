@@ -153,6 +153,13 @@ class LipsyncRequest(BaseModel):
     )
 
 
+class PrepareRequest(BaseModel):
+    video_path: str
+    audio_path: str
+    face_track_source: str | None = None
+    face_track_offset_frames: int | None = Field(None, ge=0)
+
+
 class LipsyncResponse(BaseModel):
     status: Literal["ok", "not_implemented"]
     output_path: str | None = None
@@ -344,6 +351,41 @@ def weights() -> dict:
             "subsequent container restarts reuse the volume."
         ),
     }
+
+
+@app.post("/lipsync/prepare")
+def lipsync_prepare(req: PrepareRequest) -> dict:
+    """Prepare a window (decode, warp, audio features) ahead of its /lipsync
+    call. Does not take the inference lock, so it overlaps the window that is
+    denoising. Best effort: a failure here only means the later /lipsync
+    computes the inputs itself."""
+    import time
+
+    root = Path(os.environ.get("JOB_ARTIFACTS_DIR", "/jobs")).resolve()
+    for value in (req.video_path, req.audio_path, req.face_track_source):
+        if value is None:
+            continue
+        candidate = Path(value).resolve()
+        if not candidate.is_relative_to(root) or candidate == root:
+            raise HTTPException(400, "media paths must be inside JOB_ARTIFACTS_DIR")
+        if not candidate.exists():
+            raise HTTPException(400, f"not visible to this service: {value}")
+    from .latentsync_driver.inference import WeightPaths, prepare
+
+    weight_paths = WeightPaths.from_cache(MODEL_CACHE_DIR)
+    if weight_paths.missing():
+        raise HTTPException(503, {"phase": "weights-missing"})
+    started = time.perf_counter()
+    try:
+        result = prepare(
+            req.video_path, req.audio_path, weight_paths,
+            face_track_source=req.face_track_source,
+            face_track_offset_frames=req.face_track_offset_frames or 0,
+        )
+    except Exception as e:
+        log.exception("prepare failed")
+        raise HTTPException(500, {"phase": "prepare", "error": f"{type(e).__name__}: {e}"})
+    return {"status": "ok", **result, "duration_ms": int((time.perf_counter() - started) * 1000)}
 
 
 @app.post("/lipsync", response_model=LipsyncResponse)

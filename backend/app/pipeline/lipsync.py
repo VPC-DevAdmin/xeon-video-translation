@@ -151,6 +151,14 @@ def run(
     raise LipsyncError(f"unknown lipsync backend: {backend!r}")
 
 
+def prepare(backend: str, video_in: Path, audio_in: Path, quality_overrides: dict | None = None) -> bool:
+    """Prepare a render window ahead of time where the backend supports it."""
+    if backend.lower() == "latentsync":
+        from ._lipsync.latentsync_client import prepare as latentsync_prepare
+        return latentsync_prepare(video_in, audio_in, quality_overrides=quality_overrides)
+    return False
+
+
 def _run_passthrough(video_in: Path, output_path: Path) -> LipsyncResult:
     """No-op: copy the original video for the next stage. Audio gets replaced
     downstream by the mux stage. The resulting final.mp4 is a straight dub.

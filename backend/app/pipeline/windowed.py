@@ -5,6 +5,7 @@ Window artifacts are checksummed and can be reused after a failed attempt.
 """
 
 import json
+import logging
 import math
 import subprocess
 from pathlib import Path
@@ -144,7 +145,13 @@ def render(
     progress=None,
     cancel=None,
     configuration=None,
+    preparer=None,
 ):
+    """Render `video` in overlapping windows. While window N renders, window
+    N+1 is cut (ffmpeg) and, when `preparer(source, sound, offset_frames)` is
+    given, handed to the renderer to decode and warp ahead of its turn."""
+    import threading
+
     video, audio, output = map(Path, (video, audio, output))
     root = output.parent / "render-windows"
     root.mkdir(exist_ok=True)
@@ -167,52 +174,84 @@ def render(
         previous = {"fingerprint": fingerprint, "parts": {}}
     parts = list(windows(seconds, size, overlap))
     outputs = []
+
+    def needs_render(index):
+        clip = root / f"part-{index:06}.mp4"
+        return not (clip.exists() and previous["parts"].get(str(index)) == digest(clip))
+
+    def cut(index):
+        """Write the 25 fps source window and its audio for `index`."""
+        start, end, left, right = parts[index]
+        source = root / f"source-{index:06}.mp4"
+        sound = root / f"audio-{index:06}.wav"
+        # Seek near each window rather than decoding the whole prefix again.
+        # Beyond EOF, retain one last frame/sample before padding.
+        span = (right - left) / 25
+        seek = min(left / 25, max(0, video_seconds - 0.08))
+        encode(
+            [
+                "-ss",
+                seek,
+                "-i",
+                video,
+                "-an",
+                "-vf",
+                f"fps=25,tpad=stop_mode=clone:stop_duration={span},trim=end_frame={right - left},setpts=PTS-STARTPTS",
+                "-r",
+                "25",
+                "-fps_mode",
+                "cfr",
+            ],
+            source,
+        )
+        if left / 25 >= audio_seconds:
+            run_ffmpeg(["-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono", "-t", span, sound])
+        else:
+            run_ffmpeg(
+                [
+                    "-ss",
+                    left / 25,
+                    "-i",
+                    audio,
+                    "-af",
+                    f"apad=whole_dur={span},atrim=end={span},asetpts=PTS-STARTPTS",
+                    "-ar",
+                    "24000",
+                    "-ac",
+                    "1",
+                    sound,
+                ]
+            )
+        return source, sound
+
+    def cut_and_prepare(index):
+        try:
+            source, sound = cut(index)
+            if preparer is not None:
+                preparer(source, sound, parts[index][2])
+        except Exception as exc:  # the main loop will cut again and the renderer prepares itself
+            logging.getLogger(__name__).warning("window %d prefetch failed: %s", index, str(exc)[-200:])
+
+    prefetch = {}
     for index, (start, end, left, right) in enumerate(parts):
         if cancel and cancel.is_set():
             raise RenderCancelled("render cancelled between windows")
         clip = root / f"part-{index:06}.mp4"
-        if not (clip.exists() and previous["parts"].get(str(index)) == digest(clip)):
-            source = root / "source.mp4"
-            sound = root / "audio.wav"
-            rendered = root / "rendered.mp4"
-            # Seek near each window rather than decoding the whole prefix again.
-            # Beyond EOF, retain one last frame/sample before padding.
-            span = (right - left) / 25
-            seek = min(left / 25, max(0, video_seconds - 0.08))
-            encode(
-                [
-                    "-ss",
-                    seek,
-                    "-i",
-                    video,
-                    "-an",
-                    "-vf",
-                    f"fps=25,tpad=stop_mode=clone:stop_duration={span},trim=end_frame={right - left},setpts=PTS-STARTPTS",
-                    "-r",
-                    "25",
-                    "-fps_mode",
-                    "cfr",
-                ],
-                source,
-            )
-            if left / 25 >= audio_seconds:
-                run_ffmpeg(["-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono", "-t", span, sound])
-            else:
-                run_ffmpeg(
-                    [
-                        "-ss",
-                        left / 25,
-                        "-i",
-                        audio,
-                        "-af",
-                        f"apad=whole_dur={span},atrim=end={span},asetpts=PTS-STARTPTS",
-                        "-ar",
-                        "24000",
-                        "-ac",
-                        "1",
-                        sound,
-                    ]
-                )
+        if needs_render(index):
+            source = root / f"source-{index:06}.mp4"
+            sound = root / f"audio-{index:06}.wav"
+            rendered = root / f"rendered-{index:06}.mp4"
+            thread = prefetch.pop(index, None)
+            if thread is not None:
+                thread.join()
+            if not (source.exists() and sound.exists()):
+                cut(index)
+            # Overlap: cut and prepare the next window while this one renders.
+            nxt = index + 1
+            if nxt < len(parts) and needs_render(nxt) and not (cancel and cancel.is_set()):
+                thread = threading.Thread(target=cut_and_prepare, args=(nxt,), name=f"window-prefetch-{nxt}", daemon=True)
+                thread.start()
+                prefetch[nxt] = thread
             _call_renderer(renderer, source, sound, rendered, left)
             if cancel and cancel.is_set():
                 raise RenderCancelled("render cancelled after active window drained")
@@ -236,6 +275,8 @@ def render(
             temporary = manifest.with_suffix(".tmp")
             temporary.write_text(json.dumps(previous))
             temporary.replace(manifest)
+            for scratch in (source, sound, rendered):
+                scratch.unlink(missing_ok=True)
         outputs.append(clip)
         if progress:
             progress((index + 1) / len(parts))
@@ -257,6 +298,10 @@ def render(
             output,
         ]
     )
-    for name in ("source.mp4", "audio.wav", "rendered.mp4"):
-        (root / name).unlink(missing_ok=True)
+    for thread in prefetch.values():
+        thread.join()
+    for scratch in root.glob("source-*.mp4"):
+        scratch.unlink(missing_ok=True)
+    for scratch in list(root.glob("audio-*.wav")) + list(root.glob("rendered-*.mp4")):
+        scratch.unlink(missing_ok=True)
     return {"windows": len(parts), "duration": seconds, "configuration": fingerprint}

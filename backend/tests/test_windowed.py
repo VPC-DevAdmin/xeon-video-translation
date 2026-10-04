@@ -75,3 +75,39 @@ def test_window_offset_passed_only_to_renderers_that_accept_it():
     w._call_renderer(lambda s, a, r, **kw: seen.append(kw["window_offset_frames"]), "s", "a", "r", 400)
     w._call_renderer(lambda s, a, r: seen.append("plain"), "s", "a", "r", 600)
     assert seen == [200, 400, "plain"]
+
+
+def test_next_window_is_cut_and_prepared_while_current_renders(tmp_path):
+    """The preparer for window N+1 must be invoked (with its 25 fps offset and an
+    existing cut file) before the renderer for window N returns."""
+    import subprocess, threading, time
+    from pathlib import Path
+    from app.pipeline import windowed as w
+
+    video = tmp_path / "v.mp4"; audio = tmp_path / "a.wav"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=gray:s=64x64:r=25", "-t", "3", "-pix_fmt", "yuv420p", str(video)], check=True)
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=24000", "-t", "3", str(audio)], check=True)
+    events = []
+    lock = threading.Lock()
+
+    def renderer(source, sound, result):
+        with lock:
+            events.append(("render", Path(source).name))
+        time.sleep(0.3)  # give the prefetch thread time to run
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(source), "-c", "copy", str(result)], check=True)
+
+    def preparer(source, sound, offset):
+        assert Path(source).exists() and Path(sound).exists()
+        with lock:
+            events.append(("prepare", Path(source).name, offset))
+
+    w.render(video, audio, tmp_path / "out.mp4", renderer, size=1, overlap=0.2, preparer=preparer)
+    prepared = [e for e in events if e[0] == "prepare"]
+    rendered = [e for e in events if e[0] == "render"]
+    assert len(rendered) >= 3 and len(prepared) == len(rendered) - 1
+    offsets = [e[2] for e in prepared]
+    assert offsets == sorted(offsets) and offsets[0] > 0
+    # each prepare for window k happened before render of window k started
+    for k, (_, name, _) in enumerate(prepared, start=1):
+        assert events.index(("prepare", name, offsets[k - 1])) < events.index(("render", name))
+    assert not list((tmp_path / "render-windows").glob("source-*.mp4"))

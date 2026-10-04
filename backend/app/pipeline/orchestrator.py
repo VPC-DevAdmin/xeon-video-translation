@@ -971,6 +971,11 @@ async def _run_stage_lipsync(
                 overlap=plan[1],
                 progress=progress_cb,
                 cancel=_cancel_signals.get(state.job_id),
+                preparer=(
+                    (lambda source, sound, offset: lipsync.prepare(
+                        backend, source, sound, quality_overrides=overrides_for(offset)))
+                    if backend == "latentsync" else None
+                ),
                 configuration={
                     "backend": backend,
                     "quality": state.lipsync_quality,

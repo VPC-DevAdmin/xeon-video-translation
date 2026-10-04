@@ -164,3 +164,26 @@ def _raise_from_http_error(e: urllib.error.HTTPError, LipsyncError: type) -> Non
         err = detail.get("error", detail) if isinstance(detail, dict) else detail
         raise LipsyncError(f"LatentSync crashed: {err}. See service logs.")
     raise LipsyncError(f"LatentSync failed (HTTP {e.code}): {detail}")
+
+
+def prepare(video_in: Path, audio_in: Path, quality_overrides: dict | None = None) -> bool:
+    """Ask the service to decode/warp a window ahead of its render. Best effort."""
+    payload: dict = {"video_path": str(video_in), "audio_path": str(audio_in)}
+    for key in ("face_track_source", "face_track_offset_frames"):
+        val = (quality_overrides or {}).get(key)
+        if val is not None:
+            payload[key] = val
+    req = urllib.request.Request(
+        f"{settings.latentsync_service_url.rstrip('/')}/lipsync/prepare",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=600) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+            log.info("latentsync prepared %s: %s frames in %s ms", video_in.name, body.get("frames"), body.get("duration_ms"))
+            return True
+    except Exception as e:  # the render computes its own inputs if this failed
+        log.warning("latentsync prepare skipped for %s: %s", video_in.name, str(e)[-200:])
+        return False

@@ -564,10 +564,10 @@ def _run_impl(
         )
 
     if prepare_only:
-        # Warm-up path (service startup): models, worker pool and the ONNX
-        # detector sessions are built and cached; no media is touched.
+        # Warm-up / prepare path: models, worker pool and the ONNX detector
+        # sessions are built and cached; no media is touched here.
         pipeline.ensure_image_processor(int(config.data.resolution), str(mask_image_path))
-        return None
+        return pipeline, config, mask_image_path
 
     # Temp dir for intermediate frames/audio — cleaned up by the pipeline
     # internally. We write under /tmp so the `jobs` volume only gets
@@ -662,28 +662,7 @@ def _run_impl(
         autocast_enabled,
     )
 
-    face_track = None
-    if face_track_source:
-        from . import face_track as _face_track
-
-        source = Path(face_track_source)
-        if not source.exists():
-            raise RuntimeError(f"face_track_source not found: {source}")
-        processor = pipeline.ensure_image_processor(int(config.data.resolution), str(mask_image_path))
-        model_cache_dir = Path(os.environ.get("MODEL_CACHE_DIR", "/models"))
-        track_started = time.perf_counter()
-        landmarks = _face_track.load_or_build(
-            source,
-            model_cache_dir=model_cache_dir,
-            fps=25,
-            extract=processor.try_extract_landmarks3,
-            smooth_window=int(os.environ.get("LATENTSYNC_LANDMARK_SMOOTH_WINDOW", "5")),
-            max_miss_ratio=float(os.environ.get("LATENTSYNC_MAX_MISSING_FACE_RATIO", "0.5")),
-            frame_budget_bytes=int(os.environ.get("LATENTSYNC_FRAME_BUDGET_MB", "8192")) * 1024 * 1024,
-        )
-        log.info("face track ready in %.1fs (%d frames); window offset %d",
-                 time.perf_counter() - track_started, len(landmarks), int(face_track_offset_frames or 0))
-        face_track = {"landmarks": landmarks, "offset": int(face_track_offset_frames or 0)}
+    face_track = _load_face_track(pipeline, config, mask_image_path, face_track_source, face_track_offset_frames)
 
     started = time.perf_counter()
     with torch.no_grad(), autocast_ctx:
@@ -729,6 +708,53 @@ def _run_impl(
 
 
 _RUN_LOCK = _threading.Lock()
+_PREPARE_LOCK = _threading.Lock()
+
+
+def _load_face_track(pipeline, config, mask_image_path, face_track_source, face_track_offset_frames):
+    """Landmarks for the source clip a window was cut from (cached by content)."""
+    if not face_track_source:
+        return None
+    from . import face_track as _face_track
+
+    source = Path(face_track_source)
+    if not source.exists():
+        raise RuntimeError(f"face_track_source not found: {source}")
+    processor = pipeline.ensure_image_processor(int(config.data.resolution), str(mask_image_path))
+    model_cache_dir = Path(os.environ.get("MODEL_CACHE_DIR", "/models"))
+    track_started = time.perf_counter()
+    landmarks = _face_track.load_or_build(
+        source,
+        model_cache_dir=model_cache_dir,
+        fps=25,
+        extract=processor.try_extract_landmarks3,
+        smooth_window=int(os.environ.get("LATENTSYNC_LANDMARK_SMOOTH_WINDOW", "5")),
+        max_miss_ratio=float(os.environ.get("LATENTSYNC_MAX_MISSING_FACE_RATIO", "0.5")),
+        frame_budget_bytes=int(os.environ.get("LATENTSYNC_FRAME_BUDGET_MB", "8192")) * 1024 * 1024,
+    )
+    log.info("face track ready in %.1fs (%d frames); window offset %d",
+             time.perf_counter() - track_started, len(landmarks), int(face_track_offset_frames or 0))
+    return {"landmarks": landmarks, "offset": int(face_track_offset_frames or 0)}
+
+
+def prepare(video_path, audio_path, weight_paths, face_track_source=None, face_track_offset_frames=0) -> dict:
+    """Decode, warp and compute audio features for a window ahead of its
+    /lipsync request. Runs outside _RUN_LOCK so it overlaps the previous
+    window's denoise; the coordinator thread is mostly waiting then."""
+    started = time.perf_counter()
+    with _PREPARE_LOCK:
+        pipeline, config, mask_image_path = _run_impl(
+            video_path=Path(video_path), audio_path=Path(audio_path), output_path=Path("/nonexistent"),
+            weight_paths=weight_paths, prepare_only=True,
+        )
+        face_track = _load_face_track(pipeline, config, mask_image_path, face_track_source, face_track_offset_frames)
+        import torch
+
+        with torch.no_grad():
+            result = pipeline.prepare_ahead(str(video_path), str(audio_path), 25, face_track)
+    result["total_seconds"] = round(time.perf_counter() - started, 2)
+    log.info("prepared ahead: %s (%d frames) in %.1fs", Path(video_path).name, result["frames"], result["total_seconds"])
+    return result
 
 
 def warmup(weight_paths) -> float:

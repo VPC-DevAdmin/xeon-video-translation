@@ -709,6 +709,84 @@ class LipsyncPipeline(DiffusionPipeline):
                     pass
         return np.concatenate(out_frames, axis=0)
 
+    def _smooth_affines(self, affine_matrices, boxes):
+        """Temporal smoothing of the per-frame affine + boxes (with the
+        optional debug dumps). Runs before denoise so chunks can be restored
+        as soon as they are denoised."""
+        # CPU patch: temporal smoothing on affine matrices + bboxes.
+        # Landmark detection jitters a few pixels frame-to-frame (normal
+        # for InsightFace on real video), and that jitter propagates
+        # through the affine warp-back into visible face-bouncing:
+        # translation drift, small rotations, and zoom in/out. This step
+        # decomposes each affine into its 4 similarity parameters
+        # (tx, ty, rotation, scale), smooths each independently with a
+        # centered moving average over LATENTSYNC_AFFINE_SMOOTH_WINDOW
+        # frames (default 9), then recomposes. Bboxes are smoothed
+        # component-wise over the same window.
+        #
+        # Default raised from 5 → 9 because real-world jitter has
+        # components slower than the 5-frame (0.2 s) budget — zoom and
+        # rotation noise compounds visibly over longer windows. 9 frames
+        # (0.36 s at 25 fps) catches those without lagging intentional
+        # head motion.
+        #
+        # Set LATENTSYNC_AFFINE_SMOOTH_WINDOW=1 (or 0) to disable.
+        _smooth_window = int(os.environ.get("LATENTSYNC_AFFINE_SMOOTH_WINDOW", "9"))
+
+        # CPU patch — diagnostic dump of affine matrices + boxes, before
+        # and after smoothing. Gated by env var so it costs nothing in
+        # production. Used to verify whether affine matrices are
+        # bit-identical across frames on static input (which should
+        # follow from deterministic face detection) or drift by a small
+        # epsilon that would explain pipeline-introduced jitter.
+        # See scripts/latentsync_debug/DEBUG_PLAN.md Step 3.
+        if os.environ.get("LATENTSYNC_DUMP_AFFINES", "0") == "1":
+            try:
+                import numpy as np
+                dump_dir = os.environ.get(
+                    "LATENTSYNC_DUMP_AFFINES_DIR", "/jobs/affine_debug",
+                )
+                os.makedirs(dump_dir, exist_ok=True)
+                _to_np = lambda m: m if isinstance(m, np.ndarray) else m.cpu().numpy()
+                pre = np.stack([_to_np(m) for m in affine_matrices], axis=0)
+                pre_boxes = np.array(boxes)
+                np.save(os.path.join(dump_dir, "affines_pre_smooth.npy"), pre)
+                np.save(os.path.join(dump_dir, "boxes_pre_smooth.npy"), pre_boxes)
+                print(
+                    f"LATENTSYNC_DUMP_AFFINES=1: wrote pre-smooth affines "
+                    f"({pre.shape}) + boxes ({pre_boxes.shape}) to {dump_dir}"
+                )
+            except Exception as _e:
+                print(f"affine dump (pre-smooth) failed: {_e}")
+
+        if _smooth_window > 1 and len(affine_matrices) > 1:
+            affine_matrices, boxes = _smooth_affine_sequence(
+                affine_matrices, boxes, window=_smooth_window,
+            )
+            print(
+                f"Smoothed {len(affine_matrices)} affine matrices + boxes "
+                f"(window={_smooth_window}) to reduce face-jitter."
+            )
+
+        if os.environ.get("LATENTSYNC_DUMP_AFFINES", "0") == "1":
+            try:
+                import numpy as np
+                dump_dir = os.environ.get(
+                    "LATENTSYNC_DUMP_AFFINES_DIR", "/jobs/affine_debug",
+                )
+                _to_np = lambda m: m if isinstance(m, np.ndarray) else m.cpu().numpy()
+                post = np.stack([_to_np(m) for m in affine_matrices], axis=0)
+                post_boxes = np.array(boxes)
+                np.save(os.path.join(dump_dir, "affines_post_smooth.npy"), post)
+                np.save(os.path.join(dump_dir, "boxes_post_smooth.npy"), post_boxes)
+                print(
+                    f"LATENTSYNC_DUMP_AFFINES=1: wrote post-smooth affines "
+                    f"({post.shape}) to {dump_dir}"
+                )
+            except Exception as _e:
+                print(f"affine dump (post-smooth) failed: {_e}")
+        return affine_matrices, boxes
+
     def loop_video(self, whisper_chunks: list, video_frames: np.ndarray, landmarks=None):
         # If the audio is longer than the video, we need to loop the video
         if len(whisper_chunks) > len(video_frames):
@@ -741,6 +819,56 @@ class LipsyncPipeline(DiffusionPipeline):
             faces, boxes, affine_matrices = self.affine_transform_video(video_frames, landmarks)
 
         return video_frames, faces, boxes, affine_matrices
+
+    def prepare_inputs(self, video_path: str, audio_path: str, video_fps: int, window_landmarks=None) -> dict:
+        """Everything a window needs before denoising: audio features, decoded
+        frames, warped faces, smoothed affines. Independent of the UNet, so it
+        can run for window N+1 while window N denoises (see prepare_ahead)."""
+        started = time.perf_counter()
+        whisper_feature = self.audio_encoder.audio2feat(audio_path)
+        whisper_chunks = self.audio_encoder.feature2chunks(feature_array=whisper_feature, fps=video_fps)
+        audio_samples = read_audio(audio_path)
+        video_frames = read_video(video_path, use_decord=False)
+        if window_landmarks is not None:
+            from latentsync_driver.face_track import slice_for_window
+
+            window_landmarks = slice_for_window(
+                window_landmarks["landmarks"], int(window_landmarks.get("offset", 0)), len(video_frames)
+            )
+        video_frames, faces, boxes, affine_matrices = self.loop_video(whisper_chunks, video_frames, window_landmarks)
+        affine_matrices, boxes = self._smooth_affines(affine_matrices, boxes)
+        return {
+            "whisper_chunks": whisper_chunks, "audio_samples": audio_samples, "video_frames": video_frames,
+            "faces": faces, "boxes": boxes, "affine_matrices": affine_matrices,
+            "seconds": time.perf_counter() - started,
+        }
+
+    def prepare_ahead(self, video_path: str, audio_path: str, video_fps: int, face_track=None) -> dict:
+        """Compute and cache the inputs for a window that will be requested
+        next. Called from the /lipsync/prepare endpoint while the previous
+        window denoises. At most two windows are kept."""
+        prepared = getattr(self, "_prepared", None)
+        if prepared is None:
+            prepared = self._prepared = {}
+        key = (str(video_path), str(audio_path))
+        inputs = self.prepare_inputs(str(video_path), str(audio_path), video_fps, face_track)
+        inputs["mtime"] = (os.path.getmtime(video_path), os.path.getmtime(audio_path))
+        prepared[key] = inputs
+        while len(prepared) > 2:
+            prepared.pop(next(iter(prepared)))
+        return {"frames": int(len(inputs["video_frames"])), "seconds": round(inputs["seconds"], 2)}
+
+    def _take_prepared(self, video_path: str, audio_path: str):
+        prepared = getattr(self, "_prepared", None) or {}
+        inputs = prepared.pop((str(video_path), str(audio_path)), None)
+        if inputs is None:
+            return None
+        try:
+            if inputs["mtime"] != (os.path.getmtime(video_path), os.path.getmtime(audio_path)):
+                return None  # files were rewritten after preparation
+        except OSError:
+            return None
+        return inputs
 
     def ensure_image_processor(self, height: int, mask_image_path: str):
         """Build (once) the ImageProcessor used for detection and warping.
@@ -867,30 +995,25 @@ class LipsyncPipeline(DiffusionPipeline):
                 print(f"Checkpoint load failed ({e}); running full pipeline")
                 synced_video_frames_tensor = None
 
+        restored_frames = None
+        if synced_video_frames_tensor is not None:
+            affine_matrices, boxes = self._smooth_affines(affine_matrices, boxes)
+
         if synced_video_frames_tensor is None:
             stage_started = time.perf_counter()
             profile = {}
-            whisper_feature = self.audio_encoder.audio2feat(audio_path)
-            whisper_chunks = self.audio_encoder.feature2chunks(feature_array=whisper_feature, fps=video_fps)
-
-            audio_samples = read_audio(audio_path)
-            video_frames = read_video(video_path, use_decord=False)
-
-            # Shared face track for this window: landmarks for the source
-            # frames this clip was cut from, padded if the window ran past
-            # the end of the source. None => detect on this clip as before.
-            window_landmarks = None
-            face_track = kwargs.get("face_track")
-            if face_track is not None:
-                from latentsync_driver.face_track import slice_for_window
-
-                window_landmarks = slice_for_window(
-                    face_track["landmarks"], int(face_track.get("offset", 0)), len(video_frames)
-                )
-
-            video_frames, faces, boxes, affine_matrices = self.loop_video(
-                whisper_chunks, video_frames, window_landmarks
-            )
+            # Window inputs: decoded frames, warped faces (via the shared face
+            # track when supplied), audio features. Prepared ahead by
+            # /lipsync/prepare while the previous window denoised, otherwise
+            # computed here.
+            inputs = self._take_prepared(video_path, audio_path)
+            profile["prepared_ahead"] = inputs is not None
+            if inputs is None:
+                inputs = self.prepare_inputs(video_path, audio_path, video_fps, kwargs.get("face_track"))
+            whisper_chunks = inputs["whisper_chunks"]
+            audio_samples = inputs["audio_samples"]
+            video_frames = inputs["video_frames"]
+            faces, boxes, affine_matrices = inputs["faces"], inputs["boxes"], inputs["affine_matrices"]
             profile["decode_audio_face_seconds"] = time.perf_counter() - stage_started
             profile["conditioning_seconds"] = 0.0
             profile["wait_for_worker_seconds"] = 0.0
@@ -1027,6 +1150,27 @@ class LipsyncPipeline(DiffusionPipeline):
                 for th in threads:
                     th.start()
 
+            # Restore (paste faces back into the 1080p frames) runs on a side
+            # thread per chunk as soon as the chunk is denoised, instead of as
+            # a serial stage after the last chunk. Disabled when a denoise
+            # checkpoint must be saved (that path needs the pre-restore tensor).
+            from concurrent.futures import ThreadPoolExecutor
+            overlap_restore = (
+                not denoise_checkpoint_path
+                and os.environ.get("LATENTSYNC_OVERLAP_RESTORE", "1") == "1"
+            )
+            restore_pool = ThreadPoolExecutor(max_workers=1) if overlap_restore else None
+            restore_futures: dict = {}
+            restore_seconds = [0.0]
+
+            def restore_chunk(index, decoded):
+                a = index * num_frames
+                b = min(len(video_frames), a + len(decoded))
+                started_at = time.perf_counter()
+                out = self.restore_video(decoded[: b - a], video_frames[a:b], boxes[a:b], affine_matrices[a:b])
+                restore_seconds[0] += time.perf_counter() - started_at
+                return out
+
             def collect_chunk(index):
                 collect_started = time.perf_counter()
                 _, _, _, _, _, ref_pixels, chunk_masks = chunk_cond[index]
@@ -1043,7 +1187,10 @@ class LipsyncPipeline(DiffusionPipeline):
                 paste_started = time.perf_counter()
                 decoded = self.paste_surrounding_pixels_back(
                     decoded, ref_pixels, 1 - chunk_masks, device, weight_dtype)
-                synced_video_frames.append(decoded.cpu())
+                if restore_pool is not None:
+                    restore_futures[index] = restore_pool.submit(restore_chunk, index, decoded)
+                else:
+                    synced_video_frames.append(decoded.cpu())
                 chunk_cond[index] = None
                 profile["collect_and_paste_seconds"] += time.perf_counter() - paste_started
                 _emit_progress("denoise", 0.35 + 0.50 * done_count[0] / num_inferences)
@@ -1146,7 +1293,12 @@ class LipsyncPipeline(DiffusionPipeline):
                 # --- Phase C: decode + paste, in order, as results land --------
                 for i in tqdm.tqdm(range(collected, num_inferences), desc="Decoding chunks..."):
                     if chunk_cond[i] is None:
-                        synced_video_frames.append(decoded_by_chunk[i])
+                        if restore_pool is not None:
+                            restore_futures[i] = restore_pool.submit(
+                                restore_chunk, i, decoded_by_chunk[i].to(device, dtype=weight_dtype)
+                            )
+                        else:
+                            synced_video_frames.append(decoded_by_chunk[i])
                         continue
                     collect_chunk(i)
 
@@ -1170,12 +1322,22 @@ class LipsyncPipeline(DiffusionPipeline):
             profile = {k: (round(v, 2) if isinstance(v, float) else v) for k, v in profile.items()}
             print(json.dumps(profile), flush=True)
 
-            # Consolidate all chunk outputs into one tensor, then save for
-            # resume. Cache write is best-effort: if disk is full or the
-            # path is unwritable we log and continue — the live run still
-            # completes; only a future retry would miss the cache.
-            synced_video_frames_tensor = torch.cat(synced_video_frames)
-            if denoise_checkpoint_path:
+            if restore_pool is not None:
+                # Chunks already restored on the side thread; join in order.
+                restored_frames = np.concatenate(
+                    [restore_futures[i].result() for i in range(num_inferences)], axis=0
+                )
+                restore_pool.shutdown(wait=True)
+                print(json.dumps({"event": "latentsync_restore_overlapped", "frames": int(len(restored_frames)),
+                                  "restore_seconds_on_side_thread": round(restore_seconds[0], 2)}), flush=True)
+                synced_video_frames_tensor = None
+            else:
+                # Consolidate all chunk outputs into one tensor, then save for
+                # resume. Cache write is best-effort: if disk is full or the
+                # path is unwritable we log and continue — the live run still
+                # completes; only a future retry would miss the cache.
+                synced_video_frames_tensor = torch.cat(synced_video_frames)
+            if denoise_checkpoint_path and synced_video_frames_tensor is not None:
                 try:
                     print(f"Saving denoise checkpoint: {denoise_checkpoint_path}")
                     os.makedirs(os.path.dirname(denoise_checkpoint_path), exist_ok=True)
@@ -1192,89 +1354,19 @@ class LipsyncPipeline(DiffusionPipeline):
                 except Exception as e:
                     print(f"Checkpoint save failed ({e}); continuing anyway")
 
-        # CPU patch: temporal smoothing on affine matrices + bboxes.
-        # Landmark detection jitters a few pixels frame-to-frame (normal
-        # for InsightFace on real video), and that jitter propagates
-        # through the affine warp-back into visible face-bouncing:
-        # translation drift, small rotations, and zoom in/out. This step
-        # decomposes each affine into its 4 similarity parameters
-        # (tx, ty, rotation, scale), smooths each independently with a
-        # centered moving average over LATENTSYNC_AFFINE_SMOOTH_WINDOW
-        # frames (default 9), then recomposes. Bboxes are smoothed
-        # component-wise over the same window.
-        #
-        # Default raised from 5 → 9 because real-world jitter has
-        # components slower than the 5-frame (0.2 s) budget — zoom and
-        # rotation noise compounds visibly over longer windows. 9 frames
-        # (0.36 s at 25 fps) catches those without lagging intentional
-        # head motion.
-        #
-        # Set LATENTSYNC_AFFINE_SMOOTH_WINDOW=1 (or 0) to disable.
-        _smooth_window = int(os.environ.get("LATENTSYNC_AFFINE_SMOOTH_WINDOW", "9"))
-
-        # CPU patch — diagnostic dump of affine matrices + boxes, before
-        # and after smoothing. Gated by env var so it costs nothing in
-        # production. Used to verify whether affine matrices are
-        # bit-identical across frames on static input (which should
-        # follow from deterministic face detection) or drift by a small
-        # epsilon that would explain pipeline-introduced jitter.
-        # See scripts/latentsync_debug/DEBUG_PLAN.md Step 3.
-        if os.environ.get("LATENTSYNC_DUMP_AFFINES", "0") == "1":
-            try:
-                import numpy as np
-                dump_dir = os.environ.get(
-                    "LATENTSYNC_DUMP_AFFINES_DIR", "/jobs/affine_debug",
-                )
-                os.makedirs(dump_dir, exist_ok=True)
-                _to_np = lambda m: m if isinstance(m, np.ndarray) else m.cpu().numpy()
-                pre = np.stack([_to_np(m) for m in affine_matrices], axis=0)
-                pre_boxes = np.array(boxes)
-                np.save(os.path.join(dump_dir, "affines_pre_smooth.npy"), pre)
-                np.save(os.path.join(dump_dir, "boxes_pre_smooth.npy"), pre_boxes)
-                print(
-                    f"LATENTSYNC_DUMP_AFFINES=1: wrote pre-smooth affines "
-                    f"({pre.shape}) + boxes ({pre_boxes.shape}) to {dump_dir}"
-                )
-            except Exception as _e:
-                print(f"affine dump (pre-smooth) failed: {_e}")
-
-        if _smooth_window > 1 and len(affine_matrices) > 1:
-            affine_matrices, boxes = _smooth_affine_sequence(
-                affine_matrices, boxes, window=_smooth_window,
-            )
-            print(
-                f"Smoothed {len(affine_matrices)} affine matrices + boxes "
-                f"(window={_smooth_window}) to reduce face-jitter."
-            )
-
-        if os.environ.get("LATENTSYNC_DUMP_AFFINES", "0") == "1":
-            try:
-                import numpy as np
-                dump_dir = os.environ.get(
-                    "LATENTSYNC_DUMP_AFFINES_DIR", "/jobs/affine_debug",
-                )
-                _to_np = lambda m: m if isinstance(m, np.ndarray) else m.cpu().numpy()
-                post = np.stack([_to_np(m) for m in affine_matrices], axis=0)
-                post_boxes = np.array(boxes)
-                np.save(os.path.join(dump_dir, "affines_post_smooth.npy"), post)
-                np.save(os.path.join(dump_dir, "boxes_post_smooth.npy"), post_boxes)
-                print(
-                    f"LATENTSYNC_DUMP_AFFINES=1: wrote post-smooth affines "
-                    f"({post.shape}) to {dump_dir}"
-                )
-            except Exception as _e:
-                print(f"affine dump (post-smooth) failed: {_e}")
-
         _emit_progress("restore", 0.90)
         restore_started = time.perf_counter()
-        synced_video_frames = self.restore_video(
-            synced_video_frames_tensor, video_frames, boxes, affine_matrices,
-            progress_callback=(
-                lambda frame_pct: _emit_progress(
-                    "restore", 0.90 + 0.08 * frame_pct,
-                )
-            ),
-        )
+        if restored_frames is not None:
+            synced_video_frames = restored_frames
+        else:
+            synced_video_frames = self.restore_video(
+                synced_video_frames_tensor, video_frames, boxes, affine_matrices,
+                progress_callback=(
+                    lambda frame_pct: _emit_progress(
+                        "restore", 0.90 + 0.08 * frame_pct,
+                    )
+                ),
+            )
 
         audio_samples_remain_length = int(synced_video_frames.shape[0] / video_fps * audio_sample_rate)
         audio_samples = audio_samples[:audio_samples_remain_length].cpu().numpy()
