@@ -115,8 +115,10 @@ services:
               device_ids: ["${BACKEND_GPU:-0}"]
               capabilities: [gpu]
 
-  # Dedicated fast LatentSync renderer (10 steps, one GPU). Owns GPU 3 by
-  # default; the batch service takes LATENTSYNC_GPUS.
+  # Dedicated fast LatentSync renderer (10 steps). Denoise is ~65% of each
+  # render window, so it shards the UNet one process per GPU exactly like the
+  # batch service; LATENTSYNC_FAST_GPUS is a comma list (default 3,5) and must
+  # not overlap LATENTSYNC_GPUS.
   lipsync-fast:
     image: polyglot-demo/lipsync-latentsync:gpu
     build:
@@ -126,7 +128,9 @@ services:
       dockerfile: Dockerfile.gpu
     container_name: polyglot-lipsync-fast
     restart: unless-stopped
-    shm_size: 8gb
+    runtime: nvidia
+    # Worker processes hand decoded chunks back through /dev/shm.
+    shm_size: "16gb"
     environment:
       DEVICE: cuda
       GPU_REQUIRED: "true"
@@ -137,14 +141,17 @@ services:
       JOB_ARTIFACTS_DIR: /jobs
       HF_HOME: /models/huggingface
       HF_TOKEN_PATH: /run/secrets/hf_token
-      CUDA_VISIBLE_DEVICES: "0"
+      NVIDIA_VISIBLE_DEVICES: ${LATENTSYNC_FAST_GPUS:-3,5}
+      CUDA_VISIBLE_DEVICES: "0,1,2,3,4,5,6,7"
       NVIDIA_DRIVER_CAPABILITIES: compute,utility,video
       LATENTSYNC_DTYPE: fp16
       LATENTSYNC_VIDEO_ENCODER: h264_nvenc
       LATENTSYNC_STEPS: "10"
       LATENTSYNC_GUIDANCE: "1.5"
       LATENTSYNC_ENABLE_DEEPCACHE: "0"
-      LATENTSYNC_UNET_REPLICAS: "1"
+      LATENTSYNC_SHARD_MODE: ${LATENTSYNC_SHARD_MODE:-process}
+      # 0 = one UNet replica per visible GPU.
+      LATENTSYNC_UNET_REPLICAS: "0"
       LATENTSYNC_FRAME_BUDGET_MB: ${LATENTSYNC_FRAME_BUDGET_MB:-8192}
       OMP_NUM_THREADS: "16"
       MKL_NUM_THREADS: "16"
@@ -162,15 +169,10 @@ services:
     deploy:
       resources:
         limits: {cpus: "32.0", memory: 96g}
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: ["${LATENTSYNC_FAST_GPU:-3}"]
-              capabilities: [gpu]
 
   # MuseTalk is no longer used by any mode preset (fast = 10-step LatentSync).
-  # Kept behind a profile for A/B comparisons. MUSETALK_GPU must not equal
-  # LATENTSYNC_FAST_GPU when the profile is enabled.
+  # Kept behind a profile for A/B comparisons. MUSETALK_GPU must not be in
+  # LATENTSYNC_FAST_GPUS or LATENTSYNC_GPUS when the profile is enabled.
   lipsync-musetalk:
     profiles: [draft-lipsync]
     build:
