@@ -42,6 +42,9 @@ RUN pip install --upgrade pip wheel \
 COPY pyproject.toml ./
 RUN pip install -e ".[gpu]"
 
+COPY --from=gpu_shared / /opt/gpu-shared
+RUN pip install --no-deps /opt/gpu-shared
+
 COPY app ./app
 COPY scripts ./scripts
 

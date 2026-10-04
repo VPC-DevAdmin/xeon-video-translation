@@ -1,5 +1,11 @@
 # GPU track
 
+> Hardware update: the project has now been deployed and tested on XE7740. See the [measured results and remaining acceptance gates](xe7740-validation-2026-10-03.md). Earlier local-only status below describes the pre-deployment snapshot.
+
+Latest evidence and trials: [quality/performance research review](research-and-experiments.md) and [experiment lab](../../experiments/README.md). Historical hardware results below do not qualify the current local changes or new candidate models.
+
+Next optimization work: [eight-GPU upgrade plan](eight-gpu-upgrade-plan.md), including dedicated/shared GPU layouts, implementation phases, local work and hardware acceptance gates.
+
 > Current implementation and setup: [three-mode local updates](local-updates.md). This includes the new avatar path and supersedes historical status notes below.
 
 The CPU build was optimised as far as it goes and still missed the minimum
@@ -124,3 +130,7 @@ reviewer should hold new changes against.
 Residual CPU work on the GPU track is limited to ffmpeg audio filters,
 silence detection and the numpy compositing in MuseTalk (which runs in a
 thread pool and finished faster than a GPU round trip at 1080p).
+
+## October GPU implementation update
+
+See [implementation and qualification](upgrade-implementation.md) for strict CUDA execution, hardware WebRTC codecs, bounded NVDEC decoding, avatar tensor blending, allocation overlays and the remaining hardware gates.

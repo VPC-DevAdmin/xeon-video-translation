@@ -112,6 +112,7 @@ artifacts/
 cd backend
 python -m venv .venv && source .venv/bin/activate
 pip install --upgrade pip
+pip install -e ../shared
 pip install -e . --extra-index-url https://download.pytorch.org/whl/cpu
 uvicorn app.main:app --reload --port 8000
 

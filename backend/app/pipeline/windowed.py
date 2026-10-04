@@ -5,7 +5,6 @@ Window artifacts are checksummed and can be reused after a failed attempt.
 """
 
 import json
-import logging
 import math
 import subprocess
 from pathlib import Path
@@ -19,7 +18,7 @@ class RenderCancelled(RuntimeError):
 def _encoder_args(hardware: bool) -> list[str]:
     """Intermediate-window encode. NVENC keeps the 7-8 window cuts and the
     per-window trims off the CPU; CQ 16 is visually lossless for the renderer
-    input. libx264 CRF 16 is the software equivalent and the fallback."""
+    input. libx264 CRF 16 is used only in the explicit CPU deployment."""
     if hardware:
         return ["-c:v", "h264_nvenc", "-preset", "p5", "-tune", "hq", "-rc", "vbr",
                 "-cq", "16", "-b:v", "0", "-pix_fmt", "yuv420p"]
@@ -27,25 +26,23 @@ def _encoder_args(hardware: bool) -> list[str]:
 
 
 def encode(args, output):
-    """run_ffmpeg(args + encoder + output), preferring the configured hardware
-    encoder and falling back to libx264 once per process if NVENC fails."""
-    global _hardware
-    if _hardware is None:
-        from ..config import settings
-
-        _hardware = settings.video_encoder == "h264_nvenc"
-    if _hardware:
-        try:
-            return run_ffmpeg([*args, *_encoder_args(True), output])
-        except RuntimeError as exc:
-            _hardware = False
-            logging.getLogger(__name__).warning(
-                "h264_nvenc unavailable for window encodes (%s); using libx264", str(exc)[-200:]
-            )
-    return run_ffmpeg([*args, *_encoder_args(False), output])
-
-
-_hardware = None
+    """Use the requested encoder; a failure remains an actionable job error."""
+    from ..config import settings
+    from gpu_runtime import span
+    if settings.resolved_device == "cuda" and settings.video_encoder != "h264_nvenc":
+        raise RuntimeError("CUDA window encoding requires h264_nvenc")
+    args = list(args)
+    if settings.resolved_device == "cuda" and "-i" in args:
+        from gpu_runtime.media import cuda_filter_input
+        flags, prefix = cuda_filter_input(args[args.index("-i")+1])
+        args = flags + args
+        if "-vf" in args:
+            pos = args.index("-vf")+1
+            args[pos] = prefix + "," + args[pos]
+        else:
+            args += ["-vf", prefix]
+    with span("window.encode", encoder=settings.video_encoder):
+        return run_ffmpeg([*args, *_encoder_args(settings.video_encoder == "h264_nvenc"), output])
 
 
 def run_ffmpeg(args):

@@ -42,13 +42,16 @@ COPY pyproject.toml ./
 # other in site-packages. Keep exactly one.
 RUN pip install -e ".[gpu]" \
     && pip uninstall -y opencv-python opencv-contrib-python opencv-python-headless \
-    && pip install --no-deps "opencv-python-headless>=4.9,<5.0"
+    && pip install --no-deps "opencv-python-headless==4.11.0.86"
 
 # The pytorch image ships CUDA runtime libs as pip packages under
 # site-packages/nvidia/*/lib, not on the system loader path. onnxruntime's
 # CUDA provider dlopens libcublasLt/libcudnn by soname and otherwise falls
 # back to CPU with only a warning, so put those dirs on LD_LIBRARY_PATH.
 ENV LD_LIBRARY_PATH="/opt/conda/lib/python3.11/site-packages/nvidia/cublas/lib:/opt/conda/lib/python3.11/site-packages/nvidia/cudnn/lib:/opt/conda/lib/python3.11/site-packages/nvidia/cuda_runtime/lib:/opt/conda/lib/python3.11/site-packages/nvidia/cufft/lib:/opt/conda/lib/python3.11/site-packages/nvidia/curand/lib:/opt/conda/lib/python3.11/site-packages/nvidia/cuda_nvrtc/lib:${LD_LIBRARY_PATH}"
+
+COPY --from=gpu_shared / /opt/gpu-shared
+RUN pip install --no-deps /opt/gpu-shared
 
 COPY app ./app
 COPY scripts ./scripts

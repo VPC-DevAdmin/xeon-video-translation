@@ -349,6 +349,7 @@ def synthesize(
             target_language=tgt,
             reference_segments=transcript_segments,
             options=options,
+            source_duration_seconds=source_duration_seconds,
         )
         result = TTSResult(
             backend=chosen,
@@ -1175,6 +1176,7 @@ def _synthesize_per_segment(
     target_language: str | None = None,
     reference_segments: list[dict] | None = None,
     options: dict | None = None,
+    source_duration_seconds: float | None = None,
 ) -> int:
     """Render every utterance, fit its slot, and preserve original onset times.
 
@@ -1288,6 +1290,14 @@ def _synthesize_per_segment(
             # Borrow the following pause, but never overlap the next sentence.
             if i + 1 < len(translation_segments):
                 end = float(translation_segments[i + 1]["start"])
+            elif source_duration_seconds is not None:
+                # The final utterance may use the source's trailing silence,
+                # just as earlier utterances may use the pause before the next.
+                import math
+
+                if not math.isfinite(source_duration_seconds) or source_duration_seconds <= 0:
+                    raise TTSError("invalid source duration for speech timing")
+                end = float(source_duration_seconds)
             available = end - start
             if available <= 0:
                 raise TTSError(f"segment {i + 1} has invalid or overlapping timestamps")
@@ -1320,13 +1330,19 @@ def _synthesize_per_segment(
                     from .quality import rewrite
 
                     for fit_attempt in range(settings.tts_fit_retries):
-                        text = rewrite(
-                            text,
-                            segment.get("source_text", text),
-                            target_language,
-                            available,
-                            options.get("glossary"),
-                        )
+                        try:
+                            text = rewrite(
+                                text,
+                                segment.get("source_text", text),
+                                target_language,
+                                available,
+                                options.get("glossary"),
+                            )
+                        except ValueError as exc:
+                            raise TTSError(
+                                f"segment {i + 1} cannot fit its {available:.2f}s slot: {exc}. "
+                                "No speech was discarded."
+                            ) from exc
                         generate_take(text)
                         verified = (
                             _trim_tail_via_whisper(path, target_language, text)
@@ -1343,6 +1359,10 @@ def _synthesize_per_segment(
                         segment["text"] = text
                         if speed <= settings.tts_max_speed:
                             break
+                    if verified is False:
+                        raise TTSError(
+                            f"segment {i + 1}: rewritten speech does not match the complete translation"
+                        )
                 if speed > settings.tts_max_speed:
                     raise TTSError(
                         f"segment {i + 1} needs {duration:.2f}s in a {available:.2f}s slot; "

@@ -262,6 +262,7 @@ async def bundle(identifier: str):
                     "translated_audio.timing.json",
                     "transcript.json",
                     "translation.json",
+                    "translation.review.json",
                     "meta.json",
                 ):
                     path = storage.job_artifact_path(identifier, name)

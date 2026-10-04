@@ -11,7 +11,8 @@ class FaceDetector:
         # execution provider and InsightFace's ctx_id=-1 convention.
         # Upstream assumed CUDA end-to-end; on our host neither is true.
         is_cuda = str(device).startswith("cuda")
-        providers = ["CUDAExecutionProvider"] if is_cuda else ["CPUExecutionProvider"]
+        from gpu_runtime import ort_cuda_provider
+        providers = [ort_cuda_provider()] if is_cuda else ["CPUExecutionProvider"]
         # Upstream used a relative "checkpoints/auxiliary", which inside the
         # container is ephemeral: every recreated container re-downloaded
         # the 280 MB buffalo_l pack. Root it in the shared models volume
@@ -28,6 +29,9 @@ class FaceDetector:
         )
         ctx_id = cuda_to_int(device) if is_cuda else -1
         self.app.prepare(ctx_id=ctx_id, det_size=(INSIGHTFACE_DETECT_SIZE, INSIGHTFACE_DETECT_SIZE))
+        if is_cuda:
+            from gpu_runtime import require_ort_cuda
+            require_ort_cuda(self.app)
 
     def __call__(self, frame, threshold=0.5):
         f_h, f_w, _ = frame.shape

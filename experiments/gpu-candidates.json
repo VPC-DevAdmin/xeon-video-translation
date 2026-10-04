@@ -1,0 +1,345 @@
+{
+  "schema_version": 1,
+  "reviewed_at": "2026-10-03",
+  "hardware": "8 x RTX PRO 6000 Blackwell Server Edition 96GB; compute capability 12.0",
+  "experiments": [
+    {
+      "id": "current-controls",
+      "wave": 0,
+      "objective": "measurement",
+      "hypothesis": "Reproduce MuseTalk 1.5, LatentSync 1.6 and XTTS controls on the same real clips.",
+      "reject_if": "Unpinned weights, mixed cache states, missing artifacts, or different workloads invalidate comparison.",
+      "sources": [
+        "https://github.com/TMElyralab/MuseTalk",
+        "https://github.com/bytedance/LatentSync"
+      ],
+      "gpus_min": 1,
+      "requires_gpu": true,
+      "integration": "existing_benchmark",
+      "notes": "Historical synthetic fixture is a performance reference, not quality evidence. Run fast/quality/dub separately."
+    },
+    {
+      "id": "gpu-resident-frames",
+      "wave": 1,
+      "objective": "both",
+      "hypothesis": "PyNvVideoCodec DLPack surfaces and batched CUDA image operations reduce host copies and preserve one pixel pipeline.",
+      "reject_if": "PTS/rotation/range errors, audio drift, worse mouth detail, or no meaningful end-to-end gain.",
+      "sources": [
+        "https://docs.nvidia.com/video-technologies/pynvvideocodec/pynvc-api-prog-guide/using_pynvvideocodec_apis.html",
+        "https://cvcuda.github.io/CV-CUDA/"
+      ],
+      "gpus_min": 1,
+      "requires_gpu": true,
+      "integration": "prototype_needed",
+      "notes": ""
+    },
+    {
+      "id": "single-final-encode",
+      "wave": 1,
+      "objective": "both",
+      "hypothesis": "Reuse decoded frames and encode once after composition, testing NVENC p4/p6/p7 and CQ16/18/20.",
+      "reject_if": "Worse mouth-region detail, invalid timestamps, memory overflow on long clips, or latency above the selected mode budget.",
+      "sources": [
+        "https://docs.nvidia.com/video-technologies/video-codec-sdk/13.0/nvenc-video-encoder-api-prog-guide/index.html"
+      ],
+      "gpus_min": 1,
+      "requires_gpu": true,
+      "integration": "prototype_needed",
+      "notes": ""
+    },
+    {
+      "id": "avatar-chunk-scheduling",
+      "wave": 1,
+      "objective": "speed",
+      "hypothesis": "Emit first audio promptly and compare 160/240/320/500ms chunks without one-chunk lookahead.",
+      "reject_if": "Prosody degradation, audible gaps, interrupted speech replay, stale frames, or A/V skew above the agreed gate.",
+      "sources": [],
+      "gpus_min": 1,
+      "requires_gpu": true,
+      "integration": "prototype_needed",
+      "notes": "Measure browser heard-audio timestamps; retain cancellation generation and final-tail semantics."
+    },
+    {
+      "id": "xtts-conditioning-cache",
+      "wave": 1,
+      "objective": "speed",
+      "hypothesis": "Instrument speaker conditioning, then cache reusable conditioning by audio content, model revision and dtype.",
+      "reject_if": "No repeated conditioning work exists, cache crosses speakers/models, voice drift, or no end-to-end improvement.",
+      "sources": [
+        "https://github.com/coqui-ai/TTS"
+      ],
+      "gpus_min": 1,
+      "requires_gpu": true,
+      "integration": "prototype_needed",
+      "notes": ""
+    },
+    {
+      "id": "musetalk-compile-batching",
+      "wave": 1,
+      "objective": "speed",
+      "hypothesis": "Fixed-shape torch.compile/CUDA graphs plus bounded batches reduce launch overhead.",
+      "reject_if": "Graph churn, long warmup, shape errors, worse p95 under concurrency, or altered output quality.",
+      "sources": [
+        "https://github.com/TMElyralab/MuseTalk"
+      ],
+      "gpus_min": 1,
+      "requires_gpu": true,
+      "integration": "prototype_needed",
+      "notes": ""
+    },
+    {
+      "id": "latentsync-gpu-transport",
+      "wave": 1,
+      "objective": "speed",
+      "hypothesis": "Keep conditioning and decoded output on device and compare GPU P2P/IPC or one worker per complete job.",
+      "reject_if": "Unsupported topology, unsafe buffer lifetime, higher aggregate VRAM, or lower jobs/hour.",
+      "sources": [
+        "https://github.com/bytedance/LatentSync"
+      ],
+      "gpus_min": 2,
+      "requires_gpu": true,
+      "integration": "prototype_needed",
+      "notes": "Measure actual PCIe topology and transfer bytes; do not assume NVLink."
+    },
+    {
+      "id": "replicas-versus-sharding",
+      "wave": 1,
+      "objective": "speed",
+      "hypothesis": "Compare independent job replicas with 1/2/4 GPU intra-job rendering at equal physical GPU budgets.",
+      "reject_if": "Worse latency target or throughput per GPU-hour after accounting for competing workloads.",
+      "sources": [],
+      "gpus_min": 4,
+      "requires_gpu": true,
+      "integration": "prototype_needed",
+      "notes": ""
+    },
+    {
+      "id": "musetalk-temporal-controls",
+      "wave": 1,
+      "objective": "quality",
+      "hypothesis": "Compare seeded latent sampling, posterior mean and stable masks with restoration disabled/enabled independently.",
+      "reject_if": "Identity/stubble loss, more flicker, or reduced lip accuracy.",
+      "sources": [
+        "https://github.com/TMElyralab/MuseTalk"
+      ],
+      "gpus_min": 1,
+      "requires_gpu": true,
+      "integration": "prototype_needed",
+      "notes": "Posterior mean changes the latent distribution; it is an experiment, not a safe default."
+    },
+    {
+      "id": "flashhead-lite",
+      "wave": 2,
+      "objective": "both",
+      "hypothesis": "SoulX-FlashHead Lite can provide responsive image-to-avatar output on one sm_120 GPU.",
+      "reject_if": "Cannot install/run natively on sm_120, cannot sustain 25 FPS after warmup, poor identity or unstable chunk boundaries.",
+      "sources": [
+        "https://github.com/Soul-AILab/SoulX-FlashHead"
+      ],
+      "gpus_min": 1,
+      "requires_gpu": true,
+      "integration": "adapter_needed",
+      "notes": "Author 4090 FPS is not a measurement on this host."
+    },
+    {
+      "id": "flashhead-pro",
+      "wave": 2,
+      "objective": "quality",
+      "hypothesis": "SoulX-FlashHead Pro may improve avatar quality while sustaining playback with two GPUs.",
+      "reject_if": "Quality does not beat Lite/MuseTalk enough to justify GPU cost, or latency misses target.",
+      "sources": [
+        "https://github.com/Soul-AILab/SoulX-FlashHead"
+      ],
+      "gpus_min": 2,
+      "requires_gpu": true,
+      "integration": "adapter_needed",
+      "notes": ""
+    },
+    {
+      "id": "voxcpm2",
+      "wave": 2,
+      "objective": "both",
+      "hypothesis": "VoxCPM2 improves expressive multilingual voice cloning with a streaming serving backend.",
+      "reject_if": "Number/name errors, voice drift, unsupported language, resampling bugs, or TTFA/RTF regression.",
+      "sources": [
+        "https://github.com/OpenBMB/VoxCPM"
+      ],
+      "gpus_min": 1,
+      "requires_gpu": true,
+      "integration": "adapter_needed",
+      "notes": "2B, 30 languages including Hindi; preserve native 48kHz until an explicit resampling boundary."
+    },
+    {
+      "id": "qwen3-tts",
+      "wave": 2,
+      "objective": "both",
+      "hypothesis": "Qwen3-TTS 0.6B and 1.7B Base improve streaming voice cloning and controllability.",
+      "reject_if": "No measurable quality/latency advantage, unstable streaming, or required language unsupported.",
+      "sources": [
+        "https://github.com/QwenLM/Qwen3-TTS"
+      ],
+      "gpus_min": 1,
+      "requires_gpu": true,
+      "integration": "adapter_needed",
+      "notes": "Base is the cloning checkpoint; CustomVoice and VoiceDesign are different. Hindi is not listed."
+    },
+    {
+      "id": "cosyvoice3",
+      "wave": 2,
+      "objective": "speed",
+      "hypothesis": "CosyVoice3 bidirectional text/audio streaming reduces punctuation-dependent delay.",
+      "reject_if": "Speech revisions leak to playback, language gaps, quality regression, or no user-perceived TTFA gain.",
+      "sources": [
+        "https://github.com/QwenAudio/CosyVoice"
+      ],
+      "gpus_min": 1,
+      "requires_gpu": true,
+      "integration": "adapter_needed",
+      "notes": "Do not apply the README CosyVoice2 TensorRT-LLM speed claim to v3."
+    },
+    {
+      "id": "indextts25",
+      "wave": 2,
+      "objective": "quality",
+      "hypothesis": "IndexTTS 2.5 speed and phoneme control reduce dubbing duration mismatch and pronunciation errors.",
+      "reject_if": "Unacceptable voice/language quality or time stretching remains necessary enough to erase gains.",
+      "sources": [
+        "https://github.com/index-tts/index-tts"
+      ],
+      "gpus_min": 1,
+      "requires_gpu": true,
+      "integration": "adapter_needed",
+      "notes": "duration_factor controls rate, not exact seconds. EN/ZH/JA/ES/AR; custom model use license."
+    },
+    {
+      "id": "qwen3-asr",
+      "wave": 2,
+      "objective": "quality",
+      "hypothesis": "Qwen3-ASR improves difficult speech, multilingual recognition and short utterances.",
+      "reject_if": "Semantic recognition regression or cost outweighs accuracy improvement.",
+      "sources": [
+        "https://github.com/QwenLM/Qwen3-ASR"
+      ],
+      "gpus_min": 1,
+      "requires_gpu": true,
+      "integration": "adapter_needed",
+      "notes": "Streaming vLLM path lacks timestamps/batching; forced aligner language list excludes Hindi."
+    },
+    {
+      "id": "voxtral-realtime",
+      "wave": 2,
+      "objective": "speed",
+      "hypothesis": "Voxtral Mini Realtime causal ASR improves partial transcripts and avatar turn-taking.",
+      "reject_if": "Unstable partial text, lower final accuracy, unsupported language, or slow response after endpointing.",
+      "sources": [
+        "https://huggingface.co/mistralai/Voxtral-Mini-4B-Realtime-2602"
+      ],
+      "gpus_min": 1,
+      "requires_gpu": true,
+      "integration": "adapter_needed",
+      "notes": ""
+    },
+    {
+      "id": "translategemma",
+      "wave": 2,
+      "objective": "quality",
+      "hypothesis": "TranslateGemma 12B/27B improve meaning preservation against NLLB and current Qwen translation.",
+      "reject_if": "Hallucinated clauses, incorrect numbers/negation, terminology regression, or poor duration-constrained text.",
+      "sources": [
+        "https://huggingface.co/google/translategemma-27b-it",
+        "https://blog.google/innovation-and-ai/technology/developers-tools/translategemma/"
+      ],
+      "gpus_min": 1,
+      "requires_gpu": true,
+      "integration": "adapter_needed",
+      "notes": "Use the specialized translation template. Gemma license/access terms apply; fit and KV headroom must be measured."
+    },
+    {
+      "id": "flashattention4",
+      "wave": 3,
+      "objective": "speed",
+      "hypothesis": "The current FA4 CuTe SM120 branch accelerates supported attention shapes in selected models.",
+      "reject_if": "Kernel incompatibility, shape coverage gap, numerical error, or no end-to-end gain after compile overhead.",
+      "sources": [
+        "https://github.com/Dao-AILab/flash-attention",
+        "https://github.com/Dao-AILab/flash-attention/blob/main/flash_attn/cute/interface.py"
+      ],
+      "gpus_min": 1,
+      "requires_gpu": true,
+      "integration": "prototype_needed",
+      "notes": "FA3 Hopper recommendations are not SM120 compatibility evidence."
+    },
+    {
+      "id": "sageattention2",
+      "wave": 3,
+      "objective": "speed",
+      "hypothesis": "SageAttention2 improves supported video attention with acceptable numerical/visual change.",
+      "reject_if": "Temporal, lip or identity regression, unsupported head sizes, or minor end-to-end gain.",
+      "sources": [
+        "https://github.com/thu-ml/SageAttention"
+      ],
+      "gpus_min": 1,
+      "requires_gpu": true,
+      "integration": "prototype_needed",
+      "notes": ""
+    },
+    {
+      "id": "sageattention3-fp4",
+      "wave": 3,
+      "objective": "speed",
+      "hypothesis": "FP4 attention may offer additional speed for tolerant video models.",
+      "reject_if": "Precision-sensitive output degrades or SM120/model kernels fail.",
+      "sources": [
+        "https://github.com/thu-ml/SageAttention"
+      ],
+      "gpus_min": 1,
+      "requires_gpu": true,
+      "integration": "prototype_needed",
+      "notes": "Higher risk than Sage2; evaluate only after a BF16/FP16 quality control exists."
+    },
+    {
+      "id": "infinitetalk-distilled",
+      "wave": 3,
+      "objective": "quality",
+      "hypothesis": "InfiniteTalk with supported LightX2V/FusionX checkpoints improves animated image/video avatars at fewer steps.",
+      "reject_if": "Identity/color/camera drift, missing speech, installation failure on CUDA12.8+, or unsustainable playback.",
+      "sources": [
+        "https://github.com/MeiGen-AI/InfiniteTalk",
+        "https://github.com/ModelTC/LightX2V"
+      ],
+      "gpus_min": 1,
+      "requires_gpu": true,
+      "integration": "adapter_needed",
+      "notes": "Not a drop-in LatentSync upgrade; keep image-avatar and faithful webcam-edit scores separate."
+    },
+    {
+      "id": "liveavatar",
+      "wave": 3,
+      "objective": "quality",
+      "hypothesis": "LiveAvatar 14B may deliver higher-quality long-running avatar output using TPP.",
+      "reject_if": "PCIe communication prevents real-time output, quality gain is small, or five-GPU cost is unacceptable.",
+      "sources": [
+        "https://github.com/Alibaba-Quark/LiveAvatar"
+      ],
+      "gpus_min": 5,
+      "requires_gpu": true,
+      "integration": "adapter_needed",
+      "notes": "Published multi-H800 results do not establish performance on this eight-card RTX host. Single-card functionality is a separate test."
+    },
+    {
+      "id": "fish-s2-pro",
+      "wave": 3,
+      "objective": "quality",
+      "hypothesis": "Fish S2 Pro may improve expressive and multilingual speech quality.",
+      "reject_if": "License is unsuitable for intended deployment, pronunciation/identity regressions, or serving complexity outweighs benefit.",
+      "sources": [
+        "https://github.com/fishaudio/fish-speech",
+        "https://arxiv.org/abs/2603.08823"
+      ],
+      "gpus_min": 1,
+      "requires_gpu": true,
+      "integration": "adapter_needed",
+      "notes": "Fish Audio Research License: evaluate as research; do not silently promote to production."
+    }
+  ]
+}

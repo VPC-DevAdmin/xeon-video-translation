@@ -30,7 +30,9 @@ def test_benchmark_reports_missing_quality_honestly():
             for t in (1, 2, 8)
         ]
     )
-    assert reports[0]["median_seconds"] == 2 and reports[0]["p95_seconds"] == 8
+    assert reports[0]["median_seconds"] == 2
+    assert reports[0]["p95_seconds"] is None
+    assert "insufficient" in reports[0]["p95_status"]
     assert reports[0]["quality_reviewed"] == 0
 
 

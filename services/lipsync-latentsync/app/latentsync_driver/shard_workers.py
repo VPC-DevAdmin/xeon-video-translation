@@ -46,7 +46,7 @@ def _worker_main(dev_index: int, in_q, out_q, build: dict) -> None:  # pragma: n
         device = torch.device(f"cuda:{dev_index}")
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
-        torch.backends.cudnn.benchmark = True
+        torch.backends.cudnn.benchmark = os.environ.get("GPU_CUDNN_BENCHMARK", "0") == "1"
         torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = True
         dtype = getattr(torch, build["dtype"])
 
@@ -64,8 +64,6 @@ def _worker_main(dev_index: int, in_q, out_q, build: dict) -> None:  # pragma: n
         if os.environ.get("LATENTSYNC_COMPILE", "0") == "1":
             unet = torch.compile(unet, mode="reduce-overhead")
         scheduler = DDIMScheduler.from_pretrained(build["scheduler_dir"])
-        if build.get("cudnn_benchmark", True):
-            torch.backends.cudnn.benchmark = True
         out_q.put(("ready", dev_index, time.perf_counter() - t0))
 
         job_id = None

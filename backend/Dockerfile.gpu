@@ -66,6 +66,9 @@ RUN pip install --upgrade pip wheel \
 # XTTS from the GPU image and route everything through F5-TTS / IndicF5
 # (see docs/gpu/README.md, TTS section).
 
+COPY --from=gpu_shared / /opt/gpu-shared
+RUN pip install --no-deps /opt/gpu-shared
+
 COPY app ./app
 COPY tests ./tests
 

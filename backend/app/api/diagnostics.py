@@ -36,7 +36,18 @@ async def ready():
             "disk": shutil.disk_usage(settings.job_artifacts_dir).free
             >= settings.min_free_disk_mb * 1024**2,
         }
+        from .. import llm
+        if settings.warmup_models:
+            from ..main import _warmup_state
+            checks["model_warmup"] = _warmup_state.get("status") == "done"
+        if (llm.configured() or settings.translate_backend == "llm"
+                or settings.quality_translate_backend == "llm"):
+            checks["llm_model"] = llm.ready(ttl=60)
+        from gpu_runtime import capabilities
+        runtime = capabilities(settings.resolved_device)
+        checks["gpu_runtime"] = runtime["ready"]
         return {
+            "runtime": runtime,
             "ready": all(checks.values()),
             "checks": checks,
             "provenance": operations.provenance(),

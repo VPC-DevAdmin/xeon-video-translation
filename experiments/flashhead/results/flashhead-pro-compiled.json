@@ -1,0 +1,54 @@
+{
+  "source_revision": "9bc03de06bb0de82cd6bc477804512ae06144bf2",
+  "model_revisions": [
+    {
+      "model": "Soul-AILab/SoulX-FlashHead-1_3B",
+      "revision": "59119b6c681230c3eeee157e224ae1941746711e",
+      "path": "/experiment-models/SoulX-FlashHead-1_3B"
+    },
+    {
+      "model": "facebook/wav2vec2-base-960h",
+      "revision": "22aad52d435eb6dbaf354bdad9b0da84ce7d6156",
+      "path": "/experiment-models/wav2vec2-base-960h"
+    }
+  ],
+  "implementation": "FlashHead pro",
+  "device": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+  "capability": [
+    12,
+    0
+  ],
+  "attention": "torch SDPA (no FlashAttention or Sage installed)",
+  "compile": true,
+  "load_and_prepare_seconds": 51.56197459693067,
+  "chunks": [
+    {
+      "chunk": 0,
+      "frames": 28,
+      "seconds": 150.28182420600206,
+      "fps": 0.1863166097958619
+    },
+    {
+      "chunk": 1,
+      "frames": 28,
+      "seconds": 1.2853802610188723,
+      "fps": 21.783437049053063
+    },
+    {
+      "chunk": 2,
+      "frames": 28,
+      "seconds": 1.278978770133108,
+      "fps": 21.892466594332866
+    },
+    {
+      "chunk": 3,
+      "frames": 28,
+      "seconds": 1.2788070330861956,
+      "fps": 21.89540663725198
+    }
+  ],
+  "frames": 100,
+  "peak_torch_allocated_bytes": 9680820224,
+  "quality_status": "unreviewed",
+  "scope": "model chunk generation; not WebRTC or full voice-assistant latency"
+}

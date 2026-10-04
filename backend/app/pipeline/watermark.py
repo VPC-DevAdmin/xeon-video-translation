@@ -133,10 +133,16 @@ def mux_and_watermark(
     if wm:
         video_filters.append(_drawtext_filter(settings.watermark_text))
 
+    gpu_input_flags = []
+    if video_filters and settings.resolved_device == "cuda":
+        from gpu_runtime.media import cuda_filter_input
+        gpu_input_flags, prefix = cuda_filter_input(video_path)
+        video_filters.insert(0, prefix)
+
     def _build_cmd(encoder: str) -> list[str]:
         cmd: list[str] = [
             "ffmpeg", "-y",
-            "-i", str(video_path),
+            *gpu_input_flags, "-i", str(video_path),
             "-i", str(audio_path),
             "-map", "0:v:0",
             "-map", "1:a:0",
@@ -162,19 +168,10 @@ def mux_and_watermark(
         video_dur or -1, audio_dur or -1, pad_seconds, wm, settings.video_encoder,
     )
 
+    if video_filters and settings.resolved_device == "cuda" and settings.video_encoder != "h264_nvenc":
+        raise MuxError("CUDA mux encoding requires h264_nvenc")
     cmd = _build_cmd(settings.video_encoder)
     proc = subprocess.run(cmd, capture_output=True, timeout=600)
-    if proc.returncode != 0 and settings.video_encoder != "libx264" and video_filters:
-        # Hardware encoder unavailable (no `video` driver capability, no
-        # NVENC session, unsupported pixel format...). Degrade to software
-        # rather than failing the job; the log says why.
-        log.warning(
-            "mux: %s failed (exit %d), falling back to libx264. stderr tail: %s",
-            settings.video_encoder, proc.returncode,
-            proc.stderr.decode(errors="replace")[-400:].strip(),
-        )
-        cmd = _build_cmd("libx264")
-        proc = subprocess.run(cmd, capture_output=True, timeout=600)
     if proc.returncode != 0:
         raise MuxError(
             f"ffmpeg failed (exit {proc.returncode}):\n"

@@ -357,6 +357,28 @@ def read_audio(path):
     return np.concatenate(samples)
 
 
+async def require_warm_models():
+    if os.getenv("AVATAR_REQUIRE_WARM_MODELS", "0") != "1":
+        return
+    headers = {"x-internal-key": os.getenv("INTERNAL_API_KEY", ""),
+               "x-owner-id": owner.get()}
+    try:
+        async with httpx.AsyncClient(timeout=3, headers=headers) as client:
+            speech, renderer = await asyncio.gather(
+                client.get(f"{BACKEND}/health"), client.get(f"{MUSETALK}/health")
+            )
+            speech.raise_for_status()
+            renderer.raise_for_status()
+            if (speech.json().get("warmup", {}).get("status") == "done"
+                    and speech.json().get("warmup", {}).get("avatar_inference_ready") is True
+                    and renderer.json().get("avatar_inference_warm") is True):
+                return
+    except (httpx.HTTPError, ValueError, AttributeError):
+        pass
+    raise HTTPException(503, "Avatar models are not ready yet; retry shortly.",
+                        headers={"Retry-After": "5"})
+
+
 @router.post("/sessions")
 async def create(
     image: UploadFile = File(...),
@@ -365,6 +387,7 @@ async def create(
 ):
     if len(_sessions) >= MAX_SESSIONS:
         raise HTTPException(429, "avatar capacity reached")
+    await require_warm_models()
     languages = {
         "en",
         "es",
@@ -439,6 +462,8 @@ async def offer(identifier: str, body: Offer):
     pc = session.pc = RTCPeerConnection(rtc_configuration())
     pc.addTrack(AudioOutput(session.playback))
     pc.addTrack(VideoOutput(session.playback))
+    from .gpu_media import prefer_h264
+    prefer_h264(pc)
 
     @pc.on("track")
     def on_track(track):
@@ -496,4 +521,6 @@ async def status(identifier: str):
         "metrics": session.metrics,
         "history": session.history,
         "generation": session.playback.generation,
+        "playback": {"video_frames_sent": session.playback.video_frames_sent,
+                     "video_frames_skipped": session.playback.video_frames_skipped},
     }

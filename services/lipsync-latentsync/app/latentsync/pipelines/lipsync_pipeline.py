@@ -8,6 +8,8 @@ from typing import Callable, List, Optional, Union
 import subprocess
 import queue
 import threading
+import time
+import json
 
 import numpy as np
 import torch
@@ -825,6 +827,8 @@ class LipsyncPipeline(DiffusionPipeline):
                 synced_video_frames_tensor = None
 
         if synced_video_frames_tensor is None:
+            stage_started = time.perf_counter()
+            profile = {}
             whisper_feature = self.audio_encoder.audio2feat(audio_path)
             whisper_chunks = self.audio_encoder.feature2chunks(feature_array=whisper_feature, fps=video_fps)
 
@@ -832,6 +836,10 @@ class LipsyncPipeline(DiffusionPipeline):
             video_frames = read_video(video_path, use_decord=False)
 
             video_frames, faces, boxes, affine_matrices = self.loop_video(whisper_chunks, video_frames)
+            profile["decode_audio_face_seconds"] = time.perf_counter() - stage_started
+            profile["conditioning_seconds"] = 0.0
+            profile["wait_for_worker_seconds"] = 0.0
+            profile["collect_and_paste_seconds"] = 0.0
             # Face detection + affine transform is done at this point.
             _emit_progress("face_detect", 0.25)
 
@@ -965,6 +973,7 @@ class LipsyncPipeline(DiffusionPipeline):
                     th.start()
 
             def collect_chunk(index):
+                collect_started = time.perf_counter()
                 _, _, _, _, _, ref_pixels, chunk_masks = chunk_cond[index]
                 if use_pool:
                     decoded = pool.result(index).to(device, dtype=weight_dtype)
@@ -975,10 +984,13 @@ class LipsyncPipeline(DiffusionPipeline):
                         raise failures[0][1]
                     kind, payload = denoised.pop(index)
                     decoded = payload if kind == "pixels" else self.decode_latents(payload)
+                profile["wait_for_worker_seconds"] += time.perf_counter() - collect_started
+                paste_started = time.perf_counter()
                 decoded = self.paste_surrounding_pixels_back(
                     decoded, ref_pixels, 1 - chunk_masks, device, weight_dtype)
                 synced_video_frames.append(decoded.cpu())
                 chunk_cond[index] = None
+                profile["collect_and_paste_seconds"] += time.perf_counter() - paste_started
                 _emit_progress("denoise", 0.35 + 0.50 * done_count[0] / num_inferences)
 
             try:
@@ -987,7 +999,9 @@ class LipsyncPipeline(DiffusionPipeline):
                 chunk_cond: list = []
                 decoded_by_chunk: dict = {}
                 next_worker = 0
+                prefetch = max(1, min(4, int(os.environ.get("LATENTSYNC_PREFETCH_PER_WORKER", "1"))))
                 for i in tqdm.tqdm(range(num_inferences), desc="Preparing chunks..."):
+                    conditioning_started = time.perf_counter()
                     if self.unet.add_audio_layer:
                         audio_embeds = torch.stack(whisper_chunks[i * num_frames : (i + 1) * num_frames])
                         audio_embeds = audio_embeds.to(device, dtype=weight_dtype)
@@ -1045,8 +1059,9 @@ class LipsyncPipeline(DiffusionPipeline):
                         ready[i] = threading.Event()
                         work_queues[next_worker].put((i, cond))
                         next_worker = (next_worker + 1) % len(replicas)
-                    # Bound conditioning and completed tensors in both worker modes.
-                    if i - collected + 1 >= max(1, pool.size if use_pool else len(replicas)):
+                    profile["conditioning_seconds"] += time.perf_counter() - conditioning_started
+                    # Bounded prefetch overlaps coordinator work with workers.
+                    if i - collected + 1 >= prefetch * max(1, pool.size if use_pool else len(replicas)):
                         collect_chunk(collected)
                         collected += 1
                     _emit_progress("denoise", 0.25 + 0.10 * ((i + 1) / num_inferences))
@@ -1075,6 +1090,10 @@ class LipsyncPipeline(DiffusionPipeline):
                     q.put(None)
                 for th in threads:
                     th.join()
+
+            if os.environ.get("GPU_PROFILE", "0") == "1":
+                profile.update(event="latentsync_stages", frames=len(whisper_chunks), steps=num_inference_steps, workers=pool.size if use_pool else len(replicas), prefetch=prefetch)
+                print(json.dumps(profile), flush=True)
 
             # Consolidate all chunk outputs into one tensor, then save for
             # resume. Cache write is best-effort: if disk is full or the

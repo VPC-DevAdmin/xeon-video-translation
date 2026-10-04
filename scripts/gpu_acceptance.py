@@ -34,8 +34,9 @@ def check(args):
         if os.getenv("API_TOKEN")
         else {}
     )
-    with httpx.Client(timeout=20, headers=headers) as client:
+    with httpx.Client(timeout=90, headers=headers) as client:
         for name, url in [
+            ("ingest", args.ingest.rstrip("/") + "/health"),
             ("backend", args.api.rstrip("/") + "/ready"),
             ("musetalk", args.musetalk.rstrip("/") + "/health"),
             ("musetalk_dependencies", args.musetalk.rstrip("/") + "/ready"),
@@ -44,10 +45,12 @@ def check(args):
             ("latentsync", args.latentsync.rstrip("/") + "/health"),
         ]:
             try:
-                response = client.get(url)
+                response = client.get(url, headers={"x-internal-key": os.getenv("INTERNAL_API_KEY", "")} if name == "ingest" else None)
                 response.raise_for_status()
                 body = response.json()
                 ok = body.get("ready", True)
+                if name == "ingest":
+                    ok = body.get("status") == "ok" and body.get("gpu_codecs") is True
                 if name in ("musetalk", "latentsync"):
                     ok = body.get("weights_ready") and body.get("inference_implemented")
                 if name.endswith("_dependencies"):
@@ -71,6 +74,7 @@ def check(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--ingest", default="http://localhost:8091")
     parser.add_argument("--api", default="http://localhost:8088")
     parser.add_argument("--musetalk", default="http://localhost:8089")
     parser.add_argument("--latentsync", default="http://localhost:8090")

@@ -71,17 +71,50 @@ _warmup_task = None
 _warmup_state: dict = {"status": "disabled" if not settings.warmup_models else "pending"}
 
 
+def _warmup_avatar_inference():
+    """Execute the actual ASR and streaming TTS paths before admitting speech."""
+    import os
+    import tempfile
+    from pathlib import Path
+    import torch
+    from .pipeline import transcribe, tts
+
+    audio = Path(os.environ["AVATAR_WARMUP_AUDIO_PATH"])
+    if not audio.is_file():
+        raise RuntimeError("configured avatar warm-up audio is missing")
+    with tempfile.TemporaryDirectory(prefix="avatar-warmup-") as directory:
+        transcribe.transcribe(audio, Path(directory) / "transcript.json", "en")
+    model = tts._get_xtts().synthesizer.tts_model
+    speakers = model.speaker_manager.speakers
+    speaker = os.getenv("AVATAR_SPEAKER") or next(iter(speakers))
+    conditioning = speakers[speaker]
+    with torch.inference_mode():
+        for _ in model.inference_stream(
+            "Ready to help.", "en", conditioning["gpt_cond_latent"],
+            conditioning["speaker_embedding"], stream_chunk_size=20,
+        ):
+            pass
+    if settings.resolved_device == "cuda":
+        torch.cuda.synchronize()
+    _warmup_state["avatar_inference_ready"] = True
+
+
 def _warmup() -> None:
     """Load the per-stage model singletons so the first job starts hot."""
     import time
+    import os
 
     from .pipeline import transcribe, translate, tts
 
     log = logging.getLogger("warmup")
+    failed = False
+    _warmup_state["avatar_inference_ready"] = False
     steps = [
         ("whisper", transcribe._get_model),
         ("nllb", translate._get_nllb_pipeline) if settings.translate_backend == "nllb" else None,
         ("xtts", tts._get_xtts) if settings.tts_backend == "xtts" else ("f5tts", tts._get_f5tts),
+        ("avatar_inference", _warmup_avatar_inference)
+        if os.getenv("AVATAR_WARMUP_INFERENCE", "0") == "1" else None,
     ]
     for step in steps:
         if step is None:
@@ -93,9 +126,10 @@ def _warmup() -> None:
             _warmup_state[name] = round(time.perf_counter() - t0, 1)
             log.info("warmup: %s loaded in %.1fs", name, _warmup_state[name])
         except Exception as e:  # keep serving; the stage will retry lazily
+            failed = True
             _warmup_state[name] = f"failed: {e}"
             log.warning("warmup: %s failed: %s", name, e)
-    _warmup_state["status"] = "done"
+    _warmup_state["status"] = "failed" if failed else "done"
 
 
 @app.on_event("startup")

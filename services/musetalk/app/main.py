@@ -28,6 +28,8 @@ log = logging.getLogger(__name__)
 VERSION = "0.7.0"
 INFERENCE_IMPLEMENTED = True
 _INFERENCE_LOCK = threading.RLock()
+_MODEL_WARM = False
+_AVATAR_INFERENCE_WARM = False
 
 MODEL_CACHE_DIR = Path(os.environ.get("MODEL_CACHE_DIR", "/models"))
 WEIGHTS_ROOT = MODEL_CACHE_DIR / "musetalk"
@@ -42,7 +44,22 @@ app = FastAPI(
 
 @app.on_event("startup")
 def _log_startup() -> None:
+    global _MODEL_WARM, _AVATAR_INFERENCE_WARM
     log.info("lipsync-musetalk %s starting — inference_implemented=%s", VERSION, INFERENCE_IMPLEMENTED)
+    if os.getenv("MUSETALK_WARMUP_MODELS", "0") == "1":
+        from .musetalk.inference import get_or_load, WeightPaths
+        with _INFERENCE_LOCK:
+            get_or_load(WeightPaths.from_cache(MODEL_CACHE_DIR))
+        _MODEL_WARM = True
+        if os.getenv("AVATAR_WARMUP_INFERENCE", "0") == "1":
+            import tempfile
+            from .avatar import render
+            with tempfile.TemporaryDirectory(prefix="avatar-warmup-") as directory:
+                with _INFERENCE_LOCK:
+                    render(Path(os.environ["AVATAR_WARMUP_IMAGE_PATH"]),
+                           Path(os.environ["AVATAR_WARMUP_AUDIO_PATH"]),
+                           Path(directory) / "frames.npy")
+            _AVATAR_INFERENCE_WARM = True
 
 
 # --------------------------------------------------------------------------- #
@@ -187,6 +204,8 @@ def health() -> dict:
         "version": VERSION,
         "inference_implemented": INFERENCE_IMPLEMENTED,
         "weights_ready": all_weights_present,
+        "model_warm": _MODEL_WARM,
+        "avatar_inference_warm": _AVATAR_INFERENCE_WARM,
         "device": os.environ.get("DEVICE", "cpu"),
         "dtype": os.environ.get("MUSETALK_DTYPE") or os.environ.get("MUSETALK_IPEX_DTYPE", "fp32"),
         "video_encoder": os.environ.get("MUSETALK_VIDEO_ENCODER", "h264_nvenc on cuda / libx264 on cpu"),
@@ -204,10 +223,13 @@ def health() -> dict:
 
 @app.get("/ready")
 def ready() -> dict:
+    from gpu_runtime import capabilities
+    runtime = capabilities()
     deps = _dep_status()
     missing = [name for name, info in deps.items() if not info["ok"]]
     return {
-        "status": "ok" if not missing else "degraded",
+        "status": "ok" if not missing and runtime["ready"] else "degraded",
+        "runtime": runtime,
         "deps": deps,
         "missing_or_broken": missing,
     }
@@ -228,7 +250,8 @@ def weights() -> dict:
 
 @app.post("/lipsync", response_model=LipsyncResponse)
 def lipsync(req: LipsyncRequest) -> LipsyncResponse:
-    with _INFERENCE_LOCK:
+    from gpu_runtime import span
+    with _INFERENCE_LOCK, span("renderer.lipsync", service=app.title):
         return _lipsync_locked(req)
 
 

@@ -2,14 +2,15 @@
 
 MODES = {
     "fast": {
-        "lipsync_backend": "musetalk",
+        "lipsync_backend": "latentsync",
+        "latentsync_steps": 10,
+        "latentsync_service_tier": "fast",
         "tts_backend": "auto",
-        "musetalk_face_restore": "none",
-        "musetalk_blend_mode": "mouth",
         "enable_output_stabilization": "false",
     },
     "quality": {
         "lipsync_backend": "latentsync",
+        "latentsync_steps": 40,
         "tts_backend": "auto",
         "enable_output_stabilization": "false",
     },

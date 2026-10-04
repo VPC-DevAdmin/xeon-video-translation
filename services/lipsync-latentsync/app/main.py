@@ -271,10 +271,13 @@ def health() -> dict:
 
 @app.get("/ready")
 def ready() -> dict:
+    from gpu_runtime import capabilities
+    runtime = capabilities()
     deps = _dep_status()
     missing = [name for name, info in deps.items() if not info["ok"]]
     return {
-        "status": "ok" if not missing else "degraded",
+        "status": "ok" if not missing and runtime["ready"] else "degraded",
+        "runtime": runtime,
         "deps": deps,
         "missing_or_broken": missing,
         "note": (
@@ -310,7 +313,8 @@ def weights() -> dict:
 
 @app.post("/lipsync", response_model=LipsyncResponse)
 def lipsync(req: LipsyncRequest) -> LipsyncResponse:
-    with _INFERENCE_LOCK:
+    from gpu_runtime import span
+    with _INFERENCE_LOCK, span("renderer.lipsync", service=app.title):
         return _lipsync_locked(req)
 
 

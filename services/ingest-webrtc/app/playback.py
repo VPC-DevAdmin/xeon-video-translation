@@ -17,6 +17,8 @@ class Playback:
         self.generation = 0
         self.first_audio_seconds = None
         self.last_end = 0.0
+        self.video_frames_sent = 0
+        self.video_frames_skipped = 0
 
     def interrupt(self):
         self.generation += 1
@@ -88,7 +90,11 @@ class VideoOutput(MediaStreamTrack):
         self.playback, self.index = playback, 0
 
     async def recv(self):
-        self.index = max(self.index, int((time.monotonic() - self.playback.epoch) * 25))
+        scheduled = max(self.index, int((time.monotonic() - self.playback.epoch) * 25))
+        if self.playback.video_frames_sent:
+            self.playback.video_frames_skipped += scheduled - self.index
+        self.index = scheduled
+        self.playback.video_frames_sent += 1
         seconds = self.index / 25
         await asyncio.sleep(max(0, self.playback.epoch + seconds - time.monotonic()))
         clip = self.playback.active(seconds)

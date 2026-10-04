@@ -6,6 +6,8 @@ services:
     stop_grace_period: 10m  # drain native inference and persist resumable work
     build:
       context: ./backend
+      additional_contexts:
+        gpu_shared: ./shared
       dockerfile: Dockerfile
     image: polyglot-demo/backend:dev
     container_name: polyglot-backend
@@ -81,6 +83,8 @@ services:
   lipsync-musetalk:
     build:
       context: ./services/musetalk
+      additional_contexts:
+        gpu_shared: ./shared
       dockerfile: Dockerfile
     image: polyglot-demo/lipsync-musetalk:dev
     container_name: polyglot-lipsync-musetalk
@@ -143,6 +147,8 @@ services:
   lipsync-latentsync:
     build:
       context: ./services/lipsync-latentsync
+      additional_contexts:
+        gpu_shared: ./shared
       dockerfile: Dockerfile
     image: polyglot-demo/lipsync-latentsync:dev
     container_name: polyglot-lipsync-latentsync

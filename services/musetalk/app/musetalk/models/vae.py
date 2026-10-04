@@ -70,15 +70,15 @@ class VAE:
             init = self.vae.encode(image.to(self.vae.dtype)).latent_dist
         return self.scaling_factor * init.sample()
 
-    def decode_latents(self, latents: torch.Tensor) -> np.ndarray:
-        latents = (1.0 / self.scaling_factor) * latents
+    def decode_latents_tensor(self, latents: torch.Tensor) -> torch.Tensor:
+        """Return NCHW uint8 BGR on the inference device."""
         with torch.no_grad():
-            image = self.vae.decode(latents.to(self.vae.dtype)).sample
-        image = (image / 2 + 0.5).clamp(0, 1)
-        image = image.detach().cpu().permute(0, 2, 3, 1).float().numpy()
-        image = (image * 255).round().astype("uint8")
-        # RGB → BGR for OpenCV consumers
-        return image[..., ::-1]
+            image = self.vae.decode((latents / self.scaling_factor).to(self.vae.dtype)).sample
+        image = (image / 2 + 0.5).clamp(0, 1).float().mul(255).round().to(torch.uint8)
+        return image[:, [2, 1, 0]].contiguous()
+
+    def decode_latents(self, latents: torch.Tensor) -> np.ndarray:
+        return self.decode_latents_tensor(latents).permute(0, 2, 3, 1).cpu().numpy()
 
     def get_latents_for_unet(self, img: np.ndarray) -> torch.Tensor:
         """Returns the (masked | reference) concatenated latents MuseTalk's UNet expects."""

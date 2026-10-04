@@ -1,0 +1,74 @@
+{
+  "assessment": "Recognizable identity and plausible still frames; not yet a consistently natural human performance.",
+  "method": "Visual inspection of whole-video contact sheets and dense pause frames; full-frame landmark estimates; waveform silence detection; source/render code inspection; GPU ASR content checks. These do not replace perceptual listening or a validated audiovisual synchronization score.",
+  "confirmed": [
+    {
+      "issue": "Long unintended pause",
+      "delivered_start": 21.711688,
+      "delivered_end": 24.175187,
+      "seconds": 2.4635,
+      "raw_start": 24.260083,
+      "raw_end": 27.12025,
+      "raw_seconds": 2.860167,
+      "origin": "present in raw TTS before animation"
+    },
+    {
+      "issue": "Second long pause",
+      "delivered_start": 48.555687,
+      "delivered_end": 49.639063,
+      "seconds": 1.083375
+    },
+    {
+      "issue": "Reduced playback bandwidth",
+      "native_sample_rate": 24000,
+      "delivered_sample_rate": 16000,
+      "cause": "same 16 kHz WAV used for model conditioning and final mux"
+    },
+    {
+      "issue": "Time stretching applied",
+      "tempo_ratio": 1.1188305084745762,
+      "causal_limit": "may contribute to artifacts; no claim that all reported stuttering comes from it"
+    },
+    {
+      "issue": "No sustained eyelid freeze found",
+      "low_aperture_events": 36,
+      "max_detected_event_seconds": 0.32,
+      "pause_median_eye_aperture_relative_to_open_baseline": 0.955,
+      "limit": "relative landmark geometry is exploratory; gaze and expression still look held"
+    },
+    {
+      "issue": "Short reference",
+      "video_seconds": 1.766667,
+      "recognized_source_speech_seconds": 0.72,
+      "limit": "only Good morning, with little prosodic variety"
+    }
+  ],
+  "implemented": [
+    "Separate native-rate playback master from 16 kHz conditioning copy",
+    "Fail if master and conditioning audio have different timing beyond sample-rounding tolerance",
+    "Fail if generation produces fewer frames than required",
+    "Produce three controlled conversational voice samples on CUDA",
+    "Remove one measured silent interval outside word timestamps and guards before generating the preview",
+    "Preserve native 24 kHz audio without tempo or pitch changes in new preview"
+  ],
+  "preview": {
+    "file": "conversational-preview.mp4",
+    "duration": 14.08,
+    "frames": 352,
+    "fps": 25,
+    "audio_sample_rate": 24000,
+    "model_seconds": 20.3955,
+    "model_prepare_seconds": 2.4162,
+    "final_ASR_word_errors": 0,
+    "reference_words": 37,
+    "quality_status": "human review pending"
+  },
+  "remaining": [
+    "Evaluate voice timbre, emotional tone and phoneme-level stutter by listening; ASR zero word errors is insufficient",
+    "More contextual eyebrow, cheek, gaze and breathing motion; avoid held neutral expression during silence",
+    "Improve skin, beard, teeth and eyelid detail and temporal stability",
+    "Measure audiovisual offset and phoneme closure on multiple clips",
+    "Evaluate an expressively controlled cloning model and a better source reference",
+    "Repeat at minute length after short voice/motion choices are qualified"
+  ]
+}

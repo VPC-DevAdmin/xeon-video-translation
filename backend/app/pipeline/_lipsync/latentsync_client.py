@@ -70,8 +70,11 @@ def run(
                 payload[key] = val
     body = json.dumps(payload).encode("utf-8")
 
+    service_url = settings.latentsync_service_url
+    if (quality_overrides or {}).get("service_tier") == "fast" and settings.latentsync_fast_service_url:
+        service_url = settings.latentsync_fast_service_url
     req = urllib.request.Request(
-        f"{settings.latentsync_service_url.rstrip('/')}/lipsync",
+        f"{service_url.rstrip('/')}/lipsync",
         data=body,
         headers={"Content-Type": "application/json"},
         method="POST",

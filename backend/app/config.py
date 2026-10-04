@@ -42,6 +42,17 @@ class Settings(BaseSettings):
     llm_model: str = "Qwen/Qwen3-30B-A3B-Instruct-2507"
     llm_api_key_file: str = ""
     llm_timeout_seconds: int = Field(120, ge=5)
+    # Batch lane: translation and overrun rewrites.
+    llm_max_concurrent: int = Field(2, ge=1, le=32)
+    llm_max_pending: int = Field(8, ge=0, le=128)
+    # Interactive lane: avatar reply streams. Separate so a couple of live
+    # sessions cannot starve translation jobs into queue timeouts.
+    llm_interactive_max_concurrent: int = Field(2, ge=1, le=32)
+    llm_interactive_max_pending: int = Field(4, ge=0, le=128)
+    llm_queue_timeout_seconds: float = Field(10, gt=0, le=120)
+    llm_max_input_chars: int = Field(96000, ge=1024)
+    llm_max_output_tokens: int = Field(4096, ge=160)
+    llm_max_response_bytes: int = Field(262144, ge=4096)
 
     # Local ownership, scheduling and optional quality integrations.
     internal_api_key: str = ""
@@ -109,6 +120,8 @@ class Settings(BaseSettings):
     # for the eventual inference path — LatentSync on CPU is a batch
     # workflow (~10 min per second of source video), not a live one.
     latentsync_service_url: str = "http://lipsync-latentsync:8000"
+    # Optional independent fast renderer. Empty shares the batch service.
+    latentsync_fast_service_url: str = ""
     # LatentSync is a batch job. At fp32 defaults (PR #67) a 30-second
     # clip already takes ~5 hours, so any fixed ceiling becomes a landmine
     # that kills legitimate runs. Default to None = no client-side
@@ -167,7 +180,7 @@ class Settings(BaseSettings):
     # offloads the watermark/pad re-encode to the GPU's hardware encoder
     # (the mux took ~10 s of CPU for a 30 s clip on the XE7740); it needs
     # the container to have the `video` driver capability, which the GPU
-    # compose overlay sets. Falls back to libx264 if ffmpeg rejects it.
+    # compose overlay sets. GPU encode failures are reported without software fallback.
     video_encoder: Literal["libx264", "h264_nvenc"] = "libx264"
 
     # Load whisper, NLLB and the default TTS backend at startup instead of

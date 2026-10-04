@@ -185,7 +185,7 @@ def _smooth_boxes(
 # --------------------------------------------------------------------------- #
 # Detection cache
 #
-# Keyed on a cheap signature of the input video (size + first 1 MB).
+# Keyed on the full SHA-256 of the input video and detector version.
 # Cached under MODEL_CACHE_DIR/cache/face_detections/.
 # The cache stores raw SCRFD output (pre-fill, pre-smooth) so downstream
 # preprocessing can change without invalidating detection work.
@@ -205,18 +205,11 @@ def _cache_dir() -> Path:
 
 
 def _video_signature(path: Path) -> str:
-    """Fast-enough fingerprint. First 1 MB hash + size + detector version.
-
-    Collisions in practice are negligible for demo use; we're not verifying
-    video identity for security, just avoiding redundant compute across
-    repeated runs on the same asset.
-    """
-    stat = path.stat()
-    h = hashlib.sha1()
-    h.update(_DETECTOR_VERSION.encode())
-    h.update(str(stat.st_size).encode())
-    with path.open("rb") as f:
-        h.update(f.read(1 << 20))
+    """Hash the whole asset; equal prefixes and sizes do not imply equal video."""
+    h = hashlib.sha256(_DETECTOR_VERSION.encode())
+    with path.open("rb") as source:
+        for block in iter(lambda: source.read(1024 * 1024), b""):
+            h.update(block)
     return h.hexdigest()
 
 
@@ -235,6 +228,8 @@ _CacheEntry = tuple[
 
 
 def _load_detection_cache(video_path: Path) -> list[_CacheEntry] | None:
+    if os.environ.get("MUSETALK_DETECTION_CACHE", "1") == "0":
+        return None
     path = _cache_path_for(video_path)
     if not path.exists():
         return None
@@ -267,6 +262,8 @@ def _save_detection_cache(
     video_path: Path,
     detections: list[_CacheEntry],
 ) -> None:
+    if os.environ.get("MUSETALK_DETECTION_CACHE", "1") == "0":
+        return None
     path = _cache_path_for(video_path)
     payload = {
         "schema": _CACHE_SCHEMA_VERSION,
@@ -304,14 +301,13 @@ def _resolve_device() -> "torch.device":
     if choice == "auto":
         choice = "cuda" if torch.cuda.is_available() else "cpu"
     if choice.startswith("cuda") and not torch.cuda.is_available():
-        log.warning("DEVICE=%s requested but CUDA is unavailable; falling back to cpu", choice)
-        choice = "cpu"
+        raise RuntimeError(f"DEVICE={choice} requested but CUDA is unavailable")
     if choice.startswith("cuda"):
         # Free on Ampere+/Blackwell for this workload: TF32 for remaining fp32
         # matmuls, cuDNN autotune for fixed-shape UNet/VAE convs.
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
-        torch.backends.cudnn.benchmark = True
+        torch.backends.cudnn.benchmark = os.environ.get("GPU_CUDNN_BENCHMARK", "0") == "1"
     return torch.device(choice)
 
 
@@ -568,21 +564,27 @@ def run(
 
     # --- 2. Read frames ----------------------------------------------------
     log.info("Reading video frames")
-    cap = cv2.VideoCapture(str(video_path))
-    fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
-    frames: list[np.ndarray] = []
-    frame_bytes = 0
-    max_frame_bytes = int(os.environ.get("MUSETALK_FRAME_BUDGET_MB", "4096")) * 1024 * 1024
-    while True:
-        ok, frame = cap.read()
-        if not ok:
-            break
-        frame_bytes += frame.nbytes
-        if frame_bytes > max_frame_bytes:
-            cap.release()
-            raise RuntimeError("video exceeds decoded-frame budget; use a shorter clip or lower resolution")
-        frames.append(frame)
-    cap.release()
+    if on_cuda:
+        from gpu_runtime.media import read_frames
+        frames, fps = read_frames(video_path,
+            int(os.environ.get("MUSETALK_FRAME_BUDGET_MB", "4096"))*1024*1024,
+            pixel_format="bgr24")
+    else:
+        cap = cv2.VideoCapture(str(video_path))
+        fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+        frames: list[np.ndarray] = []
+        frame_bytes = 0
+        max_frame_bytes = int(os.environ.get("MUSETALK_FRAME_BUDGET_MB", "4096")) * 1024 * 1024
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                break
+            frame_bytes += frame.nbytes
+            if frame_bytes > max_frame_bytes:
+                cap.release()
+                raise RuntimeError("video exceeds decoded-frame budget; use a shorter clip or lower resolution")
+            frames.append(frame)
+        cap.release()
     if not frames:
         raise RuntimeError("no frames in input video")
 
@@ -796,8 +798,7 @@ def run(
     # input, encode + mux in a single pass. Replaces cv2's mp4v writer plus
     # a second ffmpeg re-encode (27 s + 7 s for the 52 s clip). NVENC is
     # used when the container has the `video` driver capability and the
-    # encoder is available; any failure falls back to libx264 on the same
-    # frames.
+    # encoder is available; failures are reported without software fallback.
     height, width = output_frames[0].shape[:2]
     audio_dur = _probe_duration(audio_path)
     video_dur = n / float(fps) if fps else None
@@ -810,6 +811,9 @@ def run(
     encoder = os.environ.get(
         "MUSETALK_VIDEO_ENCODER", "h264_nvenc" if on_cuda else "libx264"
     ).lower()
+
+    from gpu_runtime import require_encoder
+    require_encoder(encoder)
 
     def _encode(enc: str) -> tuple[int, str]:
         cmd: list[str] = [
@@ -843,9 +847,6 @@ def run(
         encoder, width, height, fps, n, audio_dur or -1.0, pad_seconds,
     )
     rc, err = _encode(encoder)
-    if rc != 0 and encoder != "libx264":
-        log.warning("%s encode failed (exit %d), falling back to libx264: %s", encoder, rc, err.strip()[-300:])
-        rc, err = _encode("libx264")
     if rc != 0:
         raise RuntimeError(f"ffmpeg encode/mux failed: {err}")
 

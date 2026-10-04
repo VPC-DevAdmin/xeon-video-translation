@@ -8,8 +8,8 @@ jobs:
       - uses: actions/setup-python@v5
         with: {python-version: '3.11'}
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
-      - run: pip install -r backend/requirements-test.txt
-      - run: python -m pytest backend/tests services/lipsync-latentsync/tests -q
+      - run: pip install -e ./shared -r backend/requirements-test.txt
+      - run: python -m pytest shared/tests backend/tests services/lipsync-latentsync/tests tests/research -q
   webrtc:
     runs-on: ubuntu-latest
     steps:
@@ -32,3 +32,14 @@ jobs:
       - run: npx playwright install --with-deps chromium
       - run: npm run test:e2e
       - run: npm audit --audit-level=high
+
+  tensor-media:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cpu
+      - run: pip install -e ./shared pytest numpy==1.26.4 Pillow 'opencv-python-headless<4.12'
+      - run: python -m pytest tests/media services/musetalk/tests -q

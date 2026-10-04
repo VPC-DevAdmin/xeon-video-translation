@@ -1,0 +1,59 @@
+[
+  {
+    "label": "muse-jaw",
+    "seconds": 44.6849506678991,
+    "request": {
+      "video_path": "/jobs/quality-v2/source-8s.mp4",
+      "audio_path": "/jobs/quality-v2/spanish-8s.wav",
+      "output_path": "/jobs/quality-v2/muse-jaw.mp4",
+      "blend_mode": "jaw",
+      "blend_feather": 0.08,
+      "face_restore": "none"
+    },
+    "result": {
+      "status": "ok",
+      "output_path": "/jobs/quality-v2/muse-jaw.mp4",
+      "frames_processed": 240,
+      "duration_ms": 42029,
+      "detail": null
+    }
+  },
+  {
+    "label": "latent-10",
+    "seconds": 33.7611732869409,
+    "request": {
+      "video_path": "/jobs/quality-v2/source-8s.mp4",
+      "audio_path": "/jobs/quality-v2/spanish-8s.wav",
+      "output_path": "/jobs/quality-v2/latent-10.mp4",
+      "num_inference_steps": 10,
+      "guidance_scale": 1.5,
+      "seed": 42
+    },
+    "result": {
+      "status": "ok",
+      "output_path": "/jobs/quality-v2/latent-10.mp4",
+      "frames_processed": -1,
+      "duration_ms": 33757,
+      "detail": "num_inference_steps=10 guidance_scale=1.50 dry_run=False"
+    }
+  },
+  {
+    "label": "latent-40",
+    "seconds": 71.78154828795232,
+    "request": {
+      "video_path": "/jobs/quality-v2/source-8s.mp4",
+      "audio_path": "/jobs/quality-v2/spanish-8s.wav",
+      "output_path": "/jobs/quality-v2/latent-40.mp4",
+      "num_inference_steps": 40,
+      "guidance_scale": 1.5,
+      "seed": 42
+    },
+    "result": {
+      "status": "ok",
+      "output_path": "/jobs/quality-v2/latent-40.mp4",
+      "frames_processed": -1,
+      "duration_ms": 71778,
+      "detail": "num_inference_steps=40 guidance_scale=1.50 dry_run=False"
+    }
+  }
+]

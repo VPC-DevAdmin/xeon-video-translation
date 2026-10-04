@@ -50,3 +50,6 @@ repomix-output.xml
 # Browser test output
 frontend/test-results/
 frontend/playwright-report/
+
+# Local GPU assignment overlay
+/gpu-layout.env

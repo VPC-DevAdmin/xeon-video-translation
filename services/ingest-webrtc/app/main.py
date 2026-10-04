@@ -141,6 +141,8 @@ async def health():
     return {
         "status": "ok",
         "active_sessions": sum(not s.stopped for s in _sessions.values()),
+        "gpu_codecs": os.getenv("WEBRTC_GPU_CODECS", "0") == "1",
+        "host_frame_exchange": True,
     }
 
 
@@ -155,7 +157,8 @@ async def offer(session_id: str, body: OfferIn):
     directory.mkdir(parents=True, exist_ok=False)
     pc = RTCPeerConnection(rtc_configuration())
     path = directory / "input.mp4"
-    recorder = MediaRecorder(str(path))
+    from .gpu_media import recorder as make_recorder
+    recorder = make_recorder(str(path))
     session = Session(
         session_id,
         body.target_language.lower(),
@@ -208,6 +211,8 @@ async def offer(session_id: str, body: OfferIn):
                 session.error = "media connection failed"
                 await close_recording(session)
 
+    from .gpu_media import prefer_h264
+    prefer_h264(pc)
     try:
         await asyncio.wait_for(
             pc.setRemoteDescription(RTCSessionDescription(body.sdp, body.type)), 15
@@ -235,10 +240,15 @@ async def close_recording(session):
         await asyncio.gather(session.caption_task, return_exceptions=True)
     if session.preview:
         await session.preview.close()
-    if session.recorder:
-        await session.recorder.stop()
+    try:
+        if session.recorder:
+            await session.recorder.stop()
+    except Exception:
+        session.error = "video recording failed; check media service logs"
+        log.exception("recorder failed")
+    finally:
         session.recorder = None
-    await session.pc.close()
+        await session.pc.close()
 
 
 @app.get("/sessions/{session_id}")
@@ -263,6 +273,8 @@ async def stop(session_id: str):
         if session.job_id:
             return {"session_id": session_id, "job_id": session.job_id}
         await close_recording(session)
+        if session.error:
+            raise HTTPException(422, session.error)
         if not session.input_path.exists() or not session.input_path.stat().st_size:
             raise HTTPException(422, "no media recorded")
         if session.input_path.stat().st_size > MAX_BYTES:
@@ -361,6 +373,8 @@ async def sweep():
 @app.on_event("startup")
 async def startup():
     global _sweeper
+    from .gpu_media import probe
+    await asyncio.to_thread(probe)
     INGEST_DIR.mkdir(parents=True, exist_ok=True)
     await asyncio.to_thread(clean_orphans)
     _sweeper = asyncio.create_task(sweep())

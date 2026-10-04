@@ -133,3 +133,50 @@ async def test_offer_with_missing_tracks_closes_peer(monkeypatch):
     assert error.value.status_code == 422
     pc.close.assert_awaited_once()
     assert main._sessions["c" * 12].stopped
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('speech,renderer,allowed', [
+    ('running', True, False), ('failed', True, False),
+    ('disabled', True, False), ('done', False, False), ('done', True, True),
+])
+async def test_avatar_admission_requires_both_models_warm(monkeypatch, speech, renderer, allowed):
+    from app import avatar
+    monkeypatch.setenv('AVATAR_REQUIRE_WARM_MODELS', '1')
+    class Client:
+        def __init__(self, **kwargs):
+            assert kwargs['timeout'] == 3
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            pass
+        async def get(self, url):
+            body = {'warmup': {'status': speech, 'avatar_inference_ready': True}} if url.startswith(avatar.BACKEND) else {'avatar_inference_warm': renderer}
+            return httpx.Response(200, json=body, request=httpx.Request('GET', url))
+    monkeypatch.setattr(avatar.httpx, 'AsyncClient', Client)
+    if allowed:
+        await avatar.require_warm_models()
+    else:
+        with pytest.raises(HTTPException) as failure:
+            await avatar.require_warm_models()
+        assert failure.value.status_code == 503
+        assert failure.value.headers['Retry-After'] == '5'
+
+
+@pytest.mark.asyncio
+async def test_avatar_admission_handles_unreachable_models(monkeypatch):
+    from app import avatar
+    monkeypatch.setenv('AVATAR_REQUIRE_WARM_MODELS', '1')
+    class Client:
+        def __init__(self, **kwargs):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            pass
+        async def get(self, url):
+            raise httpx.ConnectError('offline')
+    monkeypatch.setattr(avatar.httpx, 'AsyncClient', Client)
+    with pytest.raises(HTTPException) as failure:
+        await avatar.require_warm_models()
+    assert failure.value.status_code == 503

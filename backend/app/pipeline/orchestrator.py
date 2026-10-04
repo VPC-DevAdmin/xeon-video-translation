@@ -333,7 +333,12 @@ async def run_pipeline(state: JobState, input_path: Path) -> None:
 
     renewal = asyncio.create_task(renew())
     backend = lipsync.backend_in_use(state.lipsync_backend)
-    lane = "batch" if backend == "latentsync" else "fast"
+    dedicated_fast = (
+        backend == "latentsync"
+        and (state.lipsync_quality or {}).get("service_tier") == "fast"
+        and bool(settings.latentsync_fast_service_url)
+    )
+    lane = "batch" if backend == "latentsync" and not dedicated_fast else "fast"
     sem = _lanes.setdefault(lane, asyncio.Semaphore(1))
     _tasks[state.job_id] = asyncio.current_task()
     _cancel_signals[state.job_id] = threading.Event()
@@ -872,6 +877,7 @@ async def _run_stage_translate(state: JobState, queue: EventLog) -> None:
                 settings.quality_translate_backend if state.mode == "quality" else None
             ),
             glossary=state.options.get("glossary"),
+            quality_review=state.mode == "quality",
         ).to_dict()
 
     try:

@@ -71,12 +71,10 @@ def build_aligner(
     available = ort.get_available_providers()
     use_cuda = device.startswith("cuda") and "CUDAExecutionProvider" in available
     if device.startswith("cuda") and not use_cuda:
-        log.warning(
-            "insightface aligner: DEVICE=%s but onnxruntime has no CUDAExecutionProvider "
-            "(available: %s); detection runs on CPU", device, available,
-        )
+        raise RuntimeError(f"SCRFD requires CUDAExecutionProvider; available: {available}")
+    from gpu_runtime import ort_cuda_provider
     providers = (
-        ["CUDAExecutionProvider", "CPUExecutionProvider"] if use_cuda else ["CPUExecutionProvider"]
+        [ort_cuda_provider(), "CPUExecutionProvider"] if use_cuda else ["CPUExecutionProvider"]
     )
     app = FaceAnalysis(
         name=model_name,
@@ -86,6 +84,9 @@ def build_aligner(
     )
     # ctx_id: GPU ordinal for CUDA, -1 selects the CPU execution provider.
     app.prepare(ctx_id=0 if use_cuda else -1, det_size=det_size)
+    if use_cuda:
+        from gpu_runtime import require_ort_cuda
+        require_ort_cuda(app)
     log.info("insightface aligner providers=%s", providers)
     return app
 

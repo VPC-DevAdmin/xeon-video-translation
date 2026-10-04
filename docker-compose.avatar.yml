@@ -4,6 +4,8 @@ services:
   backend-avatar:
     build:
       context: ./backend
+      additional_contexts:
+        gpu_shared: ./shared
       dockerfile: Dockerfile.gpu
     image: polyglot-demo/backend:gpu
     restart: unless-stopped
@@ -12,6 +14,8 @@ services:
       - "host.docker.internal:host-gateway"
     environment:
       DEVICE: cuda
+      GPU_REQUIRED: "true"
+      GPU_PROFILE: ${GPU_PROFILE:-0}
       CUDA_VISIBLE_DEVICES: "0"
       MODEL_CACHE_DIR: /models
       JOB_ARTIFACTS_DIR: /jobs
@@ -21,9 +25,16 @@ services:
       WHISPER_COMPUTE_TYPE: float16
       LLM_BASE_URL: ${LLM_BASE_URL:-http://host.docker.internal:2080/v1}
       LLM_MODEL: ${LLM_MODEL:-Qwen/Qwen3-30B-A3B-Instruct-2507}
+      LLM_MAX_CONCURRENT: ${LLM_MAX_CONCURRENT:-2}
+      LLM_MAX_PENDING: ${LLM_MAX_PENDING:-8}
+      LLM_MAX_OUTPUT_TOKENS: ${LLM_MAX_OUTPUT_TOKENS:-4096}
       LLM_API_KEY_FILE: /run/secrets/llm_api_key
+      VIDEO_ENCODER: h264_nvenc
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility,video
       RECOVER_JOBS: "false"
-      WARMUP_MODELS: "false"
+      WARMUP_MODELS: "true"
+      AVATAR_WARMUP_INFERENCE: "1"
+      AVATAR_WARMUP_AUDIO_PATH: ${AVATAR_WARMUP_AUDIO_PATH:-/models/avatar-warmup/speech.wav}
       OMP_NUM_THREADS: "8"
       MKL_NUM_THREADS: "8"
     volumes:
@@ -43,17 +54,28 @@ services:
   musetalk-avatar:
     build:
       context: ./services/musetalk
+      additional_contexts:
+        gpu_shared: ./shared
       dockerfile: Dockerfile.gpu
     image: polyglot-demo/lipsync-musetalk:gpu
     restart: unless-stopped
     environment:
       DEVICE: cuda
+      GPU_REQUIRED: "true"
+      GPU_PROFILE: ${GPU_PROFILE:-0}
       CUDA_VISIBLE_DEVICES: "0"
       MODEL_CACHE_DIR: /models
       JOB_ARTIFACTS_DIR: /jobs
       HF_HOME: /models/huggingface
       HF_TOKEN_PATH: /run/secrets/hf_token
       MUSETALK_DTYPE: ${MUSETALK_DTYPE:-fp16}
+      MUSETALK_WARMUP_MODELS: "1"
+      AVATAR_WARMUP_INFERENCE: "1"
+      AVATAR_WARMUP_AUDIO_PATH: ${AVATAR_WARMUP_AUDIO_PATH:-/models/avatar-warmup/speech.wav}
+      AVATAR_WARMUP_IMAGE_PATH: ${AVATAR_WARMUP_IMAGE_PATH:-/models/avatar-warmup/portrait.png}
+      MUSETALK_VIDEO_ENCODER: h264_nvenc
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility,video
+      AVATAR_GPU_COMPOSITE: ${AVATAR_GPU_COMPOSITE:-1}
       OMP_NUM_THREADS: "8"
       MKL_NUM_THREADS: "8"
     volumes:
@@ -73,6 +95,7 @@ services:
     environment:
       AVATAR_BACKEND_URL: http://localhost:8092
       AVATAR_MUSETALK_URL: http://localhost:8093
+      AVATAR_REQUIRE_WARM_MODELS: "1"
     depends_on:
       - backend-avatar
       - musetalk-avatar

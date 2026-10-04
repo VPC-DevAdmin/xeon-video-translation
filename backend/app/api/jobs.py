@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import shutil
 from pathlib import Path
 
@@ -81,6 +83,9 @@ async def create_job(
     # output before mux. Independent of enable_stabilization; they can
     # stack. Omit → env default (ENABLE_OUTPUT_STABILIZATION).
     enable_output_stabilization: str | None = Form(None),
+    latentsync_steps: int | None = Form(None, ge=1, le=100),
+    latentsync_guidance: float | None = Form(None, ge=0, le=15),
+    latentsync_seed: int | None = Form(None, ge=0, le=2**63 - 1),
     # Per-request musetalk knobs (forwarded to the lipsync service).
     # Each is optional; missing fields fall through to service env defaults.
     musetalk_blend_mode: str | None = Form(None),
@@ -176,6 +181,18 @@ async def create_job(
             musetalk_face_restore_blend, 0.0, 1.0, "musetalk_face_restore_blend"
         ),
     }
+    if lipsync_backend_norm == "latentsync":
+        if preset.get("latentsync_service_tier") == "fast" and not settings.latentsync_fast_service_url:
+            logging.getLogger(__name__).warning(
+                "mode=fast requested but LATENTSYNC_FAST_SERVICE_URL is unset; "
+                "the job will share the batch renderer and lane"
+            )
+        q.update({
+            "num_inference_steps": latentsync_steps if latentsync_steps is not None else preset.get("latentsync_steps"),
+            "guidance_scale": latentsync_guidance,
+            "seed": latentsync_seed,
+            "service_tier": preset.get("latentsync_service_tier"),
+        })
     if any(v is not None for v in q.values()):
         lipsync_quality = {k: v for k, v in q.items() if v is not None}
 

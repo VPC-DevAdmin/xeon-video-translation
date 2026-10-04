@@ -98,8 +98,8 @@ export default function HomePage() {
           <LanguagePicker value={target} onChange={setTarget} />
           <label className="text-sm">Translation mode
             <select value={mode} onChange={e => setMode(e.target.value as typeof mode)} className="block w-full mt-1 bg-ink-800 border border-ink-600 rounded p-2">
-              <option value="fast">Fast · MuseTalk</option>
-              <option value="quality">Quality · LatentSync</option>
+              <option value="fast">Fast · natural lip sync</option>
+              <option value="quality">Quality · detailed lip sync</option>
               <option value="dub">Fastest · translated audio only</option>
             </select>
           </label>

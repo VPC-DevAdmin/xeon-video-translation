@@ -187,8 +187,7 @@ def _resolve_device():
     if choice == "auto":
         choice = "cuda" if torch.cuda.is_available() else "cpu"
     if choice.startswith("cuda") and not torch.cuda.is_available():
-        log.warning("DEVICE=%s requested but CUDA is unavailable; falling back to cpu", choice)
-        choice = "cpu"
+        raise RuntimeError(f"DEVICE={choice} requested but CUDA is unavailable")
     if choice.startswith("cuda"):
         _enable_cuda_fast_math(torch)
     return torch.device(choice)
@@ -201,7 +200,7 @@ def _enable_cuda_fast_math(torch) -> None:
     reductions. Idempotent; also called inside each denoise worker."""
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
-    torch.backends.cudnn.benchmark = True
+    torch.backends.cudnn.benchmark = os.environ.get("GPU_CUDNN_BENCHMARK", "0") == "1"
     torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = True
 
 

@@ -58,11 +58,23 @@ def render(image_path: Path, audio_path: Path, output_path: Path):
         mask = state.face_parsing.parse_batch_np(
             [face_large_crop_rgb(image, box)], mode="mouth"
         )[0]
-        _prepared[key] = (image, box, latent, mask)
+        blend = None
+        if state.device.type == "cuda" and os.getenv("AVATAR_GPU_COMPOSITE", "1") == "1":
+            from .musetalk.tensor_blending import prepare
+            # Rasterize the disclosure once per portrait, then apply on CUDA.
+            badge = np.zeros(image.shape[:2], dtype=np.uint8)
+            cv2.putText(badge, "AI avatar", (8, image.shape[0] - 12),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, 255, 1, cv2.LINE_AA)
+            blend = prepare(
+                torch.from_numpy(image).permute(2, 0, 1).to(state.device), box,
+                torch.from_numpy(mask).to(state.device),
+                disclosure=torch.from_numpy(badge).to(state.device)[None,None].float()/255,
+            )
+        _prepared[key] = (image, box, latent, mask, blend)
         if len(_prepared) > 8:
             _prepared.popitem(last=False)
     _prepared.move_to_end(key)
-    image, box, latent, mask = _prepared[key]
+    image, box, latent, mask, blend = _prepared[key]
     features, samples = state.audio_processor.get_audio_feature(
         audio_path, weight_dtype=state.weight_dtype
     )
@@ -87,6 +99,13 @@ def render(image_path: Path, audio_path: Path, output_path: Path):
                 torch.tensor([0], device=state.device),
                 encoder_hidden_states=state.unet.pe(batch),
             ).sample
+            if blend is not None:
+                from .musetalk.tensor_blending import composite
+                from gpu_runtime import span
+                with span("avatar.composite", device=state.device, frames=len(batch)):
+                    frames = composite(blend, state.vae.decode_latents_tensor(prediction))
+                    output.extend(frames.cpu().numpy())
+                continue
             faces = state.vae.decode_latents(prediction)
         for face in faces:
             composed = composite_np(
