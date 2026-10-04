@@ -25,6 +25,7 @@ export default function PersonaWizard({ language, onDone, onCancel }: Props) {
   const [error, setError] = useState("");
   const [checks, setChecks] = useState<Checks | null>(null);
   const [persona, setPersona] = useState<{ id: string; name: string } | null>(null);
+  const [cameraReady, setCameraReady] = useState(false);
   const [previewUrl, setPreviewUrl] = useState("");
   const video = useRef<HTMLVideoElement>(null);
   const stream = useRef<MediaStream | null>(null);
@@ -61,10 +62,13 @@ export default function PersonaWizard({ language, onDone, onCancel }: Props) {
   useEffect(() => {
     let cancelled = false;
     async function setup() {
+      setCameraReady(false);
       if (step === "portrait" || step === "idle") await openCamera(false);
       else if (step === "voice") await openCamera(true);
-      else stopStream();
-      if (!cancelled && video.current && stream.current) { video.current.srcObject = stream.current; await video.current.play().catch(() => undefined); }
+      else { stopStream(); return; }
+      if (cancelled) return;
+      if (video.current && stream.current) { video.current.srcObject = stream.current; await video.current.play().catch(() => undefined); }
+      setCameraReady(true);
     }
     setup().catch(e => setError((step === "voice" ? "Microphone" : "Camera") + " access failed: " + String(e)));
     return () => { cancelled = true; };
@@ -74,7 +78,8 @@ export default function PersonaWizard({ language, onDone, onCancel }: Props) {
   function go(next: Step) { setError(""); setStep(next); }
 
   function capturePortrait() {
-    const el = video.current; if (!el || !el.videoWidth) return;
+    const el = video.current; if (!el) { setError("Camera preview is not ready yet."); return; }
+    if (!el.videoWidth) { setError("Camera has not delivered a frame yet; wait a moment and try again."); return; }
     const side = Math.min(el.videoWidth, el.videoHeight);
     const canvas = document.createElement("canvas"); canvas.width = 768; canvas.height = 768;
     const ctx = canvas.getContext("2d"); if (!ctx) return;
@@ -151,7 +156,7 @@ export default function PersonaWizard({ language, onDone, onCancel }: Props) {
         <div aria-hidden className="pointer-events-none absolute inset-0 flex items-center justify-center"><div className="border-2 border-white/80 rounded-[50%] w-[38%] h-[80%]" /></div>
       </div>
       <div className="flex gap-3 items-center">
-        <button onClick={capturePortrait} disabled={!stream.current}>Capture portrait</button>
+        <button onClick={capturePortrait} disabled={!cameraReady}>Capture portrait</button>
         {portraitUrl && <img src={portraitUrl} alt="captured portrait" className="w-24 h-24 rounded object-cover" />}
         <button disabled={!portrait} onClick={() => go("idle")}>Next</button>
       </div>
@@ -161,7 +166,7 @@ export default function PersonaWizard({ language, onDone, onCancel }: Props) {
       <p>Now sit as you would while listening: look at the camera, breathe and blink normally, don&apos;t talk. We record {script.rules.idle_seconds} seconds. This clip is optional; it feeds the footage-based renderer later.</p>
       <video ref={video} autoPlay playsInline muted className="rounded bg-black w-full max-w-md aspect-video" />
       <div className="flex gap-3 items-center">
-        <button disabled={idleLeft !== null} onClick={recordIdle}>{idleLeft !== null ? `Recording… ${idleLeft}` : idle ? "Record again" : "Record idle clip"}</button>
+        <button disabled={idleLeft !== null || !cameraReady} onClick={recordIdle}>{idleLeft !== null ? `Recording… ${idleLeft}` : idle ? "Record again" : "Record idle clip"}</button>
         {idle && <span className="text-green-700">clip captured</span>}
         <button onClick={() => go("voice")}>{idle ? "Next" : "Skip"}</button>
       </div>
@@ -171,7 +176,7 @@ export default function PersonaWizard({ language, onDone, onCancel }: Props) {
       <p>Read this aloud at a natural pace (at least {script.rules.voice_min_seconds} seconds):</p>
       <blockquote className="border-l-4 pl-3 text-lg leading-relaxed">{script.text}</blockquote>
       <div className="flex gap-3 items-center">
-        {!recording ? <button onClick={startVoice}>{voice ? "Record again" : "Start recording"}</button> : <button onClick={stopVoice}>Stop ({voiceSeconds.toFixed(0)} s)</button>}
+        {!recording ? <button onClick={startVoice} disabled={!cameraReady}>{voice ? "Record again" : "Start recording"}</button> : <button onClick={stopVoice}>Stop ({voiceSeconds.toFixed(0)} s)</button>}
         <meter min={0} max={0.5} value={level} className="w-40" aria-label="microphone level" />
         {voice && !recording && <span className="text-green-700">{voiceSeconds.toFixed(0)} s recorded</span>}
         <button disabled={!voice || recording} onClick={() => go("review")}>Next</button>
