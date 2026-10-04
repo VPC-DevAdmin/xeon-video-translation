@@ -5,6 +5,8 @@ Session contract for the video assistant:
   POST /sessions/{id}/render     {pcm_b64, reset}        -> raw RGB frames for that audio chunk
   POST /sessions/{id}/reset                              -> restart motion from the portrait
   DELETE /sessions/{id}
+  POST /portrait/enhance         {image_b64, ...}        -> CodeFormer-restored portrait (PNG)
+  POST /portrait/pose            {image_b64, pitch, yaw} -> head pose / gaze edit (PNG, LivePortrait)
   GET  /health                                           -> readiness, chunk spec, timings
 
 One pipeline per process (one GPU). Motion state (the last frames' latents and the
@@ -66,6 +68,15 @@ class EnhanceRequest(BaseModel):
     image_b64: str = Field(..., description="PNG or JPEG portrait")
     fidelity: float = Field(0.7, ge=0.0, le=1.0, description="CodeFormer w: 1 keeps identity, 0 maximises detail")
     blend: float = Field(0.85, ge=0.0, le=1.0, description="how much of the restored face replaces the original")
+
+
+class PoseRequest(BaseModel):
+    image_b64: str = Field(..., description="PNG or JPEG portrait")
+    pitch: float = Field(12.0, ge=-30, le=30, description="degrees; positive looks down")
+    yaw: float = Field(-10.0, ge=-40, le=40)
+    roll: float = Field(0.0, ge=-30, le=30)
+    eyes_x: float = Field(-4.0, ge=-20, le=20)
+    eyes_y: float = Field(9.0, ge=-20, le=20, description="positive lowers the gaze")
 
 
 class RenderRequest(BaseModel):
@@ -142,8 +153,9 @@ def _startup() -> None:
 
 @app.get("/health")
 def health() -> dict:
+    from . import pose as pose_module
     return {"status": "ok" if _STATE["ready"] and not _STATE["error"] else "starting" if not _STATE["error"] else "error",
-            "model": MODEL, "compile": COMPILE, **_STATE,
+            "model": MODEL, "compile": COMPILE, **_STATE, "pose_edit": pose_module.available(),
             "chunk": _spec.as_dict() if _spec else None, "sessions": len(_sessions), "active_session": _active_session}
 
 
@@ -263,6 +275,32 @@ def enhance(body: EnhanceRequest) -> Response:
         raise HTTPException(500, "could not encode the restored portrait")
     return Response(content=png.tobytes(), media_type="image/png",
                     headers={"X-Seconds": f"{time.perf_counter() - started:.2f}", "X-Face-Points": "mediapipe"})
+
+
+@app.post("/portrait/pose")
+def pose(body: PoseRequest) -> Response:
+    """Head pose and gaze edit of a portrait (LivePortrait), used once per persona for the
+    assistant's "looking something up" footage. 503 when LivePortrait is not installed."""
+    import base64
+    import cv2
+    from . import pose as pose_module
+
+    if not pose_module.available():
+        raise HTTPException(503, "pose editing is not available on this renderer (LivePortrait not installed)")
+    raw = np.frombuffer(base64.b64decode(body.image_b64), dtype=np.uint8)
+    image = cv2.imdecode(raw, cv2.IMREAD_COLOR)
+    if image is None:
+        raise HTTPException(422, "could not decode the portrait")
+    started = time.perf_counter()
+    try:
+        with _LOCK:
+            posed = pose_module.pose_portrait(image, body.pitch, body.yaw, body.roll, body.eyes_x, body.eyes_y)
+    except Exception as exc:
+        raise HTTPException(422, f"pose edit failed: {type(exc).__name__}: {exc}")
+    ok, png = cv2.imencode(".png", posed)
+    if not ok:
+        raise HTTPException(500, "could not encode the posed portrait")
+    return Response(content=png.tobytes(), media_type="image/png", headers={"X-Seconds": f"{time.perf_counter() - started:.2f}"})
 
 
 @app.delete("/sessions/{session_id}")

@@ -72,6 +72,7 @@ async def run(args):
     marks = {}
     video_times, audio_active = [], []
     recorded = []                                   # (monotonic time, int16 48 kHz samples)
+    video_out = {"container": None, "stream": None, "frames": 0}
     frame_change = []
     last_pixels = [None]
     listening_after_reply = asyncio.Event()
@@ -107,6 +108,18 @@ async def run(args):
                 now = time.monotonic()
                 if track.kind == "video":
                     video_times.append(now)
+                    if args.record_video:
+                        if video_out["container"] is None:
+                            video_out["container"] = av.open(args.record_video, "w")
+                            stream = video_out["container"].add_stream("libx264", rate=25)
+                            stream.width, stream.height, stream.pix_fmt = frame.width, frame.height, "yuv420p"
+                            stream.options = {"crf": "18", "preset": "veryfast"}
+                            video_out["stream"] = stream
+                        out = frame.reformat(format="yuv420p")
+                        out.pts, out.time_base = video_out["frames"], Fraction(1, 25)
+                        for packet in video_out["stream"].encode(out):
+                            video_out["container"].mux(packet)
+                        video_out["frames"] += 1
                     pixels = frame.to_ndarray(format="rgb24").astype(np.float32)
                     if last_pixels[0] is not None:
                         frame_change.append((now, float(np.abs(pixels - last_pixels[0]).mean())))
@@ -224,6 +237,12 @@ async def run(args):
                 "last_audio_after_interrupt_seconds": max([t - interrupt_at[0] for t in audio_active if interrupt_at[0] and t >= interrupt_at[0]], default=None),
                 "server": status.json(), "events": events,
             }
+            if video_out["container"] is not None:
+                for packet in video_out["stream"].encode(None):
+                    video_out["container"].mux(packet)
+                video_out["container"].close()
+                report["video_recording"] = {"path": args.record_video, "frames": video_out["frames"],
+                                             "starts_at_client_seconds": round(video_times[0] - epoch, 3) if video_times else None}
             if args.record and recorded:
                 import wave as _wave
                 with _wave.open(args.record, "wb") as out:
@@ -255,5 +274,6 @@ if __name__ == "__main__":
     parser.add_argument("--start-after", type=float, default=0, help="hold the utterance until this many seconds after session creation")
     parser.add_argument("--hold-after-reply", type=float, default=0, help="keep the session open this long after the reply to observe the idle loop")
     parser.add_argument("--record", help="write the received audio (48 kHz mono) to this wav")
+    parser.add_argument("--record-video", help="write the received video to this mp4 (25 fps, as received)")
     parser.add_argument("--output", required=True)
     raise SystemExit(asyncio.run(run(parser.parse_args())))

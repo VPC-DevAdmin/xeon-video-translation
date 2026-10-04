@@ -18,9 +18,9 @@ def test_future_clips_play_in_order_and_idle_fills_gaps():
     gen = tl.generation
     assert tl.schedule(1.0, np.ones(48000, np.int16), frames(25, 1), gen) == (1.0, 2.0)
     assert tl.schedule(5.0, np.ones(24000, np.int16), frames(25, 2), gen) == (5.0, 6.0)   # frames outlast audio
-    assert tl.frame_at(0.5)[1] == "idle"
+    assert tl.frame_at(0.5)[1] == "idle:front"
     assert tl.frame_at(1.5)[0][0, 0, 0] == 1 and tl.frame_at(1.5)[1] == "clip"
-    assert tl.frame_at(3.0)[1] == "idle"
+    assert tl.frame_at(3.0)[1] == "idle:front"
     assert tl.frame_at(5.9)[0][0, 0, 0] == 2
     # idle loop with a crossfaded wrap: 8 frames, 2 blended -> loop of 6; frame 0 leans on frame 6
     seq = np.arange(8, dtype=np.uint8) * 10
@@ -129,7 +129,7 @@ def test_idle_growth_waits_while_the_wrap_dissolve_is_on_screen():
     tl.frame_at(9 / 4)                                                         # j=1, still dissolving
     assert len(tl.idle_segments[0]) == 10
     tl.frame_at(10 / 4)                                                        # j=2: out of the dissolve, publish
-    assert len(tl.idle_segments[0]) == 16 and not tl._pending_idle
+    assert len(tl.idle_segments[0]) == 16 and not tl.loop("front").pending
 
 
 def test_idle_loop_growth_after_a_wrap_does_not_jump():
@@ -142,3 +142,32 @@ def test_idle_loop_growth_after_a_wrap_does_not_jump():
     tl.add_idle(np.full((20, 1, 1, 1), 200, np.uint8), continuous=False)       # new segment: loop grows to 26
     assert int(tl.frame_at(14 / 4)[0].reshape(-1)[0]) == 60                    # still the next frame, not 14 % 26
     assert int(tl.frame_at(15 / 4)[0].reshape(-1)[0]) == 70
+
+
+def test_idle_modes_switch_at_scheduled_times_and_fall_back_to_front():
+    front = np.zeros((6, 1, 1, 1), np.uint8)
+    tl = Timeline(fps=4, idle_frames=front, transition_seconds=0)
+    tl.set_mode(1.0, "working", tl.generation)
+    assert tl.frame_at(0.5)[1] == "idle:front"
+    assert tl.frame_at(1.25)[1] == "idle:front"                                # no working footage yet: front
+    tl.add_idle(np.full((6, 1, 1, 1), 200, np.uint8), continuous=False, name="working")
+    image, source = tl.frame_at(1.5)
+    assert source == "idle:working" and int(image.reshape(-1)[0]) == 200
+    tl.set_mode(2.0, "front", tl.generation)
+    assert tl.frame_at(2.25)[1] == "idle:front"
+    tl.interrupt()
+    assert tl.mode_switches == [] and tl.mode_at(5.0) == "front"
+
+
+def test_truncate_cuts_tagged_clips_with_a_fade_and_keeps_the_reply():
+    tl = Timeline(fps=25, transition_seconds=0)
+    gen = tl.generation
+    tl.schedule(1.0, np.full(96000, 1000, np.int16), frames(50, 1), gen, tag="filler")      # 1.0 - 3.0
+    tl.schedule(3.5, np.full(48000, 1000, np.int16), frames(25, 1), gen, tag="filler")      # 3.5 - 4.5 dropped
+    tl.schedule(2.5, np.full(48000, 7, np.int16), frames(25, 2), gen)                        # the reply, untouched
+    assert tl.truncate(2.2, "filler") == 2
+    fillers = tl.clips_tagged("filler")
+    assert len(fillers) == 1 and fillers[0][1] == 2.2 and len(fillers[0][3]) == 30
+    audio = fillers[0][2]
+    assert len(audio) == 48000 * 12 // 10 and audio[-1] == 0 and audio[-3840] == 1000       # 80 ms fade to silence
+    assert tl.clips_tagged("reply")[0][1] == 3.5 and tl.audio_packet(2.6, 960)[0] == 7

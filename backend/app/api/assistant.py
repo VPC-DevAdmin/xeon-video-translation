@@ -232,7 +232,8 @@ def _generate(body: Turn, path: Path):
     messages = [
         {"role": "system", "content": (
             f"You are a friendly video assistant. Reply in {body.language}. Speak in short natural sentences, "
-            "two to four of them, like a person talking; no markdown, no lists.")},
+            "two to four of them, like a person talking; no markdown, no lists. The listener just heard you say "
+            "you were looking it up, so begin with the answer itself: no greeting, no restating the question.")},
         *history,
         {"role": "user", "content": transcript.text},
     ]

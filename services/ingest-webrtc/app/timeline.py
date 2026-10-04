@@ -12,7 +12,12 @@ motion. Growth appends to the last segment while the renderer still continues it
 starts a new one after a reply moved the motion state; the loop runs over all
 segments and hides every boundary (and the wrap) behind a half-second dissolve. The
 loop position is a cursor that advances with the frames shown, so appending footage
-never moves the frame on screen. Switching between idle and a clip dissolves too."""
+never moves the frame on screen. Switching between idle and a clip dissolves too.
+
+There can be several idle loops ("front": listening; "working": looking down at a
+tablet) and the active one is switched at scheduled times, so the filler plan of a
+turn can send the persona to its tablet and back. Filler clips carry a tag so the
+plan can cut them off (with a short fade) the moment the reply is ready."""
 
 from __future__ import annotations
 
@@ -22,19 +27,75 @@ import time
 import numpy as np
 
 
+class IdleLoop:
+    """Continuous segments of idle footage played as one loop with dissolved boundaries."""
+
+    def __init__(self, crossfade: int, frames=None):
+        self.crossfade = int(crossfade)
+        self.segments: list = []
+        self.pending: list = []         # footage waiting until the loop is outside its wrap dissolve
+        self.cursor = 0
+        if frames is not None and len(frames):
+            self.segments.append(np.asarray(frames))
+
+    @property
+    def ready(self) -> bool:
+        return bool(self.segments)
+
+    @property
+    def frame_count(self) -> int:
+        return sum(len(s) for s in self.segments) + sum(len(f) for f, _ in self.pending)
+
+    def add(self, frames, continuous: bool) -> None:
+        """Append footage: to the last segment when the renderer's motion continued it,
+        otherwise as a new segment whose boundary the loop will dissolve across.
+
+        The wrap dissolve blends the first frames of the loop with the tail of the last
+        segment; changing that tail while the dissolve is on screen would be a visible
+        jump, so footage is staged until the cursor has left that region."""
+        frames = np.asarray(frames)
+        if not len(frames):
+            return
+        self.pending.append((frames, continuous))
+        self.publish()
+
+    def publish(self) -> None:
+        if not self.pending:
+            return
+        if self.segments:
+            segment, j, k = idle_loop_locate(self.segments, self.cursor, self.crossfade)
+            if segment == 0 and j < k:
+                return
+        for frames, continuous in self.pending:
+            if continuous and self.segments:
+                self.segments[-1] = np.concatenate([self.segments[-1], frames])
+            else:
+                self.segments.append(frames)
+        self.pending.clear()
+
+    def advance(self, delta: int) -> None:
+        """Move the cursor by `delta` frames, kept inside the loop as it is now; footage
+        published afterwards only extends the loop beyond it."""
+        if self.segments:
+            self.cursor = (self.cursor + max(0, delta)) % idle_loop_length(self.segments, self.crossfade)
+        self.publish()
+
+    def frame(self):
+        return idle_loop_frame(self.segments, self.cursor, self.crossfade)
+
+
 class Timeline:
     def __init__(self, fps: int = 25, still=None, idle_frames=None, audio_rate: int = 48000, transition_seconds: float = 0.5):
         self.epoch = time.monotonic()
         self.fps = int(fps)
         self.audio_rate = int(audio_rate)
         self.still = still
-        self.idle_segments: list = []
-        if idle_frames is not None and len(idle_frames):
-            self.idle_segments.append(np.asarray(idle_frames))
         self.idle_crossfade = int(round(0.5 * self.fps))        # frames blended at each idle boundary
+        self.loops: dict = {"front": IdleLoop(self.idle_crossfade, idle_frames)}
+        self.mode_switches: list = []   # (seconds, loop name), sorted; "front" before the first
         self.transition_frames = int(round(transition_seconds * self.fps))   # dissolve when idle and clips alternate
         self.generation = 0
-        self.clips: list = []           # (start, end, audio48k, frames), sorted by start
+        self.clips: list = []           # (start, end, audio48k, frames, tag), sorted by start
         self.promises: list = []        # (start, end) windows a reply has committed to
         self.first_audio_seconds = None
         self.stalls = 0
@@ -42,8 +103,6 @@ class Timeline:
         self.frames_skipped = 0
         self.idle_frames_sent = 0
         self.scheduled_seconds = 0.0
-        self._cursor = 0                # position in the idle loop
-        self._pending_idle: list = []   # footage waiting until the loop is outside its wrap dissolve
         self._last_index = None
         self._last = None               # (unblended image, source) shown at the previous frame
         self._blend = None              # (image to dissolve from, frame index of the switch)
@@ -52,48 +111,53 @@ class Timeline:
         return time.monotonic() - self.epoch
 
     # ------------------------------------------------------------------ idle
-    def add_idle(self, frames, continuous: bool) -> None:
-        """Append idle footage: to the last segment when the renderer's motion continued
-        it, otherwise as a new segment whose boundary the loop will dissolve across.
+    def loop(self, name: str) -> IdleLoop:
+        if name not in self.loops:
+            self.loops[name] = IdleLoop(self.idle_crossfade)
+        return self.loops[name]
 
-        The wrap dissolve blends the first frames of the loop with the tail of the last
-        segment; changing that tail while the dissolve is on screen would be a visible
-        jump, so footage is staged until the cursor has left that region."""
-        frames = np.asarray(frames)
-        if not len(frames):
-            return
-        self._pending_idle.append((frames, continuous))
-        self._publish_idle()
+    @property
+    def idle_segments(self) -> list:
+        return self.loops["front"].segments
 
-    def _publish_idle(self) -> None:
-        if not self._pending_idle:
-            return
-        if self.idle_segments:
-            segment, j, k = idle_loop_locate(self.idle_segments, self._cursor, self.idle_crossfade)
-            if segment == 0 and j < k:
-                return
-        for frames, continuous in self._pending_idle:
-            if continuous and self.idle_segments:
-                self.idle_segments[-1] = np.concatenate([self.idle_segments[-1], frames])
-            else:
-                self.idle_segments.append(frames)
-        self._pending_idle.clear()
+    @idle_segments.setter
+    def idle_segments(self, segments) -> None:
+        self.loops["front"].segments = list(segments)
+
+    def add_idle(self, frames, continuous: bool, name: str = "front") -> None:
+        self.loop(name).add(frames, continuous)
 
     @property
     def idle_frame_count(self) -> int:
-        return sum(len(s) for s in self.idle_segments) + sum(len(f) for f, _ in self._pending_idle)
+        return self.loops["front"].frame_count
 
-    def idle_seconds(self) -> float:
-        return self.idle_frame_count / self.fps
+    def idle_seconds(self, name: str = "front") -> float:
+        return self.loop(name).frame_count / self.fps
+
+    def set_mode(self, seconds: float, name: str, generation: int) -> None:
+        """From `seconds` on, show the idle loop `name` whenever no clip is active."""
+        if generation != self.generation:
+            return
+        self.mode_switches = sorted([(t, m) for t, m in self.mode_switches if t < seconds] + [(seconds, name)])
+
+    def mode_at(self, seconds: float) -> str:
+        name = "front"
+        for t, m in self.mode_switches:
+            if t <= seconds:
+                name = m
+            else:
+                break
+        return name
 
     # ------------------------------------------------------------------ clips
     def interrupt(self) -> int:
         self.generation += 1
         self.clips.clear()
         self.promises.clear()
+        self.mode_switches.clear()
         return self.generation
 
-    def schedule(self, start: float, audio, frames, generation: int):
+    def schedule(self, start: float, audio, frames, generation: int, tag: str = "reply"):
         """Place a clip at `start` (timeline seconds). Returns (start, end) or None when stale."""
         if generation != self.generation or not len(frames):
             return None
@@ -101,10 +165,34 @@ class Timeline:
         duration = max(len(audio) / self.audio_rate, len(frames) / self.fps)
         end = start + duration
         starts = [c[0] for c in self.clips]
-        self.clips.insert(bisect.bisect_right(starts, start), (start, end, audio, frames))
+        self.clips.insert(bisect.bisect_right(starts, start), (start, end, audio, frames, tag))
         self.scheduled_seconds += duration
         self.promises = [(a, b) for a, b in self.promises if not (a < end and start < b)]
         return start, end
+
+    def truncate(self, seconds: float, tag: str, fade_seconds: float = 0.08) -> int:
+        """Cut clips carrying `tag` at `seconds`: later ones are dropped, the one playing
+        across it ends there with a short audio fade. Returns how many were affected."""
+        kept, affected = [], 0
+        for start, end, audio, frames, clip_tag in self.clips:
+            if clip_tag != tag or end <= seconds:
+                kept.append((start, end, audio, frames, clip_tag))
+                continue
+            affected += 1
+            if start >= seconds:
+                continue
+            samples = int((seconds - start) * self.audio_rate)
+            audio = np.array(audio[:samples], copy=True)
+            fade = min(len(audio), int(fade_seconds * self.audio_rate))
+            if fade:
+                audio[-fade:] = (audio[-fade:].astype(np.float32) * np.linspace(1.0, 0.0, fade, dtype=np.float32)).astype(audio.dtype)
+            frames = frames[:max(1, int(round((seconds - start) * self.fps)))]
+            kept.append((start, seconds, audio, frames, clip_tag))
+        self.clips = kept
+        return affected
+
+    def clips_tagged(self, tag: str) -> list:
+        return [c for c in self.clips if c[4] == tag]
 
     def promise(self, start: float, end: float, generation: int) -> None:
         if generation == self.generation:
@@ -130,14 +218,10 @@ class Timeline:
     def frame_at(self, seconds: float):
         """The frame to show at `seconds` and its source ("clip", "idle" or "still")."""
         index = int(seconds * self.fps)
-        if self._last_index is not None:
-            self._cursor += max(0, index - self._last_index)
+        delta = index - self._last_index if self._last_index is not None else 0
         self._last_index = index
-        if self.idle_segments:
-            # Keep the cursor inside the loop as it is now; footage published afterwards
-            # only extends the loop beyond it, so growth never changes the frame shown.
-            self._cursor %= idle_loop_length(self.idle_segments, self.idle_crossfade)
-        self._publish_idle()
+        for loop in self.loops.values():
+            loop.advance(delta)
         clip = self.active(seconds)
         if clip is not None:
             frames = clip[3]
@@ -145,8 +229,10 @@ class Timeline:
         else:
             if self.promised(seconds):
                 self.stalls += 1
-            if self.idle_segments:
-                image, source = idle_loop_frame(self.idle_segments, self._cursor, self.idle_crossfade), "idle"
+            name = self.mode_at(seconds)
+            loop = self.loops.get(name) if self.loops.get(name) is not None and self.loops[name].ready else self.loops["front"]
+            if loop.ready:
+                image, source = loop.frame(), f"idle:{name if loop is self.loops.get(name) else 'front'}"
             else:
                 image, source = self.still, "still"
         if self._last is not None and source != self._last[1] and self.transition_frames and image is not None:
@@ -164,7 +250,7 @@ class Timeline:
     def audio_packet(self, seconds: float, samples: int):
         out = np.zeros(samples, dtype=np.int16)
         self.active(seconds)
-        for start, end, audio, _ in self.clips:
+        for start, end, audio, _, _ in self.clips:
             lo = max(0, round((start - seconds) * self.audio_rate))
             hi = min(samples, round((end - seconds) * self.audio_rate))
             if hi > lo:

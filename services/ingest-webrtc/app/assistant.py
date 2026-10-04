@@ -1,20 +1,25 @@
 """Video assistant sessions over WebRTC.
 
-Turn: Silero endpoint -> prepared acknowledgement plays at once -> the backend plans the
-whole reply text and streams TTS audio -> FlashHead renders it chunk by chunk ->
-chunks are scheduled on one timeline at a head start chosen from the renderer's
-measured rate -> idle footage covers the gap -> playout at 25 fps with stall counting.
-Speaking again or pressing Interrupt clears everything and resets the renderer.
+Turn: Silero endpoint -> a prepared opener plays at once ("I am going to look that up,
+give me a second") -> the persona turns to its tablet (a second, posed portrait) and
+makes short progress utterances between pauses -> the backend plans the whole reply
+text and streams TTS audio -> FlashHead renders it chunk by chunk -> the reply is
+scheduled at the earliest start that cannot stall given the renderer's measured rate
+-> whatever filler is still talking is cut off with a fade, a short closer plays, the
+persona turns back and the reply plays at 25 fps. Speaking again or pressing
+Interrupt clears everything.
 
 Services (ingest runs with host networking):
   ASSISTANT_BACKEND_URL   backend with /assistant/respond and /assistant/speak
-  ASSISTANT_RENDERER_URL  FlashHead render service (services/flashhead)
-Tuning: ASSISTANT_HEAD_START (s, default 10), ASSISTANT_MAX_HEAD_START (20),
-ASSISTANT_IDLE_CHUNKS (2), ASSISTANT_IDLE_SECONDS (12), ASSISTANT_ACK_COUNT (3),
-ASSISTANT_ACK_TEXT_<LANG> ("|"-separated phrases), ASSISTANT_RENDER_TIMEOUT (30).
+  ASSISTANT_RENDERER_URL  FlashHead render service (services/flashhead), also /portrait/pose
+Tuning: ASSISTANT_HEAD_START (minimum reply start after the endpoint, s, default 7),
+ASSISTANT_MAX_HEAD_START (20), ASSISTANT_IDLE_CHUNKS (2), ASSISTANT_IDLE_SECONDS (12),
+ASSISTANT_WORKING_IDLE_SECONDS (6), ASSISTANT_WORKING_POSE ("pitch,yaw,roll,eyes_x,eyes_y"),
+ASSISTANT_<KIND>_TEXT_<LANG> ("|"-separated phrases; kinds OPENER, BEAT, BRIDGE, CLOSER),
+ASSISTANT_RENDER_TIMEOUT (30).
 
 Every renderer call of a session goes through one lock (`Renderer.lock`): idle growth,
-acknowledgements and reply chunks never interleave, and the renderer remembers which
+filler clips and reply chunks never interleave, and the renderer remembers which
 footage its motion state continues (`Renderer.motion`) so idle growth knows whether
 to extend the current segment or start a new one.
 """
@@ -24,6 +29,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import itertools
 import json
 import os
 import random
@@ -31,6 +37,7 @@ import time
 import uuid
 import wave
 from collections import deque
+from dataclasses import dataclass
 from fractions import Fraction
 from io import BytesIO
 from pathlib import Path
@@ -52,35 +59,100 @@ MAX_SESSIONS = int(os.getenv("ASSISTANT_MAX_SESSIONS", os.getenv("AVATAR_MAX_SES
 BACKEND = os.getenv("ASSISTANT_BACKEND_URL", os.getenv("BACKEND_URL", "http://localhost:8088"))
 RENDERER = os.getenv("ASSISTANT_RENDERER_URL", "http://localhost:8094")
 ROOT = Path(os.getenv("JOB_ARTIFACTS_DIR", "./jobs")).resolve() / "avatars"
-HEAD_START = float(os.getenv("ASSISTANT_HEAD_START", "10"))
+HEAD_START = float(os.getenv("ASSISTANT_HEAD_START", "7"))             # the reply never starts earlier than this
 MAX_HEAD_START = float(os.getenv("ASSISTANT_MAX_HEAD_START", "20"))
 IDLE_CHUNKS = int(os.getenv("ASSISTANT_IDLE_CHUNKS", "2"))          # rendered before the session answers
 IDLE_SECONDS = float(os.getenv("ASSISTANT_IDLE_SECONDS", "12"))      # grown to this in the background, then looped
-ACK_COUNT = int(os.getenv("ASSISTANT_ACK_COUNT", "3"))               # prepared acknowledgements to rotate through
+WORKING_IDLE_SECONDS = float(os.getenv("ASSISTANT_WORKING_IDLE_SECONDS", "6"))
+_POSE_VALUES = [float(v) for v in os.getenv("ASSISTANT_WORKING_POSE", "12,-10,0,-4,9").split(",")]
+WORKING_POSE = dict(zip(("pitch", "yaw", "roll", "eyes_x", "eyes_y"), _POSE_VALUES + [0.0] * 5))
+WORKING_POSE_ENABLED = os.getenv("ASSISTANT_WORKING_POSE_ENABLED", "1") == "1"
 CACHE_DIR = Path(os.getenv("JOB_ARTIFACTS_DIR", "./jobs")).resolve() / "personas"
-CACHE_VERSION = 2                                                    # bump when cached footage changes meaning
+CACHE_VERSION = 3                                                    # bump when cached footage changes meaning
 RENDER_TIMEOUT = float(os.getenv("ASSISTANT_RENDER_TIMEOUT", "30"))
 FPS = 25
-ACK_TEXT = {
-    "en": ["Let me think about that for a second.", "Good question, give me a moment.", "Sure, one moment while I think about it."],
-    "es": ["Déjame pensarlo un momento.", "Buena pregunta, dame un segundo.", "Claro, un momento mientras lo pienso."],
-    "fr": ["Laissez-moi réfléchir un instant.", "Bonne question, donnez-moi un moment.", "Bien sûr, un instant, je réfléchis."],
-    "de": ["Lass mich kurz nachdenken.", "Gute Frage, einen Moment bitte.", "Klar, einen Augenblick, ich überlege."],
-    "it": ["Fammi pensare un attimo.", "Bella domanda, dammi un momento.", "Certo, un attimo che ci penso."],
-    "pt": ["Deixe-me pensar um instante.", "Boa pergunta, me dê um momento.", "Claro, um momento enquanto penso."],
-    "zh": ["让我想一想。", "好问题，请稍等一下。"], "ja": ["少し考えさせてください。", "いい質問ですね、少々お待ちください。"],
+
+# Filler repertoire. Openers play the moment the user stops; beats are short progress
+# utterances and bridges longer ones, both said while looking at the tablet; closers
+# bring the gaze back just before the reply. Every phrase is at least three words so
+# the speech verifier can recognize it (XTTS babbles on one-word prompts).
+FILLERS = {
+    "en": {
+        "opener": ["Let me think about that for a second.", "Good question, give me a moment.",
+                   "I am going to look that up, please give me a second.", "Sure, let me check on that for you.",
+                   "Hold on, let me find that for you."],
+        "beat": ["Hmm, let me see.", "Okay, almost there.", "Right, one second.", "Mm-hmm, getting closer.",
+                 "Okay, nearly there.", "Let's see here."],
+        "bridge": ["I'm pulling that up now, it should only take a moment.", "Bear with me, I want to make sure I get this right.",
+                   "I'm checking a couple of things so I give you a proper answer.", "Still looking, this one deserves a careful answer.",
+                   "Just making sure I have the details straight."],
+        "closer": ["Okay, got it.", "Alright, here we go.", "Right, here's what I have.", "Okay, so."],
+    },
+    "es": {
+        "opener": ["Déjame pensarlo un momento.", "Buena pregunta, dame un segundo.", "Voy a buscarlo, dame un segundo por favor.",
+                   "Claro, déjame comprobarlo."],
+        "beat": ["A ver, un momento.", "Vale, casi está.", "Mm, ya casi.", "Un segundo más."],
+        "bridge": ["Lo estoy buscando ahora, solo tardará un momento.", "Ten paciencia, quiero asegurarme de que sea correcto.",
+                   "Estoy comprobando un par de cosas para darte una buena respuesta."],
+        "closer": ["Vale, ya lo tengo.", "Bien, aquí está.", "Listo, esto es lo que tengo."],
+    },
+    "fr": {
+        "opener": ["Laissez-moi réfléchir un instant.", "Bonne question, donnez-moi un moment.", "Je vais chercher ça, une seconde s'il vous plaît.",
+                   "Bien sûr, laissez-moi vérifier."],
+        "beat": ["Voyons voir, un instant.", "D'accord, presque fini.", "Hmm, j'y suis presque.", "Encore une seconde."],
+        "bridge": ["Je cherche ça maintenant, ça ne prendra qu'un instant.", "Un peu de patience, je veux être sûr de bien répondre.",
+                   "Je vérifie deux ou trois choses pour vous répondre correctement."],
+        "closer": ["Voilà, je l'ai.", "Bon, c'est parti.", "D'accord, voici ce que j'ai."],
+    },
+    "de": {
+        "opener": ["Lass mich kurz nachdenken.", "Gute Frage, einen Moment bitte.", "Das schaue ich kurz nach, einen Moment bitte.",
+                   "Klar, lass mich das prüfen."],
+        "beat": ["Mal sehen, einen Moment.", "Okay, fast fertig.", "Hm, gleich hab ich es.", "Noch eine Sekunde."],
+        "bridge": ["Ich rufe das gerade auf, es dauert nur einen Moment.", "Einen Augenblick, ich will sichergehen, dass es stimmt.",
+                   "Ich prüfe noch zwei Dinge, damit die Antwort passt."],
+        "closer": ["Okay, hab es.", "Gut, hier ist es.", "Also, das habe ich gefunden."],
+    },
+    "it": {"opener": ["Fammi pensare un attimo.", "Bella domanda, dammi un momento.", "Certo, un attimo che controllo."]},
+    "pt": {"opener": ["Deixe-me pensar um instante.", "Boa pergunta, me dê um momento.", "Claro, um momento enquanto verifico."]},
+    "zh": {"opener": ["让我想一想。", "好问题，请稍等一下。"]},
+    "ja": {"opener": ["少し考えさせてください。", "いい質問ですね、少々お待ちください。"]},
 }
+KIND_POSE = {"opener": "front", "beat": "working", "bridge": "working", "closer": "front"}
+
+
+def filler_texts(language: str, kind: str) -> list[str]:
+    """Phrases of one kind for a language; env overrides win, English openers are the
+    last resort so every language has at least an acknowledgement."""
+    override = os.getenv(f"ASSISTANT_{kind.upper()}_TEXT_{language.upper()}") or (
+        os.getenv(f"ASSISTANT_ACK_TEXT_{language.upper()}") if kind == "opener" else None)
+    if override:
+        return [t.strip() for t in override.split("|") if t.strip()]
+    table = FILLERS.get(language) or {}
+    texts = list(table.get(kind, []))
+    if not texts and kind == "opener":
+        texts = list(FILLERS["en"]["opener"])
+    return texts
 
 
 def ack_texts(language: str) -> list[str]:
-    """The acknowledgement phrases for a language, most natural first."""
-    override = os.getenv(f"ASSISTANT_ACK_TEXT_{language.upper()}")
-    phrases = [t.strip() for t in override.split("|") if t.strip()] if override else (ACK_TEXT.get(language) or ACK_TEXT["en"])
-    return phrases[:max(1, ACK_COUNT)]
+    return filler_texts(language, "opener")
 
 
 def ack_text(language: str) -> str:
     return ack_texts(language)[0]
+
+
+@dataclass
+class Clip:
+    kind: str
+    text: str
+    audio48: np.ndarray
+    frames: np.ndarray
+    pose: str
+
+    @property
+    def seconds(self) -> float:
+        return max(len(self.audio48) / 48000, len(self.frames) / FPS)
 
 
 class PcmQueue:
@@ -174,31 +246,42 @@ class VideoOut(MediaStreamTrack):
 
 
 class Renderer:
-    """Client for one FlashHead session: audio chunk in, RGB frames out."""
+    """Client for the FlashHead sessions of one assistant: audio chunk in, RGB frames out.
+    One renderer session per portrait pose ("front" listening/talking, "working" looking
+    at the tablet); the service switches portraits in about 0.2 s."""
 
     def __init__(self, client: httpx.AsyncClient):
         self.client = client
-        self.session_id = None
+        self.sessions: dict[str, str] = {}
         self.spec = None
         self.model: dict = {}
         self.chunk_seconds = deque(maxlen=8)
         self.first_chunk_seconds = None
-        self.lock = asyncio.Lock()        # one request per session at a time, in call order
-        self.motion = None                # footage the renderer's motion state continues ("idle", "ack", "reply"); None after a reset
+        self.lock = asyncio.Lock()        # one request per assistant at a time, in call order
+        self.motion = None                # footage the renderer's motion state continues, e.g. "idle:front", "reply:front"
 
-    async def open(self, image_path: Path) -> dict:
-        try:
-            health = await self.client.get(f"{RENDERER}/health", timeout=5)
-            self.model = {k: health.json().get(k) for k in ("model", "compile")}
-        except (httpx.HTTPError, ValueError):
-            self.model = {}
+    @property
+    def session_id(self):
+        return self.sessions.get("front")
+
+    async def open(self, image_path: Path, pose: str = "front") -> dict:
+        if not self.model:
+            try:
+                health = await self.client.get(f"{RENDERER}/health", timeout=5)
+                self.model = {k: health.json().get(k) for k in ("model", "compile")}
+            except (httpx.HTTPError, ValueError):
+                self.model = {}
         response = await self.client.post(f"{RENDERER}/sessions", json={"image_path": str(image_path), "seed": 42}, timeout=120)
         response.raise_for_status()
         info = response.json()
-        self.session_id = info["session_id"]
-        self.spec = info
+        self.sessions[pose] = info["session_id"]
+        if pose == "front" or self.spec is None:
+            self.spec = info
         self.motion = None
         return info
+
+    def has_pose(self, pose: str) -> bool:
+        return pose in self.sessions
 
     def fingerprint(self) -> dict:
         return {**self.model, "chunk": {k: self.spec.get(k) for k in ("frames_per_chunk", "samples_per_chunk", "seconds_per_chunk")}}
@@ -218,15 +301,18 @@ class Renderer:
             return 0.8
         return self.seconds / (sum(self.chunk_seconds) / len(self.chunk_seconds))
 
-    async def render(self, pcm16k: np.ndarray, reset: bool, generation: int, motion: str = "reply") -> tuple[np.ndarray, float]:
+    async def render(self, pcm16k: np.ndarray, reset: bool, generation: int, motion: str = "reply:front",
+                     pose: str = "front") -> tuple[np.ndarray, float]:
         async with self.lock:
-            return await self.render_locked(pcm16k, reset, generation, motion)
+            return await self.render_locked(pcm16k, reset, generation, motion, pose)
 
-    async def render_locked(self, pcm16k: np.ndarray, reset: bool, generation: int, motion: str) -> tuple[np.ndarray, float]:
+    async def render_locked(self, pcm16k: np.ndarray, reset: bool, generation: int, motion: str,
+                            pose: str = "front") -> tuple[np.ndarray, float]:
         """Render one chunk; the caller holds `self.lock`."""
+        session_id = self.sessions.get(pose) or self.sessions["front"]
         started = time.monotonic()
         response = await self.client.post(
-            f"{RENDERER}/sessions/{self.session_id}/render",
+            f"{RENDERER}/sessions/{session_id}/render",
             json={"pcm_b64": base64.b64encode(np.ascontiguousarray(pcm16k.astype(np.int16)).tobytes()).decode(),
                   "reset": reset, "generation": generation},
             timeout=RENDER_TIMEOUT)
@@ -250,11 +336,12 @@ class Renderer:
                 self.motion = None
 
     async def close(self) -> None:
-        if self.session_id:
+        for session_id in list(self.sessions.values()):
             try:
-                await self.client.delete(f"{RENDERER}/sessions/{self.session_id}", timeout=10)
+                await self.client.delete(f"{RENDERER}/sessions/{session_id}", timeout=10)
             except httpx.HTTPError:
                 pass
+        self.sessions.clear()
 
 
 class Assistant:
@@ -277,13 +364,14 @@ class Assistant:
         self.closed = False
         self.owner = "local"
         self.history: list = []
-        self.acks: list = []                  # (audio48k, frames, text), rotated across turns
-        self.last_ack = -1
+        self.clips: dict[str, list[Clip]] = {kind: [] for kind in KIND_POSE}
+        self.last_used: dict[str, str] = {}
+        self.working_pose = False                       # a posed portrait is open on the renderer
         self.client = httpx.AsyncClient(headers={"x-internal-key": os.getenv("INTERNAL_API_KEY", "")})
         self.renderer = Renderer(self.client)
         self.metrics = {"turns": 0, "interruptions": 0, "renderer_errors": 0, "prepare": {},
                         "ack_start_seconds": [], "reply_start_seconds": [], "head_start_seconds": [],
-                        "reply_seconds": [], "render_ratio": [], "stalls": 0}
+                        "reply_seconds": [], "render_ratio": [], "stalls": 0, "fillers": []}
 
     def notify(self, kind, **values):
         if self.channel and self.channel.readyState == "open":
@@ -308,10 +396,13 @@ class Assistant:
                     raise RuntimeError(event["message"])
         return np.concatenate(parts) if parts else np.zeros(0, np.int16)
 
-    async def render_all(self, pcm16k: np.ndarray, motion: str) -> np.ndarray:
-        """Render a whole clip (idle footage, an acknowledgement) from the portrait pose.
-        A reply that takes the renderer in between would break the clip's motion, so
-        the clip waits for the turn and starts over when its motion state was moved."""
+    def turn_active(self) -> bool:
+        return self.turn is not None and not self.turn.done()
+
+    async def render_all(self, pcm16k: np.ndarray, motion: str, pose: str = "front") -> np.ndarray:
+        """Render a whole clip (idle footage, a filler) from the portrait pose. A reply that
+        takes the renderer in between would break the clip's motion, so the clip waits
+        for the turn and starts over when its motion state was moved."""
         step = self.renderer.samples
         starts = list(range(0, max(len(pcm16k), 1), step))
         frames: list = []
@@ -326,130 +417,244 @@ class Assistant:
                     frames = []                          # someone else rendered since our last chunk: restart the clip
                 index = len(frames)
                 chunk = pcm16k[starts[index]: starts[index] + step]
-                rendered, _ = await self.renderer.render_locked(chunk, index == 0, self.timeline.generation, motion)
+                rendered, _ = await self.renderer.render_locked(chunk, index == 0, self.timeline.generation, motion, pose)
                 frames.append(rendered)
         return np.concatenate(frames) if frames else np.zeros((0, 1, 1, 3), np.uint8)
 
+    # ------------------------------------------------------------------- cache
     def _cache_dir(self) -> Path | None:
         if not self.persona_id:
             return None
         return CACHE_DIR / self.persona_id / "assistant-cache"
 
-    def _cache_file(self, kind: str) -> Path | None:
+    def _fingerprint(self, **extra) -> str:
         """Cached footage is only valid for the exact inputs that produced it: the
         portrait as uploaded, the restoration settings, the renderer model and chunk
-        spec, the frame rate, and (for acknowledgements) the voice and the phrases."""
+        spec, the frame rate, plus whatever the caller adds (voice, pose, phrases)."""
+        parts = {"v": CACHE_VERSION, "portrait": self.portrait_digest, "enhance": self.enhance,
+                 "renderer": self.renderer.fingerprint(), "fps": FPS, **extra}
+        return hashlib.sha256(json.dumps(parts, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:16]
+
+    def _idle_file(self, pose: str) -> Path | None:
         directory = self._cache_dir()
         if directory is None:
             return None
-        parts: dict = {"v": CACHE_VERSION, "kind": kind, "portrait": self.portrait_digest, "enhance": self.enhance,
-                       "renderer": self.renderer.fingerprint(), "fps": FPS}
-        if kind == "idle":
-            parts["seconds"] = IDLE_SECONDS
-        else:
-            parts.update(language=self.language, voice=self.voice or "", voice_digest=self.voice_digest,
-                         texts=ack_texts(self.language))
-        digest = hashlib.sha256(json.dumps(parts, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:16]
-        return directory / f"{kind}-{self.language}-{digest}.npz"
+        seconds = IDLE_SECONDS if pose == "front" else WORKING_IDLE_SECONDS
+        return directory / f"idle-{pose}-{self._fingerprint(kind='idle', pose=pose, seconds=seconds, posed=WORKING_POSE if pose != 'front' else None)}.npz"
 
-    async def _save_cache(self, kind: str, **arrays) -> None:
-        path = self._cache_file(kind)
+    def _clip_prefix(self) -> str:
+        return self._fingerprint(kind="clip", language=self.language, voice=self.voice or "", voice_digest=self.voice_digest,
+                                 posed=WORKING_POSE if self.working_pose else None)
+
+    def _clip_file(self, kind: str, text: str) -> Path | None:
+        directory = self._cache_dir()
+        if directory is None:
+            return None
+        return directory / "clips" / f"{self._clip_prefix()}-{hashlib.sha256(f'{kind}|{text}'.encode()).hexdigest()[:10]}.npz"
+
+    def _working_portrait_file(self) -> Path | None:
+        directory = self._cache_dir()
+        if directory is None:
+            return None
+        return directory / f"portrait-working-{self._fingerprint(kind='portrait', posed=WORKING_POSE)}.png"
+
+    async def _save_npz(self, path: Path | None, **arrays) -> None:
         if path is None:
             return
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_name(path.name + ".tmp.npz")
         await asyncio.to_thread(np.savez, str(tmp), **arrays)
         tmp.rename(path)
-        for stale in path.parent.glob(f"{kind}-*.npz"):      # one idle loop and one acknowledgement set per persona
+
+    async def _save_idle(self, pose: str) -> None:
+        segments = self.timeline.loop(pose).segments
+        path = self._idle_file(pose)
+        if path is None or not segments:
+            return
+        await self._save_npz(path, count=len(segments), **{f"idle_{i}": seg for i, seg in enumerate(segments)})
+        for stale in path.parent.glob(f"idle-{pose}-*.npz"):
             if stale != path:
                 stale.unlink(missing_ok=True)
+        if pose == "front":
+            for legacy in path.parent.glob("idle-??-*.npz"):   # files from before per-pose naming
+                legacy.unlink(missing_ok=True)
 
+    async def _load_idle(self, pose: str) -> bool:
+        path = self._idle_file(pose)
+        if path is None or not path.exists():
+            return False
+        try:
+            data = await asyncio.to_thread(np.load, str(path))
+            self.timeline.loop(pose).segments = [data[f"idle_{i}"] for i in range(int(data["count"]))]
+            return True
+        except Exception:
+            return False
+
+    async def _save_clip(self, clip: Clip) -> None:
+        path = self._clip_file(clip.kind, clip.text)
+        if path is None:
+            return
+        await self._save_npz(path, audio48=clip.audio48, frames=clip.frames, text=np.array(clip.text),
+                             kind=np.array(clip.kind), pose=np.array(clip.pose))
+        prefix = self._clip_prefix()
+        for stale in path.parent.glob("*.npz"):
+            if not stale.name.startswith(prefix):
+                stale.unlink(missing_ok=True)
+        for legacy in path.parent.parent.glob("ack-*.npz"):
+            legacy.unlink(missing_ok=True)
+
+    async def _load_clips(self) -> int:
+        directory = self._cache_dir()
+        if directory is None or not (directory / "clips").exists():
+            return 0
+        prefix = self._clip_prefix()
+        loaded = 0
+        for path in sorted((directory / "clips").glob(f"{prefix}-*.npz")):
+            try:
+                data = await asyncio.to_thread(np.load, str(path))
+                kind = str(data["kind"])
+                if kind in self.clips:
+                    self.clips[kind].append(Clip(kind, str(data["text"]), data["audio48"], data["frames"], str(data["pose"])))
+                    loaded += 1
+            except Exception:
+                continue
+        return loaded
+
+    def has_clip(self, kind: str, text: str) -> bool:
+        return any(c.text == text for c in self.clips[kind])
+
+    def clip_count(self) -> int:
+        return sum(len(v) for v in self.clips.values())
+
+    # --------------------------------------------------------------- preparing
     async def prepare(self) -> dict:
-        """Open the renderer and get a face on screen fast: the cached idle loop and
-        acknowledgement when this persona has been used before, otherwise two chunks
-        of idle motion now and the rest in the background."""
+        """Open the renderer and get a face on screen fast: cached idle footage and clips
+        when this persona has been used before, otherwise two chunks of idle motion now
+        and the rest in the background."""
         started = time.monotonic()
         info = await self.renderer.open(self.directory / "image.png")
         t_open = time.monotonic()
-        cached = {"idle": False, "ack": False}
-        for kind in ("idle", "ack"):
-            path = self._cache_file(kind)
-            if path and path.exists():
-                try:
-                    data = await asyncio.to_thread(np.load, str(path))
-                    count = int(data["count"])
-                    if kind == "idle":
-                        self.timeline.idle_segments = [data[f"idle_{i}"] for i in range(count)]
-                    else:
-                        self.acks = [(data[f"audio48_{i}"], data[f"frames_{i}"], str(data[f"text_{i}"])) for i in range(count)]
-                    cached[kind] = True
-                except Exception:
-                    pass
+        working_file = self._working_portrait_file()
+        if WORKING_POSE_ENABLED and working_file is not None and working_file.exists():
+            # The posed portrait is cached: open it now so cached working clips match it.
+            (self.directory / "image-working.png").write_bytes(working_file.read_bytes())
+            try:
+                await self.renderer.open(self.directory / "image-working.png", "working")
+                self.working_pose = True
+            except httpx.HTTPError:
+                self.working_pose = False
+        cached = {"idle": await self._load_idle("front"), "working_idle": self.working_pose and await self._load_idle("working"),
+                  "clips": await self._load_clips()}
         if not cached["idle"]:
-            self.timeline.add_idle(await self.render_all(np.zeros(self.renderer.samples * IDLE_CHUNKS, np.int16), "idle"), False)
+            self.timeline.add_idle(await self.render_all(np.zeros(self.renderer.samples * IDLE_CHUNKS, np.int16), "idle:front"), False)
         self.metrics["prepare"] = {
             "cached": cached, "renderer_open_seconds": round(t_open - started, 2),
             "idle_seconds_ready": round(self.timeline.idle_seconds(), 2),
-            "ack_ready": bool(self.acks),
+            "ack_ready": bool(self.clips["opener"]), "clips": self.clip_count(), "working_pose": self.working_pose,
             "chunk": {k: info[k] for k in ("frames_per_chunk", "samples_per_chunk", "seconds_per_chunk")},
             "total_seconds": round(time.monotonic() - started, 2)}
-        if not (cached["idle"] and cached["ack"]):
-            self.background = asyncio.create_task(self.finish_prepare(grow_idle=not cached["idle"], make_ack=not cached["ack"]))
+        self.background = asyncio.create_task(self.finish_prepare())
         return self.metrics["prepare"]
 
-    def turn_active(self) -> bool:
-        return self.turn is not None and not self.turn.done()
+    def _plan_texts(self) -> list[tuple[str, str]]:
+        """Clips in the order the user needs them: first opener, a few beats and closers so
+        a working phase can happen, bridges, then the rest of the repertoire."""
+        texts = {kind: filler_texts(self.language, kind) for kind in KIND_POSE}
+        order = [("opener", 0)]
+        order += [("beat", i) for i in range(3)] + [("closer", i) for i in range(2)] + [("bridge", i) for i in range(2)]
+        order += [("opener", i) for i in range(1, 8)] + [("beat", i) for i in range(3, 8)]
+        order += [("bridge", i) for i in range(2, 8)] + [("closer", i) for i in range(2, 8)]
+        plan, seen = [], set()
+        for kind, index in order:
+            if index < len(texts[kind]) and (kind, texts[kind][index]) not in seen:
+                seen.add((kind, texts[kind][index]))
+                plan.append((kind, texts[kind][index]))
+        return plan
 
-    async def make_ack(self, text: str) -> None:
-        """Synthesize and render one acknowledgement clip from the portrait pose."""
-        t_ack = time.monotonic()
+    async def make_clip(self, kind: str, text: str) -> None:
+        """Synthesize and render one filler clip in the pose its kind calls for."""
+        pose = KIND_POSE[kind] if (self.working_pose and self.renderer.has_pose("working")) else "front"
         pcm = await self.speak(text)
-        frames = await self.render_all(resample(pcm, 24000, 16000), "ack")
-        if len(frames):
-            self.acks.append((resample(pcm, 24000, 48000), frames, text))
-        self.metrics["prepare"].update({"ack_ready": bool(self.acks), "acks": len(self.acks),
-                                        "ack_seconds": round(time.monotonic() - t_ack, 2)})
-        self.notify("ack_ready", count=len(self.acks))
+        frames = await self.render_all(resample(pcm, 24000, 16000), f"{kind}:{pose}", pose)
+        if not len(frames):
+            return
+        clip = Clip(kind, text, resample(pcm, 24000, 48000), frames, pose)
+        self.clips[kind].append(clip)
+        await self._save_clip(clip)
+        self.notify("filler_ready", kind=kind, count=len(self.clips[kind]), clips=self.clip_count())
 
-    async def finish_prepare(self, grow_idle: bool = True, make_ack: bool = True) -> None:
-        """Background preparation, in the order the user needs it: the first
-        acknowledgement (what they hear when they stop talking), the idle loop grown
-        to IDLE_SECONDS, then the remaining acknowledgements. Yields to turns; each
-        piece is cached as soon as it is complete."""
-        texts = ack_texts(self.language)
+    async def grow_idle(self, pose: str, target_seconds: float) -> None:
+        """Grow the idle loop of `pose` to `target_seconds`, yielding to turns. Footage
+        extends the current segment while the renderer's motion still follows it and
+        starts a new segment after anything else rendered."""
+        loop = self.timeline.loop(pose)
+        target = int(target_seconds * FPS)
+        motion = f"idle:{pose}"
+        while loop.frame_count < target and not self.closed:
+            if self.turn_active():
+                await asyncio.sleep(0.5)
+                continue
+            async with self.renderer.lock:
+                if self.turn_active():
+                    continue
+                continuous = self.renderer.motion == motion
+                frames, _ = await self.renderer.render_locked(np.zeros(self.renderer.samples, np.int16), not continuous,
+                                                              self.timeline.generation, motion, pose)
+            loop.add(frames, continuous)
+        if not self.closed:
+            await self._save_idle(pose)
+
+    async def open_working_pose(self) -> bool:
+        """Make (or load) the portrait looking down at a tablet and open it on the renderer."""
+        if not WORKING_POSE_ENABLED or self.working_pose:
+            return self.working_pose
+        target = self.directory / "image-working.png"
+        cached = self._working_portrait_file()
         try:
-            if make_ack and not self.acks:
-                await self.make_ack(texts[0])
-            if grow_idle:
-                target = int(IDLE_SECONDS * FPS)
-                while self.timeline.idle_frame_count < target and not self.closed:
-                    if self.turn_active():
-                        await asyncio.sleep(0.5)
-                        continue
-                    async with self.renderer.lock:
-                        if self.turn_active():
-                            continue
-                        # Extend the current segment while the renderer's motion still follows it;
-                        # after a reply or an acknowledgement, start a new segment from the portrait.
-                        continuous = self.renderer.motion == "idle"
-                        frames, _ = await self.renderer.render_locked(np.zeros(self.renderer.samples, np.int16), not continuous,
-                                                                      self.timeline.generation, "idle")
-                    self.timeline.add_idle(frames, continuous)
-                if not self.closed:
-                    segments = self.timeline.idle_segments
-                    await self._save_cache("idle", count=len(segments), **{f"idle_{i}": seg for i, seg in enumerate(segments)})
-                    self.metrics["prepare"].update(idle_seconds_final=round(self.timeline.idle_seconds(), 2), idle_segments=len(segments))
-            if make_ack:
-                for text in texts[len(self.acks):]:
-                    if self.closed:
-                        return
-                    await self.make_ack(text)
-                if self.acks and not self.closed:
-                    arrays = {"count": len(self.acks)}
-                    for i, (audio48, frames, text) in enumerate(self.acks):
-                        arrays.update({f"audio48_{i}": audio48, f"frames_{i}": frames, f"text_{i}": np.array(text)})
-                    await self._save_cache("ack", **arrays)
-            self.notify("ready", idle_seconds=round(self.timeline.idle_seconds(), 1), acks=len(self.acks))
+            if cached is not None and cached.exists():
+                target.write_bytes(cached.read_bytes())
+            else:
+                started = time.monotonic()
+                response = await self.client.post(f"{RENDERER}/portrait/pose", json={
+                    "image_b64": base64.b64encode((self.directory / "image.png").read_bytes()).decode(), **WORKING_POSE}, timeout=120)
+                if response.status_code != 200:
+                    self.metrics["prepare"]["working_pose_error"] = response.status_code
+                    return False
+                target.write_bytes(response.content)
+                if cached is not None:
+                    cached.parent.mkdir(parents=True, exist_ok=True)
+                    cached.write_bytes(response.content)
+                self.metrics["prepare"]["working_pose_seconds"] = round(time.monotonic() - started, 2)
+            await self.renderer.open(target, "working")
+            self.working_pose = True
+        except (httpx.HTTPError, OSError) as exc:
+            self.metrics["prepare"]["working_pose_error"] = f"{type(exc).__name__}: {exc}"
+            return False
+        self.metrics["prepare"]["working_pose"] = True
+        return True
+
+    async def finish_prepare(self) -> None:
+        """Background preparation, in the order the user needs it: the first opener (what
+        they hear when they stop talking), the idle loop, the posed portrait and its idle
+        loop, then the filler repertoire. Yields to turns; everything is cached."""
+        try:
+            plan = self._plan_texts()
+            if plan and not self.clips["opener"]:
+                kind, text = plan[0]
+                await self.make_clip(kind, text)
+            await self.grow_idle("front", IDLE_SECONDS)
+            self.metrics["prepare"].update(idle_seconds_final=round(self.timeline.idle_seconds(), 2),
+                                           idle_segments=len(self.timeline.idle_segments))
+            if await self.open_working_pose():
+                await self.grow_idle("working", WORKING_IDLE_SECONDS)
+                self.metrics["prepare"]["working_idle_seconds"] = round(self.timeline.idle_seconds("working"), 2)
+            for kind, text in plan:
+                if self.closed:
+                    return
+                if not self.has_clip(kind, text):
+                    await self.make_clip(kind, text)
+            self.notify("ready", idle_seconds=round(self.timeline.idle_seconds(), 1), clips=self.clip_count(),
+                        working_pose=self.working_pose)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -464,13 +669,63 @@ class Assistant:
             self.turn.cancel()
         self.notify("listening")
 
-    def pick_ack(self):
-        """A prepared acknowledgement, not the one used last time when there is a choice."""
-        if not self.acks:
+    def pick(self, kind: str) -> Clip | None:
+        """A prepared clip of `kind`, not the one used last time when there is a choice."""
+        clips = self.clips.get(kind) or []
+        if not clips:
             return None
-        choices = [i for i in range(len(self.acks)) if i != self.last_ack] or [0]
-        self.last_ack = random.choice(choices)
-        return self.acks[self.last_ack]
+        choices = [c for c in clips if c.text != self.last_used.get(kind)] or clips
+        clip = random.choice(choices)
+        self.last_used[kind] = clip.text
+        return clip
+
+    async def fill_gap(self, plan: dict, state: dict, generation: int, t0: float) -> None:
+        """Fill the wait between the opener and the reply the way a person looking
+        something up would: turn to the tablet, say short progress utterances with
+        pauses between them (beats and the occasional longer bridge), and when the
+        reply is ready cut whatever is still being said, say a short closer facing the
+        user, and hand over. Clips are scheduled just in time so the plan can adapt."""
+        tl = self.timeline
+        cursor = plan["opener_end"]
+        pattern = itertools.cycle(["beat", "bridge", "beat", "beat", "bridge"])
+        working = False
+        try:
+            while generation == tl.generation and not self.closed:
+                start = state["reply_start"]
+                if start is not None:
+                    closer = self.pick("closer")
+                    closer_len = closer.seconds if closer else 0.0
+                    cut_at = max(plan["opener_end"], start - 0.25 - (closer_len + 0.15 if closer else 0.0))
+                    cut = tl.truncate(cut_at, "filler")
+                    if closer and cut_at + 0.1 + closer_len + 0.15 <= start:
+                        tl.schedule(cut_at + 0.1, closer.audio48, closer.frames, generation, tag="filler")
+                        tl.set_mode(cut_at + 0.1, "front", generation)
+                        self.notify("filler", kind="closer", text=closer.text)
+                        self.metrics["fillers"].append({"kind": "closer", "text": closer.text, "at": round(cut_at + 0.1 - t0, 2)})
+                    else:
+                        tl.set_mode(max(cut_at, start - 0.6), "front", generation)
+                    self.metrics["fillers"].append({"kind": "cut", "at": round(cut_at - t0, 2), "clips_cut": cut})
+                    return
+                now = tl.now()
+                if not working and tl.loop("working").ready and now >= plan["opener_end"] - 0.5:
+                    tl.set_mode(plan["opener_end"] + 0.1, "working", generation)
+                    working = True
+                    self.notify("working")
+                if cursor - now < 1.5 and cursor < t0 + MAX_HEAD_START - 1.0:
+                    kind = next(pattern)
+                    clip = self.pick(kind) or self.pick("beat") or self.pick("bridge")
+                    if clip is not None:
+                        at = max(cursor + random.uniform(0.7, 1.5), now + 0.3)
+                        placed = tl.schedule(at, clip.audio48, clip.frames, generation, tag="filler")
+                        if placed:
+                            cursor = placed[1]
+                            self.notify("filler", kind=clip.kind, text=clip.text)
+                            self.metrics["fillers"].append({"kind": clip.kind, "text": clip.text, "at": round(at - t0, 2)})
+                    else:
+                        cursor = now + 1.0
+                await asyncio.sleep(0.1)
+        except asyncio.CancelledError:
+            raise
 
     async def reply(self, samples: np.ndarray, generation: int):
         tl = self.timeline
@@ -483,19 +738,23 @@ class Assistant:
             wav.setparams((1, 2, 16000, 0, "NONE", "not compressed"))
             wav.writeframes(samples.astype(np.int16).tobytes())
         self.notify("thinking")
+        state = {"reply_start": None, "offset": 0.0, "total": 0, "tts_done": False, "chunks": 0}
+        plan = {"opener_end": tl.now() + 0.2}
 
-        # 1. The prepared acknowledgement lands immediately (when this persona's is ready).
-        ack_end = tl.now() + 0.2
-        ack = self.pick_ack()
-        if ack is None:
+        # 1. The prepared opener lands immediately (when this persona's is ready), then the
+        #    filler plan takes over the gap.
+        opener = self.pick("opener")
+        if opener is None:
             self.notify("acknowledging", seconds=0, pending=True)
         else:
-            placed = tl.schedule(tl.now() + 0.1, ack[0], ack[1], generation)
+            placed = tl.schedule(tl.now() + 0.1, opener.audio48, opener.frames, generation, tag="filler")
             if placed:
-                ack_end = placed[1]
+                plan["opener_end"] = placed[1]
                 self.last_playout_start = placed[0]
                 self.metrics["ack_start_seconds"].append(round(placed[0] - t0, 2))
-                self.notify("acknowledging", seconds=round(placed[1] - placed[0], 2), text=ack[2])
+                self.metrics["fillers"].append({"kind": "opener", "text": opener.text, "at": round(placed[0] - t0, 2)})
+                self.notify("acknowledging", seconds=round(placed[1] - placed[0], 2), text=opener.text)
+        filler = asyncio.create_task(self.fill_gap(plan, state, generation, t0))
 
         # 2. Plan then speak on the backend; audio arrives as PCM events.
         queue: asyncio.Queue = asyncio.Queue()
@@ -540,7 +799,6 @@ class Assistant:
         producer = asyncio.create_task(receive())
         pending24 = PcmQueue()                   # TTS audio not yet rendered
         rendered: list = []                      # (frames, audio48k) waiting for a start time
-        state = {"reply_start": None, "offset": 0.0, "total": 0, "tts_done": False, "chunks": 0}
         need = self.renderer.samples * 24000 // 16000      # 24 kHz samples per renderer chunk
 
         def take(item):
@@ -553,13 +811,14 @@ class Assistant:
                 state["total"] += len(item)
 
         def decide_start():
-            """Pick the reply start once: at the default head start, pushed later only when
-            the measured render rate cannot sustain a reply of this length."""
+            """Pick the reply start once: the earliest moment the reply can play without
+            stalling given the renderer's measured rate, but not before the opener and the
+            minimum head start, and not after the cap. The filler plan sees it and wraps up."""
             total_seconds = state["total"] / 24000
             words = len(reply_text["text"].split())
             reply_seconds = total_seconds if state["tts_done"] else max(total_seconds, words / 2.5)
             required = head_start_required(reply_seconds, self.renderer.ratio, self.renderer.first_chunk_seconds or 1.5)
-            start = max(ack_end + 0.3, t0 + min(MAX_HEAD_START, max(HEAD_START, required)))
+            start = max(plan["opener_end"] + 0.3, t0 + min(MAX_HEAD_START, max(HEAD_START, required)))
             # A late decision (slow transcript or first chunk) must not schedule into the
             # past, or the opening of the reply would be skipped.
             start = max(start, tl.now() + 0.15)
@@ -598,7 +857,7 @@ class Assistant:
                     take(await queue.get())
                     continue
                 piece = pending24.pop(need)
-                frames, _ = await self.renderer.render(resample(piece, 24000, 16000), state["chunks"] == 0, generation, "reply")
+                frames, _ = await self.renderer.render(resample(piece, 24000, 16000), state["chunks"] == 0, generation, "reply:front")
                 if generation != tl.generation:
                     return
                 state["chunks"] += 1
@@ -628,8 +887,9 @@ class Assistant:
             self.metrics["renderer_errors"] += 1
             self.notify("error", message=str(exc))
         finally:
+            filler.cancel()
             producer.cancel()
-            await asyncio.gather(producer, return_exceptions=True)
+            await asyncio.gather(filler, producer, return_exceptions=True)
 
     async def consume(self, track):
         from .vad import Detector
@@ -756,8 +1016,10 @@ class Assistant:
                 "timeline": {"frames_sent": tl.frames_sent, "frames_skipped": tl.frames_skipped,
                              "idle_frames_sent": tl.idle_frames_sent, "scheduled_seconds": round(tl.scheduled_seconds, 2),
                              "now": round(tl.now(), 2)},
-                "idle": {"seconds": round(tl.idle_seconds(), 2), "segments": len(tl.idle_segments)}, "acks": len(self.acks),
-                "renderer": {"session": self.renderer.session_id, "ratio": round(self.renderer.ratio, 3), "motion": self.renderer.motion,
+                "idle": {"seconds": round(tl.idle_seconds(), 2), "segments": len(tl.idle_segments),
+                         "working_seconds": round(tl.idle_seconds("working"), 2)},
+                "clips": {kind: [c.text for c in clips] for kind, clips in self.clips.items()}, "working_pose": self.working_pose,
+                "renderer": {"sessions": self.renderer.sessions, "ratio": round(self.renderer.ratio, 3), "motion": self.renderer.motion,
                              "first_chunk_seconds": self.renderer.first_chunk_seconds,
                              "chunk_seconds": [round(s, 3) for s in self.renderer.chunk_seconds]}}
 
@@ -902,9 +1164,10 @@ async def offer(identifier: str, body: Offer):
     @pc.on("datachannel")
     def on_channel(channel):
         session.channel = channel
-        if session.acks and (session.background is None or session.background.done()):
+        if session.clips["opener"] and (session.background is None or session.background.done()):
             # Everything was cached: tell the client now that the channel exists.
-            session.notify("ready", idle_seconds=round(session.timeline.idle_seconds(), 1), acks=len(session.acks), cached=True)
+            session.notify("ready", idle_seconds=round(session.timeline.idle_seconds(), 1), clips=session.clip_count(),
+                           working_pose=session.working_pose, cached=True)
 
         @channel.on("message")
         def message(value):
