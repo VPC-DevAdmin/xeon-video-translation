@@ -128,12 +128,21 @@ def portrait_checks(image_path: Path) -> dict:
     cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
     faces = cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(max(40, w // 10), max(40, h // 10)))
     problems = []
-    if len(faces):
-        # The cascade fires on lamps and window frames; only detections comparable in
-        # size to the main face count as another person.
-        largest = max(f[2] * f[3] for f in faces)
-        faces = [f for f in faces if f[2] * f[3] >= 0.33 * largest]
-    result = {"width": w, "height": h, "faces": int(len(faces))}
+    raw = [tuple(int(v) for v in f) for f in faces]
+    if raw:
+        # The cascade fires on lamps and window frames and often boxes the same face
+        # twice at different scales: keep detections comparable in size to the main
+        # face, and merge any that overlap it.
+        main = max(raw, key=lambda f: f[2] * f[3])
+        largest = main[2] * main[3]
+
+        def overlaps(a, b):
+            ax2, ay2, bx2, by2 = a[0] + a[2], a[1] + a[3], b[0] + b[2], b[1] + b[3]
+            inter = max(0, min(ax2, bx2) - max(a[0], b[0])) * max(0, min(ay2, by2) - max(a[1], b[1]))
+            return inter / max(1, min(a[2] * a[3], b[2] * b[3])) > 0.3
+
+        faces = [f for f in raw if f[2] * f[3] >= 0.33 * largest and (f == main or not overlaps(f, main))]
+    result = {"width": w, "height": h, "faces": int(len(faces)), "raw_detections": raw}
     if len(faces) == 0:
         problems.append("no face found; face the camera in even light")
     else:
@@ -313,6 +322,12 @@ async def create(name: str = Form(..., min_length=1, max_length=80), language: s
     for name_ in ("voice.upload", "idle.upload"):
         (directory / name_).unlink(missing_ok=True)
     if not ok:
+        rejected = ROOT / "_rejected"
+        rejected.mkdir(parents=True, exist_ok=True)
+        shutil.copy(directory / "portrait.png", rejected / f"{persona_id}.png")
+        (rejected / f"{persona_id}.json").write_text(json.dumps(checks, indent=1))
+        for old_file in sorted(rejected.glob("*.png"), key=lambda q: q.stat().st_mtime)[:-5]:
+            old_file.unlink(missing_ok=True); old_file.with_suffix(".json").unlink(missing_ok=True)
         shutil.rmtree(directory, ignore_errors=True)
         raise HTTPException(422, {"status": "rejected", "checks": checks})
     (directory / "persona.json").write_text(json.dumps(record, indent=1))
