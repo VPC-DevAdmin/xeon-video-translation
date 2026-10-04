@@ -194,7 +194,7 @@ if not args.skip_syncnet:
         state = ckpt.get("state_dict", ckpt) if isinstance(ckpt, dict) else ckpt
         missing, unexpected = model.load_state_dict(state, strict=False)
         model.eval()
-        processor = ImageProcessor(256, device="cpu")
+        processor = ImageProcessor(256, device=str(device))
         aligned = []
         for frame in frames:
             try:
