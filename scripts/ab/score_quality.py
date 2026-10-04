@@ -183,7 +183,7 @@ if not args.skip_syncnet:
         from latentsync.models.stable_syncnet import StableSyncNet
         from latentsync.utils.image_processor import ImageProcessor
 
-        os.chdir(str(HERE))  # latentsync.utils.audio loads configs/audio.yaml relative to cwd
+        os.chdir(str(APP))  # latentsync.utils.audio loads configs/audio.yaml and ImageProcessor its mask relative to the app root
         from latentsync.utils import audio as ls_audio
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
