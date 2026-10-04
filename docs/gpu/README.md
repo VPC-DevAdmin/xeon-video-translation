@@ -160,3 +160,21 @@ Detection is gone from the per-window path; the next lever for fast mode is
 the denoise itself: more GPUs for `lipsync-fast` (batch already shards over
 three), fewer steps, or a compiled/fp8 UNet. Restore and paste are the first
 CPU stages worth moving to the GPU after that.
+
+### Fast renderer on two GPUs (`a53c577`)
+
+`lipsync-fast` now shards the 10-step UNet over `LATENTSYNC_FAST_GPUS`
+(default `3,5`) with one worker process per GPU. Same 52 s fixture, warm,
+face track cached:
+
+| Per 16 s window | 1 GPU | 2 GPUs |
+| --- | ---: | ---: |
+| waiting on denoise workers | 77 s | 37 s |
+| conditioning (coordinator) | 5 s | 15 s |
+| collect + paste | 10 s | 0.3 s |
+| window total | 118 s | 78 s |
+| fast-mode lipsync stage, 52 s clip | 399 s | 339 s |
+
+Conditioning on the coordinator is now the visible serial cost; moving the
+VAE encode of the reference/masked frames onto the workers is the next step
+if fast mode needs to go below ~1 min per 16 s window.
