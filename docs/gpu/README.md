@@ -134,3 +134,29 @@ thread pool and finished faster than a GPU round trip at 1080p).
 ## October GPU implementation update
 
 See [implementation and qualification](upgrade-implementation.md) for strict CUDA execution, hardware WebRTC codecs, bounded NVDEC decoding, avatar tensor blending, allocation overlays and the remaining hardware gates.
+
+## Shared face track (LatentSync) and where fast-mode time goes
+
+Since `1db2189` the LatentSync service builds one landmark track per source
+clip (`latentsync_driver/face_track.py`, cached under
+`MODEL_CACHE_DIR/cache/latentsync_tracks` by content hash, smoothed over the
+whole clip) and every render window slices it instead of re-detecting. On the
+52 s 1080x1920 fixture the track builds in 67 s and every later run hits the
+cache; fast-mode lipsync went from 502 s to 399 s on a cache hit, and window
+seams share one landmark trajectory.
+
+Per 16 s window at 10 steps on one GPU (measured 4 Oct 2026, `lipsync-fast`):
+
+| Stage | Seconds | Share |
+| --- | ---: | ---: |
+| waiting on the denoise worker | 77 | 65% |
+| NVDEC decode + warp + audio features | 13 | 11% |
+| restore (paste faces back, CPU) | 10 | 8% |
+| collect + paste chunks | 10 | 8% |
+| conditioning | 5 | 5% |
+| NVENC write | 3 | 2% |
+
+Detection is gone from the per-window path; the next lever for fast mode is
+the denoise itself: more GPUs for `lipsync-fast` (batch already shards over
+three), fewer steps, or a compiled/fp8 UNet. Restore and paste are the first
+CPU stages worth moving to the GPU after that.
