@@ -11,6 +11,8 @@
 # (~35 s pool warm-up) and keeps the LLM, backend and frontend up throughout.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# The box .env holds ports, GPU ids and service URLs; compose reads it, this shell must too.
+if [ -f .env ]; then set -a; . ./.env; set +a; fi
 C=(docker compose -f docker-compose.yml -f docker-compose.gpu.yml -f docker-compose.llm.yml -f docker-compose.avatar.yml -f docker-compose.quality.yml)
 A=(docker compose -f docker-compose.yml -f docker-compose.gpu.yml -f docker-compose.llm.yml -f docker-compose.assistant.yml)
 case "${1:-status}" in
