@@ -128,6 +128,11 @@ def portrait_checks(image_path: Path) -> dict:
     cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
     faces = cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(max(40, w // 10), max(40, h // 10)))
     problems = []
+    if len(faces):
+        # The cascade fires on lamps and window frames; only detections comparable in
+        # size to the main face count as another person.
+        largest = max(f[2] * f[3] for f in faces)
+        faces = [f for f in faces if f[2] * f[3] >= 0.33 * largest]
     result = {"width": w, "height": h, "faces": int(len(faces))}
     if len(faces) == 0:
         problems.append("no face found; face the camera in even light")
