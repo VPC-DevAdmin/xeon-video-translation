@@ -1,0 +1,255 @@
+{
+  "session": "0582dda6071e4bb28bf61adc0f23088f",
+  "connection": "connected",
+  "prepare_seconds": 3.48,
+  "ready_after_seconds": 41.97,
+  "server_prepare": {
+    "cached": {
+      "idle": false,
+      "ack": false
+    },
+    "renderer_open_seconds": 0.22,
+    "idle_seconds_ready": 2.24,
+    "ack_ready": false,
+    "chunk": {
+      "frames_per_chunk": 28,
+      "samples_per_chunk": 17920,
+      "seconds_per_chunk": 1.12
+    },
+    "total_seconds": 3.03
+  },
+  "endpoint_to_ack_audio_seconds": 0.203,
+  "endpoint_to_reply_scheduled_event_seconds": 3.938,
+  "endpoint_to_reply_speaking_seconds": 10.0,
+  "endpoint_to_reply_audio_seconds": 10.083,
+  "reply_video_fps": 25.0,
+  "reply_frames": 122,
+  "reply_mean_frame_change": 1.877,
+  "idle_before_turn": {
+    "frames": 84,
+    "median": 0.34,
+    "p99": 2.28,
+    "max": 2.57,
+    "snaps": 0,
+    "snap_threshold": 6.0,
+    "snap_times": []
+  },
+  "idle_after_reply": {
+    "frames": 975,
+    "median": 0.77,
+    "p99": 2.26,
+    "max": 3.04,
+    "snaps": 0,
+    "snap_threshold": 6.0,
+    "snap_times": []
+  },
+  "ack_ready_after_seconds": 36.81,
+  "event_times": [
+    [
+      "listening",
+      11.43
+    ],
+    [
+      "thinking",
+      12.77
+    ],
+    [
+      "acknowledging",
+      12.77
+    ],
+    [
+      "reply_scheduled",
+      16.71
+    ],
+    [
+      "speaking",
+      22.77
+    ],
+    [
+      "listening",
+      27.65
+    ],
+    [
+      "ack_ready",
+      36.81
+    ],
+    [
+      "ack_ready",
+      41.84
+    ],
+    [
+      "ready",
+      41.97
+    ]
+  ],
+  "released_after_seconds": 8.62,
+  "channel_open_after_seconds": 8.92,
+  "interrupt_ack_seconds": null,
+  "last_audio_after_interrupt_seconds": null,
+  "server": {
+    "metrics": {
+      "turns": 1,
+      "interruptions": 1,
+      "renderer_errors": 0,
+      "prepare": {
+        "cached": {
+          "idle": false,
+          "ack": false
+        },
+        "renderer_open_seconds": 0.22,
+        "idle_seconds_ready": 2.24,
+        "ack_ready": true,
+        "chunk": {
+          "frames_per_chunk": 28,
+          "samples_per_chunk": 17920,
+          "seconds_per_chunk": 1.12
+        },
+        "total_seconds": 3.03,
+        "acks": 3,
+        "ack_seconds": 5.04,
+        "idle_seconds_final": 12.32,
+        "idle_segments": 3
+      },
+      "ack_start_seconds": [
+        0.1
+      ],
+      "reply_start_seconds": [
+        10.0
+      ],
+      "head_start_seconds": [
+        3.21
+      ],
+      "reply_seconds": [
+        4.77
+      ],
+      "render_ratio": [
+        0.848
+      ],
+      "stalls": 0,
+      "portrait_enhanced": true
+    },
+    "history": [
+      {
+        "role": "user",
+        "content": "Where are the sprinklers?"
+      },
+      {
+        "role": "assistant",
+        "content": "I don't see any sprinklers here. Are you looking for them in a specific room or area?"
+      }
+    ],
+    "generation": 1,
+    "timeline": {
+      "frames_sent": 1471,
+      "frames_skipped": 6,
+      "idle_frames_sent": 1304,
+      "scheduled_seconds": 6.68,
+      "now": 67.2
+    },
+    "idle": {
+      "seconds": 12.32,
+      "segments": 3
+    },
+    "acks": 3,
+    "renderer": {
+      "session": "09e194d7f26c48f6963a1932034e060b",
+      "ratio": 0.852,
+      "motion": "ack",
+      "first_chunk_seconds": 1.482859781011939,
+      "chunk_seconds": [
+        1.312,
+        1.321,
+        1.312,
+        1.32,
+        1.31,
+        1.326,
+        1.32,
+        1.299
+      ]
+    },
+    "rtc": {
+      "audio": {
+        "packets_lost": 0,
+        "fraction_lost": 0.0,
+        "jitter_ms": 0.6,
+        "rtt_ms": 0.3,
+        "packets_sent": 2938,
+        "bytes_sent": 79679
+      },
+      "video": {
+        "packets_lost": 0,
+        "fraction_lost": 0.0,
+        "jitter_ms": 0.7,
+        "rtt_ms": 0.4,
+        "packets_sent": 13577,
+        "bytes_sent": 14923651
+      }
+    }
+  },
+  "events": [
+    {
+      "type": "listening",
+      "t": 11.447
+    },
+    {
+      "type": "thinking",
+      "t": 12.786
+    },
+    {
+      "type": "acknowledging",
+      "seconds": 1.88,
+      "text": "Let me think about that for a second.",
+      "t": 12.787
+    },
+    {
+      "type": "transcript",
+      "text": "Where are the sprinklers?",
+      "t": 13.139
+    },
+    {
+      "type": "reply",
+      "text": "I don't see any sprinklers here. Are you looking for them in a specific room or area?",
+      "t": 13.299
+    },
+    {
+      "type": "reply_scheduled",
+      "start_in": 6.06,
+      "head_start": 10.0,
+      "required": 3.21,
+      "render_ratio": 0.848,
+      "reply_seconds": 4.77,
+      "t": 16.725
+    },
+    {
+      "type": "speaking",
+      "t": 22.786
+    },
+    {
+      "type": "listening",
+      "stalls": 0,
+      "frames_sent": 470,
+      "t": 27.666
+    },
+    {
+      "type": "ack_ready",
+      "count": 2,
+      "t": 36.828
+    },
+    {
+      "type": "ack_ready",
+      "count": 3,
+      "t": 41.863
+    },
+    {
+      "type": "ready",
+      "idle_seconds": 12.3,
+      "acks": 3,
+      "t": 41.99
+    }
+  ],
+  "recording": {
+    "path": "/jobs/avatars/e2e-cold3.wav",
+    "seconds": 117.36,
+    "starts_at_client_seconds": 8.991
+  }
+}

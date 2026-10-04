@@ -72,10 +72,22 @@ Components:
 
 Session start: the renderer session opens in 0.2 s; the first time a persona is
 used, two chunks of idle motion are rendered before the session answers (3.0 to
-3.2 s), the idle loop is then grown to 12.3 s and the acknowledgement rendered in
-the background (ready 19 s after start) and both are cached under the persona;
-later sessions answer in 0.4 to 0.5 s with everything ready. The idle loop plays
-forward and wraps through a 0.5 s dissolve.
+3.5 s). In the background the first acknowledgement is synthesized and rendered
+(about 5 s), the idle loop is grown to 12.3 s, then two more acknowledgements
+are rendered (everything ready 40 to 42 s after start when a turn happens in
+between); all of it is cached under the persona, and later sessions answer in
+0.4 to 0.9 s with everything ready. The idle loop plays forward over continuous
+segments and dissolves across every boundary and the wrap.
+
+Cold-session turn at 8.7 s after start (uploaded-photo persona, stock voice,
+`assistant-e2e-persona-cold-ack-first.json`): acknowledgement audible 0.20 s after
+the end of speech, reply playing at 10.0 s, 122 frames at 25.0 fps, 0 stalls, 3
+idle segments. Idle frame-to-frame change (mean absolute pixel difference) before
+the turn: median 0.34, max 2.6; after the reply, while the loop grew from 5 s to
+12.3 s: median 0.77, max 3.0, no jump above 6 (the first version of the growing
+loop showed jumps of 8 to 11 when footage was appended). Warm session
+(`assistant-e2e-persona-warm-segments.json`): ready at channel open,
+acknowledgement 0.17 s, 25.0 fps, 0 stalls, max idle change 2.7 after the reply.
 
 | From the endpoint | Bundled voice, turn 1 | Bundled voice, turn 2 (interrupted) | Cloned persona, turn 1 | Cloned persona, turn 2 (interrupted) |
 | --- | ---: | ---: | ---: | ---: |
