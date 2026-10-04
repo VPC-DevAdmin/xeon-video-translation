@@ -168,9 +168,47 @@ def portrait_checks(image_path: Path) -> dict:
             problems.append("too bright; reduce the light")
         if len(faces) > 1:
             problems.append("more than one face in frame")
+        warnings = []
+        border = np.concatenate([gray[: h // 8].ravel(), gray[-h // 8:].ravel(), gray[:, : w // 8].ravel(), gray[:, -w // 8:].ravel()])
+        surround = float(border.mean())
+        result["surround_brightness"] = round(surround, 1)
+        if surround > brightness + 45:
+            warnings.append("you are backlit (window or lamp behind you); face the light so your face is brighter than the background")
+        if fh < 180:
+            warnings.append(f"face is only {int(fh)} px tall in the capture; move closer or use a higher-resolution camera")
+        result["warnings"] = warnings
     result["problems"] = problems
     result["ok"] = not problems
     return result
+
+
+def render_portrait(image_path: Path, out_path: Path, face_box=None) -> dict | None:
+    """Square head-and-shoulders crop centred on the face for the renderer.
+
+    FlashHead regenerates the whole 512 px canvas, so a face that fills about half of
+    it gets several times the pixels of a face in a wide webcam frame."""
+    import cv2
+
+    image = cv2.imread(str(image_path))
+    if image is None:
+        return None
+    h, w = image.shape[:2]
+    if face_box is None:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+        faces = cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(max(40, w // 10), max(40, h // 10)))
+        if len(faces) == 0:
+            return None
+        face_box = max(faces, key=lambda f: f[2] * f[3])
+    x, y, fw, fh = [int(v) for v in face_box]
+    side = int(min(max(fh * 2.1, fw * 2.1), min(w, h)))
+    cx, cy = x + fw / 2, y + fh / 2 + fh * 0.12          # a little below the face centre: room for shoulders
+    x0 = int(min(max(0, cx - side / 2), w - side))
+    y0 = int(min(max(0, cy - side / 2), h - side))
+    crop = image[y0: y0 + side, x0: x0 + side]
+    crop = cv2.resize(crop, (768, 768), interpolation=cv2.INTER_AREA if side > 768 else cv2.INTER_CUBIC)
+    cv2.imwrite(str(out_path), crop)
+    return {"crop": [x0, y0, side, side], "face_height_ratio": round(fh / side, 3), "source_face_px": fh}
 
 
 # ------------------------------------------------------------------ building
@@ -201,6 +239,8 @@ def _build(directory: Path, language: str, script: str) -> dict:
             voice["problems"].append("the words did not match the script well enough; read the script shown")
             voice["ok"] = False
     portrait = portrait_checks(directory / "portrait.png")
+    if portrait.get("face_box"):
+        portrait["render_crop"] = render_portrait(directory / "portrait.png", directory / "portrait_render.png", portrait["face_box"])
     idle = None
     if (directory / "idle.upload").exists():
         encoder = os.environ.get("VIDEO_ENCODER", "libx264")
@@ -316,7 +356,9 @@ async def create(name: str = Form(..., min_length=1, max_length=80), language: s
               "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
               "consent": {"version": CONSENT_VERSION, "text": CONSENT_TEXT, "accepted_at": time.time()},
               "script": script, "checks": checks, "status": "ready" if ok else "rejected",
-              "files": {"portrait": str(directory / "portrait.png"), "voice": str(directory / "voice.wav"),
+              "files": {"portrait": str(directory / "portrait.png"),
+                        "portrait_render": str(directory / "portrait_render.png") if (directory / "portrait_render.png").exists() else None,
+                        "voice": str(directory / "voice.wav"),
                         "idle": str(directory / "idle.mp4") if (directory / "idle.mp4").exists() else None,
                         "conditioning": str(directory / "voice.pt") if (directory / "voice.pt").exists() else None}}
     for name_ in ("voice.upload", "idle.upload"):
@@ -353,6 +395,13 @@ def list_personas() -> dict:
 def get(persona_id: str) -> dict:
     record = _load(persona_id)
     check_owner(record)
+    render = ROOT / persona_id / "portrait_render.png"
+    if not render.exists() and Path(record["files"]["portrait"]).exists():
+        info = render_portrait(Path(record["files"]["portrait"]), render, (record.get("checks", {}).get("portrait") or {}).get("face_box"))
+        if info:
+            record["files"]["portrait_render"] = str(render)
+            record.setdefault("checks", {}).setdefault("portrait", {})["render_crop"] = info
+            (ROOT / persona_id / "persona.json").write_text(json.dumps(record, indent=1))
     return record
 
 

@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 
-type Checks = { voice?: Record<string, unknown> & { problems?: string[]; ok?: boolean }; portrait?: Record<string, unknown> & { problems?: string[]; ok?: boolean }; idle?: unknown };
+type Checks = { voice?: Record<string, unknown> & { problems?: string[]; warnings?: string[]; ok?: boolean }; portrait?: Record<string, unknown> & { problems?: string[]; warnings?: string[]; ok?: boolean }; idle?: unknown };
 type Script = { language: string; text: string; rules: { portrait: string; idle_seconds: number; voice_min_seconds: number; voice_target_seconds: number; voice_max_seconds: number }; consent: { version: string; text: string } };
 type Props = { language: string; onDone: (persona: { id: string; name: string }) => void; onCancel: () => void };
 
@@ -137,7 +137,10 @@ export default function PersonaWizard({ language, onDone, onCancel }: Props) {
     } catch (e) { setError(String(e)); } finally { setBusy(""); }
   }
 
-  const problems = (c?: { problems?: string[] }) => c?.problems?.length ? <ul className="list-disc ml-5 text-red-600">{c.problems.map((p, i) => <li key={i}>{p}</li>)}</ul> : <p className="text-green-700">OK</p>;
+  const problems = (c?: { problems?: string[]; warnings?: string[] }) => <>
+    {c?.problems?.length ? <ul className="list-disc ml-5 text-red-600">{c.problems.map((p, i) => <li key={i}>{p}</li>)}</ul> : <p className="text-green-700">OK</p>}
+    {c?.warnings?.length ? <ul className="list-disc ml-5 text-amber-600">{c.warnings.map((p, i) => <li key={i}>{p}</li>)}</ul> : null}
+  </>;
 
   return <section className="rounded border border-ink-200 p-4 space-y-3">
     <div className="flex items-center justify-between"><h2 className="text-xl font-semibold">Use this person</h2><button className={SECONDARY} onClick={() => { stopStream(); onCancel(); }}>Close</button></div>
@@ -154,10 +157,11 @@ export default function PersonaWizard({ language, onDone, onCancel }: Props) {
 
     {step === "portrait" && script && <div className="space-y-3">
       <p>{script.rules.portrait}</p>
-      <div className="relative inline-block">
-        <video ref={video} autoPlay playsInline muted className="rounded bg-black w-full max-w-md aspect-video" />
-        <div aria-hidden className="pointer-events-none absolute inset-0 flex items-center justify-center"><div className="border-2 border-white/80 rounded-[50%] w-[38%] h-[80%]" /></div>
+      <div className="relative inline-block w-full max-w-sm">
+        <video ref={video} autoPlay playsInline muted className="rounded bg-black w-full aspect-square object-cover" />
+        <div aria-hidden className="pointer-events-none absolute inset-0 flex items-center justify-center"><div className="border-2 border-white/80 rounded-[50%] w-[44%] h-[58%] -translate-y-[6%]" /></div>
       </div>
+      <p className="text-sm text-ink-400">Fill the oval with your face. Light should fall on your face, not come from behind you.</p>
       <div className="flex gap-3 items-center">
         <button className={PRIMARY} onClick={capturePortrait} disabled={!cameraReady}>{portrait ? "Capture again" : "Capture portrait"}</button>
         {portraitUrl && <img src={portraitUrl} alt="captured portrait" className="w-24 h-24 rounded object-cover" />}

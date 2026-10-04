@@ -249,7 +249,12 @@ class Assistant:
 
     def _cache_file(self, kind: str) -> Path | None:
         directory = self._cache_dir()
-        return None if directory is None else directory / f"{kind}-{self.language}-{self.voice or 'persona'}.npz"
+        if directory is None:
+            return None
+        # Keyed by the portrait's content so a re-cropped or replaced portrait is re-rendered.
+        import hashlib
+        digest = hashlib.sha256((self.directory / "image.png").read_bytes()).hexdigest()[:12]
+        return directory / f"{kind}-{self.language}-{self.voice or 'persona'}-{digest}.npz"
 
     async def _save_cache(self, kind: str, **arrays) -> None:
         path = self._cache_file(kind)
@@ -625,7 +630,7 @@ async def _persona_portrait(persona_id: str, owner_id: str) -> bytes:
         record = response.json()
     if record.get("status") != "ready":
         raise HTTPException(409, "persona is not ready")
-    portrait = Path(record["files"]["portrait"])
+    portrait = Path(record["files"].get("portrait_render") or record["files"]["portrait"])
     if not portrait.is_relative_to(ROOT.parent) or not portrait.exists():
         raise HTTPException(502, "persona portrait is not visible to the media service")
     return portrait.read_bytes()
@@ -654,7 +659,7 @@ async def create(image: UploadFile | None = File(None), language: str = Form("en
         if picture.width * picture.height > 20_000_000:
             raise ValueError("image too large")
         picture = picture.convert("RGB")
-        picture.thumbnail((768, 768))
+        picture.thumbnail((1024, 1024))
     except Exception as exc:
         raise HTTPException(422, "upload a valid portrait image") from exc
     identifier = uuid.uuid4().hex
