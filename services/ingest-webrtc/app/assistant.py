@@ -198,6 +198,7 @@ class Assistant:
         self.turn = None
         self.background = None
         self.monitor_task = None
+        self.last_playout_start = -10.0
         self.expiry = None
         self.closed = False
         self.owner = "local"
@@ -367,6 +368,7 @@ class Assistant:
             placed = tl.schedule(tl.now() + 0.1, self.ack[0], self.ack[1], generation)
             if placed:
                 ack_end = placed[1]
+                self.last_playout_start = placed[0]
                 self.metrics["ack_start_seconds"].append(round(placed[0] - t0, 2))
                 self.notify("acknowledging", seconds=round(placed[1] - placed[0], 2))
 
@@ -444,6 +446,7 @@ class Assistant:
             async def announce():
                 await asyncio.sleep(max(0.0, start - tl.now()))
                 if generation == tl.generation:
+                    self.last_playout_start = tl.now()
                     self.notify("speaking")
             asyncio.create_task(announce())
 
@@ -509,9 +512,15 @@ class Assistant:
             await self.close()
             return
         endpoint = float(os.getenv("AVATAR_ENDPOINT_SECONDS", "0.6"))
+        # Echo guard: while the assistant is audible, the microphone also hears it
+        # through the speakers. Speech then has to be sustained (and louder than the
+        # recent echo level) before it counts as the user talking over the reply.
+        barge_in = float(os.getenv("ASSISTANT_BARGE_IN_SECONDS", "0.6"))
+        barge_in_gain = float(os.getenv("ASSISTANT_BARGE_IN_GAIN", "2.0"))
         resampler = av.AudioResampler(format="s16", layout="mono", rate=16000)
         preroll = deque(maxlen=10)
         utterance, silence, total, active = [], 0.0, 0.0, False
+        candidate, echo_level = 0.0, 0.0
         try:
             while True:
                 frame = await track.recv()
@@ -519,11 +528,29 @@ class Assistant:
                     samples = audio_frame.to_ndarray().reshape(-1).copy()
                     duration = len(samples) / 16000
                     voiced = detector.speech(samples)
+                    level = float(np.sqrt(np.mean(samples.astype(np.float32) ** 2)))
+                    speaking = self.timeline.active(self.timeline.now()) is not None
+                    if speaking and not active and self.timeline.now() - self.last_playout_start < 0.4:
+                        preroll.append(samples)
+                        continue
+                    if speaking and not active:
+                        # Track how loud the echo is; only sustained, clearly louder sound starts a turn.
+                        if not voiced:
+                            echo_level = 0.9 * echo_level + 0.1 * level
+                            candidate = 0.0
+                        else:
+                            echo_level = max(echo_level, 0.0)
+                            candidate = candidate + duration if level > barge_in_gain * max(echo_level, 50.0) else 0.0
+                        if candidate < barge_in:
+                            preroll.append(samples)
+                            continue
+                        self.metrics["barge_ins"] = self.metrics.get("barge_ins", 0) + 1
                     if voiced and not active:
                         self.interrupt()
                         utterance = list(preroll)
                         total = sum(len(x) for x in utterance) / 16000
                         active = True
+                        candidate = 0.0
                     if active:
                         utterance.append(samples)
                         total += duration

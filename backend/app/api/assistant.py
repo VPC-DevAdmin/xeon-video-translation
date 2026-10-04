@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
 import re
 from pathlib import Path
@@ -24,6 +25,7 @@ from ..pipeline.orchestrator import blocking_call, speech_lock
 from ..pipeline import transcribe, tts
 
 router = APIRouter(prefix="/assistant", tags=["assistant"])
+log = logging.getLogger(__name__)
 SAMPLE_RATE = 24000
 MAX_TOKENS = int(os.getenv("ASSISTANT_MAX_TOKENS", "220"))
 CHUNK_SAMPLES = int(os.getenv("ASSISTANT_TTS_CHUNK_SAMPLES", "12000"))   # 0.5 s per audio event
@@ -118,6 +120,7 @@ def _generate(body: Turn, path: Path):
         yield {"type": "done", "reply": ""}
         return
     yield {"type": "transcript", "text": transcript.text}
+    log.info("assistant heard: %r", transcript.text[:200])
     history = [{"role": m["role"], "content": m.get("content", "")[:2000]}
                for m in body.history if m.get("role") in ("user", "assistant")]
     messages = [
@@ -133,6 +136,7 @@ def _generate(body: Turn, path: Path):
     if not reply:
         yield {"type": "done", "reply": ""}
         return
+    log.info("assistant reply: %r", reply[:200])
     yield {"type": "reply", "text": reply, "sentences": len(split_sentences(reply))}
     yield from _speak_events(reply, body.language, body.voice, body.persona_id)
     yield {"type": "done", "reply": reply}
