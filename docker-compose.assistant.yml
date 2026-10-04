@@ -40,6 +40,23 @@ services:
             - driver: nvidia
               device_ids: ["${FLASHHEAD_GPU:-2}"]
               capabilities: [gpu]
+  # TURN relay for browsers that are not on the box's own network (overlay VPN,
+  # SSH tunnel). Ingest hands both peers time-limited credentials derived from
+  # TURN_SHARED_SECRET (coturn's use-auth-secret scheme). Set in .env:
+  #   TURN_SHARED_SECRET=<random>, TURN_PUBLIC_IP=<address browsers reach>,
+  #   TURN_URLS_JSON=["turn:<ip>:3478?transport=udp","turn:<ip>:3478?transport=tcp","turn:localhost:3478?transport=tcp"]
+  #   ICE_SERVERS_JSON=[{"urls":["stun:<ip>:3478"]}]
+  turn:
+    image: ${TURN_IMAGE:-coturn/coturn:4.6-alpine}
+    container_name: polyglot-turn
+    restart: unless-stopped
+    network_mode: host
+    command: >-
+      -n --listening-port=3478 --listening-ip=0.0.0.0
+      --relay-ip=${TURN_PUBLIC_IP:-127.0.0.1} --external-ip=${TURN_PUBLIC_IP:-127.0.0.1}
+      --min-port=${TURN_MIN_PORT:-49160} --max-port=${TURN_MAX_PORT:-49200}
+      --use-auth-secret --static-auth-secret=${TURN_SHARED_SECRET:-change-me} --realm=${TURN_REALM:-xe7740}
+      --fingerprint --no-tls --no-dtls --no-cli --log-file=stdout
   backend:
     environment:
       # Exercise ASR, streaming TTS and the batched whisper path at start so the

@@ -36,9 +36,9 @@ case "${1:-status}" in
     R="${ASSISTANT_RENDERER_URL:-http://localhost:${FLASHHEAD_PORT:-8094}}"
     if curl -s -m 3 "$R/health" >/dev/null 2>&1; then
       echo "renderer already answering at $R (lab container); not starting the compose flashhead service"
-      "${A[@]}" up -d --no-deps backend llm-gpu frontend ingest-webrtc
+      "${A[@]}" up -d --no-deps backend llm-gpu frontend ingest-webrtc turn
     else
-      "${A[@]}" up -d --no-deps backend llm-gpu frontend flashhead ingest-webrtc
+      "${A[@]}" up -d --no-deps backend llm-gpu frontend flashhead ingest-webrtc turn
     fi
     echo "waiting for the FlashHead warm-up"
     for _ in $(seq 1 60); do
