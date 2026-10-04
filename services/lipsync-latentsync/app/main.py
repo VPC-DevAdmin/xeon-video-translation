@@ -66,12 +66,34 @@ app = FastAPI(
 )
 
 
+_WARMUP_STATE: dict = {"status": "disabled"}
+
+
 @app.on_event("startup")
 def _log_startup() -> None:
     log.info(
         "lipsync-latentsync %s starting — inference_implemented=%s",
         VERSION, INFERENCE_IMPLEMENTED,
     )
+    if os.environ.get("LATENTSYNC_WARMUP", "0") == "1":
+        _WARMUP_STATE["status"] = "running"
+
+        def _warm():
+            try:
+                from .latentsync_driver.inference import WeightPaths, warmup
+
+                weight_paths = WeightPaths.from_cache(MODEL_CACHE_DIR)
+                if weight_paths.missing():
+                    _WARMUP_STATE.update(status="skipped", reason="weights missing")
+                    return
+                seconds = warmup(weight_paths)
+                _WARMUP_STATE.update(status="done", seconds=round(seconds, 1))
+                log.info("warm-up complete in %.1fs (pipeline, pool, detector sessions)", seconds)
+            except Exception as exc:  # the first request will retry and surface the error
+                _WARMUP_STATE.update(status="failed", error=f"{type(exc).__name__}: {exc}")
+                log.exception("warm-up failed")
+
+        threading.Thread(target=_warm, name="latentsync-warmup", daemon=True).start()
 
 
 # --------------------------------------------------------------------------- #
@@ -273,6 +295,7 @@ def health() -> dict:
         "dtype": os.environ.get("LATENTSYNC_DTYPE")
         or os.environ.get("LATENTSYNC_IPEX_DTYPE", "fp16 on cuda / fp32 on cpu"),
         "shard_mode": os.environ.get("LATENTSYNC_SHARD_MODE", "process"),
+        "warmup": _WARMUP_STATE,
         "video_encoder": os.environ.get("LATENTSYNC_VIDEO_ENCODER", "h264_nvenc on cuda / libx264 on cpu"),
         # CPU-only accelerators; reported so a CPU operator can confirm them.
         "ipex_dtype": os.environ.get("LATENTSYNC_IPEX_DTYPE", "fp32"),

@@ -676,24 +676,38 @@ class LipsyncPipeline(DiffusionPipeline):
         out_frames = []
         total = len(faces)
         print(f"Restoring {total} faces...")
-        for index, face in enumerate(tqdm.tqdm(faces)):
-            x1, y1, x2, y2 = boxes[index]
-            height = int(y2 - y1)
-            width = int(x2 - x1)
-            face = torchvision.transforms.functional.resize(
-                face.to(self._execution_device), size=(height, width), interpolation=transforms.InterpolationMode.BICUBIC, antialias=True
-            )
-            out_frame = self.image_processor.restorer.restore_img(video_frames[index], face, affine_matrices[index])
-            out_frames.append(out_frame)
-            # Per-frame progress. Caller gets a 0.0–1.0 fraction over
-            # the restore phase; __call__ maps it into the pipeline's
-            # 0.90–0.98 budget.
+        restorer = self.image_processor.restorer
+        device = self._execution_device
+        # Frames travel host->device and device->host once per batch rather
+        # than once per frame; the per-frame math is unchanged.
+        batch = max(1, int(os.environ.get("LATENTSYNC_RESTORE_BATCH", "16")))
+        debug = os.environ.get("LATENTSYNC_DEBUG_DUMP", "0") == "1"
+        for start in range(0, total, batch):
+            stop = min(total, start + batch)
+            frames_t = torch.from_numpy(np.ascontiguousarray(video_frames[start:stop])).to(
+                device=restorer.device, dtype=restorer.dtype, non_blocking=True
+            ).permute(0, 3, 1, 2)
+            composited = []
+            for index in range(start, stop):
+                x1, y1, x2, y2 = boxes[index]
+                height = int(y2 - y1)
+                width = int(x2 - x1)
+                face = torchvision.transforms.functional.resize(
+                    faces[index].to(device), size=(height, width),
+                    interpolation=transforms.InterpolationMode.BICUBIC, antialias=True,
+                )
+                composited.append(
+                    restorer.restore_on_device(frames_t[index - start], face, affine_matrices[index], debug=debug)
+                )
+            out = torch.stack(composited).clamp(0, 255).to(torch.uint8).permute(0, 2, 3, 1).contiguous()
+            out_frames.append(out.cpu().numpy())
+            # Progress over the restore phase; __call__ maps it into 0.90–0.98.
             if progress_callback is not None:
                 try:
-                    progress_callback((index + 1) / total)
+                    progress_callback(stop / total)
                 except Exception:
                     pass
-        return np.stack(out_frames, axis=0)
+        return np.concatenate(out_frames, axis=0)
 
     def loop_video(self, whisper_chunks: list, video_frames: np.ndarray, landmarks=None):
         # If the audio is longer than the video, we need to loop the video
@@ -1068,30 +1082,48 @@ class LipsyncPipeline(DiffusionPipeline):
                         chunk_cond.append(None)
                         continue
 
-                    # 7. Prepare mask latent variables
-                    mask_latents, masked_image_latents = self.prepare_mask_latents(
-                        masks,
-                        masked_pixel_values,
-                        height,
-                        width,
-                        weight_dtype,
-                        device,
-                        generator,
-                        do_classifier_free_guidance,
-                    )
-                    # 8. Prepare image latents
-                    ref_latents = self.prepare_image_latents(
-                        ref_pixel_values,
-                        device,
-                        weight_dtype,
-                        generator,
-                        do_classifier_free_guidance,
-                    )
-                    cond = (latents, mask_latents, masked_image_latents, ref_latents,
-                            audio_embeds, ref_pixel_values, masks)
-                    chunk_cond.append(cond)
-                    todo_count[0] += 1
-                    if use_pool:
+                    worker_conditioning = use_pool and os.environ.get(
+                        "LATENTSYNC_WORKER_CONDITIONING", "1"
+                    ) == "1"
+                    if worker_conditioning:
+                        # The worker encodes masks/masked/reference crops with
+                        # its own VAE (shard_workers.py). Profiling showed the
+                        # coordinator spending ~50% of its time in the VAE
+                        # encode and the sync it forced; the pixel crops are
+                        # ~19 MB per chunk over /dev/shm, which is cheap.
+                        cond = (latents, None, None, None, audio_embeds, ref_pixel_values, masks)
+                        chunk_cond.append(cond)
+                        todo_count[0] += 1
+                        pool.submit(i, ("pixels", *(
+                            x.detach().to("cpu") for x in (latents, masks, masked_pixel_values, ref_pixel_values)
+                        ), None if audio_embeds is None else audio_embeds.detach().to("cpu")))
+                    else:
+                        # 7. Prepare mask latent variables
+                        mask_latents, masked_image_latents = self.prepare_mask_latents(
+                            masks,
+                            masked_pixel_values,
+                            height,
+                            width,
+                            weight_dtype,
+                            device,
+                            generator,
+                            do_classifier_free_guidance,
+                        )
+                        # 8. Prepare image latents
+                        ref_latents = self.prepare_image_latents(
+                            ref_pixel_values,
+                            device,
+                            weight_dtype,
+                            generator,
+                            do_classifier_free_guidance,
+                        )
+                        cond = (latents, mask_latents, masked_image_latents, ref_latents,
+                                audio_embeds, ref_pixel_values, masks)
+                        chunk_cond.append(cond)
+                        todo_count[0] += 1
+                    if worker_conditioning:
+                        pass
+                    elif use_pool:
                         pool.submit(i, tuple(
                             None if x is None else x.detach().to("cpu")
                             for x in (latents, mask_latents, masked_image_latents, ref_latents, audio_embeds)

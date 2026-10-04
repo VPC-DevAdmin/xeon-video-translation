@@ -5,6 +5,38 @@ import torch
 INSIGHTFACE_DETECT_SIZE = 512
 
 
+def _trimmed_pack_root(root: str, pack: str, keep: tuple) -> str:
+    """Return a root whose models/<pack>/ holds only `keep` (hard links or
+    copies of the originals). Falls back to `root` if anything is missing."""
+    import os
+    import shutil
+
+    source = os.path.join(root, "models", pack)
+    if not all(os.path.exists(os.path.join(source, name)) for name in keep):
+        return root
+    trimmed_root = os.path.join(root, "trimmed")
+    target = os.path.join(trimmed_root, "models", pack)
+    try:
+        os.makedirs(target, exist_ok=True)
+        for name in keep:
+            dst = os.path.join(target, name)
+            src = os.path.join(source, name)
+            if os.path.exists(dst) and os.path.getsize(dst) == os.path.getsize(src):
+                continue
+            if os.path.exists(dst):
+                os.remove(dst)
+            try:
+                os.link(src, dst)
+            except OSError:
+                shutil.copyfile(src, dst)
+        for name in os.listdir(target):
+            if name not in keep:
+                os.remove(os.path.join(target, name))
+    except OSError:
+        return root
+    return trimmed_root
+
+
 class FaceDetector:
     def __init__(self, device="cuda"):
         # CPU patch: route CPU device names through onnxruntime's CPU
@@ -22,6 +54,12 @@ class FaceDetector:
             "INSIGHTFACE_ROOT",
             os.path.join(os.environ.get("MODEL_CACHE_DIR", "/models"), "insightface"),
         )
+        # insightface parses every ONNX file in the pack before applying
+        # allowed_modules, and with the pure-python protobuf this image is
+        # pinned to (mediapipe 0.10.11 needs protobuf 3.x) that is 36 s for
+        # the 340 MB buffalo_l pack. Only det_10g and 2d106det are used, so
+        # expose a view of the pack containing just those two files.
+        root = _trimmed_pack_root(root, "buffalo_l", ("det_10g.onnx", "2d106det.onnx"))
         self.app = FaceAnalysis(
             allowed_modules=["detection", "landmark_2d_106"],
             root=root,

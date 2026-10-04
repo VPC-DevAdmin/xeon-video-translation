@@ -90,7 +90,28 @@ def _worker_main(dev_index: int, in_q, out_q, build: dict) -> None:  # pragma: n
                 continue
             try:
                 with torch.inference_mode():
-                    lat, ml, mil, rl, ae = (None if x is None else x.to(device, non_blocking=True) for x in cond)
+                    if len(cond) == 6 and cond[0] == "pixels":
+                        # Worker-side conditioning: the coordinator sends the
+                        # masks and 256 px pixel crops; this process encodes
+                        # them with its own VAE so the coordinator's single
+                        # thread no longer serialises a VAE pass per chunk.
+                        _, lat, masks, masked, ref, ae = (
+                            None if x is None else x.to(device, non_blocking=True) for x in cond
+                        )
+                        import torch.nn.functional as F
+                        vsf = 2 ** (len(vae.config.block_out_channels) - 1)
+                        ml = F.interpolate(masks, size=(masked.shape[-2] // vsf, masked.shape[-1] // vsf))
+                        mil = vae.encode(masked.to(dtype)).latent_dist.sample()
+                        mil = (mil - vae.config.shift_factor) * vae.config.scaling_factor
+                        rl = vae.encode(ref.to(dtype)).latent_dist.sample()
+                        rl = (rl - vae.config.shift_factor) * vae.config.scaling_factor
+                        ml = rearrange(ml.to(dtype), "f c h w -> 1 c f h w")
+                        mil = rearrange(mil, "f c h w -> 1 c f h w")
+                        rl = rearrange(rl, "f c h w -> 1 c f h w")
+                        if cfg:
+                            ml, mil, rl = (torch.cat([x] * 2) for x in (ml, mil, rl))
+                    else:
+                        lat, ml, mil, rl, ae = (None if x is None else x.to(device, non_blocking=True) for x in cond)
                     step_kwargs = {"eta": eta} if accepts_eta else {}
                     for t in timesteps:
                         unet_input = torch.cat([lat] * 2) if cfg else lat

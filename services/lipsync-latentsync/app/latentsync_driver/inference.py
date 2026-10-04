@@ -276,6 +276,7 @@ def _run_impl(
     request_temp_dir: str | None = None,
     face_track_source: Path | str | None = None,
     face_track_offset_frames: int = 0,
+    prepare_only: bool = False,
 ) -> InferenceResult:
     """Run LatentSync inference. All tensor ops are CPU float32.
 
@@ -296,9 +297,9 @@ def _run_impl(
             f"{[str(p) for p in missing]}. "
             "Run `make models-latentsync` on the host."
         )
-    if not video_path.exists():
+    if not prepare_only and not video_path.exists():
         raise RuntimeError(f"video_path not found: {video_path}")
-    if not audio_path.exists():
+    if not prepare_only and not audio_path.exists():
         raise RuntimeError(f"audio_path not found: {audio_path}")
     if not _UNET_CONFIG_PATH.exists():
         raise FileNotFoundError(
@@ -562,6 +563,12 @@ def _run_impl(
             "Image was likely built without the latentsync/utils/ assets."
         )
 
+    if prepare_only:
+        # Warm-up path (service startup): models, worker pool and the ONNX
+        # detector sessions are built and cached; no media is touched.
+        pipeline.ensure_image_processor(int(config.data.resolution), str(mask_image_path))
+        return None
+
     # Temp dir for intermediate frames/audio — cleaned up by the pipeline
     # internally. We write under /tmp so the `jobs` volume only gets
     # the final mp4.
@@ -722,6 +729,20 @@ def _run_impl(
 
 
 _RUN_LOCK = _threading.Lock()
+
+
+def warmup(weight_paths) -> float:
+    """Build and cache everything a first request would otherwise pay for
+    (pipeline ~24 s, denoise pool ~14 s, ONNX detector sessions). Returns
+    the seconds spent. Called from the service startup hook."""
+    started = time.perf_counter()
+    with _RUN_LOCK:
+        _run_impl(
+            video_path=Path("/nonexistent"), audio_path=Path("/nonexistent"),
+            output_path=Path("/nonexistent"), weight_paths=weight_paths, prepare_only=True,
+        )
+    return time.perf_counter() - started
+
 
 def run(**kwargs):
     import tempfile

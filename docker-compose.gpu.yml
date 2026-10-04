@@ -145,6 +145,8 @@ services:
       CUDA_VISIBLE_DEVICES: "0,1,2,3,4,5,6,7"
       NVIDIA_DRIVER_CAPABILITIES: compute,utility,video
       LATENTSYNC_DTYPE: fp16
+      # Build pipeline, worker pool and detector sessions at startup (~75 s cold).
+      LATENTSYNC_WARMUP: ${LATENTSYNC_WARMUP:-1}
       LATENTSYNC_VIDEO_ENCODER: h264_nvenc
       LATENTSYNC_STEPS: "10"
       LATENTSYNC_GUIDANCE: "1.5"
@@ -257,6 +259,7 @@ services:
       # (docs/latentsync-pipeline.md §5) was specific to CPU bf16 autocast
       # and does not apply here; re-run the stability metric to confirm.
       LATENTSYNC_DTYPE: ${LATENTSYNC_DTYPE:-fp16}
+      LATENTSYNC_WARMUP: ${LATENTSYNC_WARMUP:-1}
       LATENTSYNC_VIDEO_ENCODER: h264_nvenc
       # CPU-only knobs; harmless but meaningless here.
       KMP_AFFINITY: ""

@@ -79,3 +79,30 @@ def test_load_or_build_rejects_faceless_clips(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError, match="no face detected"):
         ft.load_or_build(source, model_cache_dir=tmp_path, fps=25, extract=lambda f: None,
                          smooth_window=1, max_miss_ratio=0.5, frame_budget_bytes=10**9)
+
+
+def _load_trimmed_pack_root():
+    """face_detector imports torch/insightface; lift just the helper (same trick as test_worker_protocol)."""
+    import ast, types
+    path = Path(__file__).parents[1] / "app/latentsync/utils/face_detector.py"
+    module = ast.parse(path.read_text())
+    node = next(n for n in module.body if isinstance(n, ast.FunctionDef) and n.name == "_trimmed_pack_root")
+    ns = {}
+    exec(compile(ast.Module(body=[node], type_ignores=[]), str(path), "exec"), ns)
+    return types.SimpleNamespace(_trimmed_pack_root=ns["_trimmed_pack_root"])
+
+
+def test_trimmed_insightface_pack_keeps_only_used_models(tmp_path):
+    fd = _load_trimmed_pack_root()
+
+    pack = tmp_path / "models" / "buffalo_l"
+    pack.mkdir(parents=True)
+    for name, size in (("det_10g.onnx", 10), ("2d106det.onnx", 5), ("w600k_r50.onnx", 100), ("1k3d68.onnx", 80)):
+        (pack / name).write_bytes(b"x" * size)
+    root = fd._trimmed_pack_root(str(tmp_path), "buffalo_l", ("det_10g.onnx", "2d106det.onnx"))
+    kept = sorted(p.name for p in (Path(root) / "models" / "buffalo_l").iterdir())
+    assert kept == ["2d106det.onnx", "det_10g.onnx"]
+    # idempotent and stable
+    assert fd._trimmed_pack_root(str(tmp_path), "buffalo_l", ("det_10g.onnx", "2d106det.onnx")) == root
+    # missing source file -> untouched root
+    assert fd._trimmed_pack_root(str(tmp_path), "other", ("a.onnx",)) == str(tmp_path)
