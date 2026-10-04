@@ -133,6 +133,10 @@ class Timeline:
         if self._last_index is not None:
             self._cursor += max(0, index - self._last_index)
         self._last_index = index
+        if self.idle_segments:
+            # Keep the cursor inside the loop as it is now; footage published afterwards
+            # only extends the loop beyond it, so growth never changes the frame shown.
+            self._cursor %= idle_loop_length(self.idle_segments, self.idle_crossfade)
         self._publish_idle()
         clip = self.active(seconds)
         if clip is not None:
@@ -170,10 +174,19 @@ class Timeline:
         return out
 
 
+def _held(segments, crossfade: int) -> list[int]:
+    return [max(0, min(int(crossfade), len(s) // 2 - 1)) for s in segments]
+
+
+def idle_loop_length(segments, crossfade: int) -> int:
+    """Frames in one pass of the loop (each segment minus the frames held for its dissolve)."""
+    return sum(len(s) - k for s, k in zip(segments, _held(segments, crossfade)))
+
+
 def idle_loop_locate(segments, position: int, crossfade: int):
     """(segment index, frame within its play region, frames of the previous segment's
     continuation that dissolve into this one) for a loop position."""
-    held = [max(0, min(int(crossfade), len(s) // 2 - 1)) for s in segments]
+    held = _held(segments, crossfade)
     lengths = [len(s) - k for s, k in zip(segments, held)]
     j = position % sum(lengths)
     index = 0

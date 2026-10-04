@@ -130,3 +130,15 @@ def test_idle_growth_waits_while_the_wrap_dissolve_is_on_screen():
     assert len(tl.idle_segments[0]) == 10
     tl.frame_at(10 / 4)                                                        # j=2: out of the dissolve, publish
     assert len(tl.idle_segments[0]) == 16 and not tl._pending_idle
+
+
+def test_idle_loop_growth_after_a_wrap_does_not_jump():
+    """Once the cursor has wrapped, a longer loop must not change where it lands."""
+    a = np.arange(0, 100, 10, dtype=np.uint8)[:, None, None, None]            # loop of 8 (k = 2)
+    tl = Timeline(fps=4, idle_frames=a, transition_seconds=0)
+    for t in range(13):
+        tl.frame_at(t / 4)                                                     # second pass, position 12 -> j = 4 (frame 40)
+    assert int(tl.frame_at(13 / 4)[0].reshape(-1)[0]) == 50
+    tl.add_idle(np.full((20, 1, 1, 1), 200, np.uint8), continuous=False)       # new segment: loop grows to 26
+    assert int(tl.frame_at(14 / 4)[0].reshape(-1)[0]) == 60                    # still the next frame, not 14 % 26
+    assert int(tl.frame_at(15 / 4)[0].reshape(-1)[0]) == 70
