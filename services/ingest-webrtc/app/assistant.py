@@ -289,8 +289,6 @@ class Assistant:
             "total_seconds": round(time.monotonic() - started, 2)}
         if not (cached["idle"] and cached["ack"]):
             self.background = asyncio.create_task(self.finish_prepare(grow_idle=not cached["idle"], make_ack=not cached["ack"]))
-        else:
-            self.notify("ready", idle_seconds=round(len(self.timeline.idle_frames) / FPS, 1))
         return self.metrics["prepare"]
 
     def turn_active(self) -> bool:
@@ -672,6 +670,9 @@ async def offer(identifier: str, body: Offer):
     @pc.on("datachannel")
     def on_channel(channel):
         session.channel = channel
+        if session.ack is not None and (session.background is None or session.background.done()):
+            # Everything was cached: tell the client now that the channel exists.
+            session.notify("ready", idle_seconds=round(len(session.timeline.idle_frames) / FPS, 1), cached=True)
 
         @channel.on("message")
         def message(value):
