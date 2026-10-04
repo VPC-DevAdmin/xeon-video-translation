@@ -241,78 +241,93 @@ class Assistant:
             frames.append(rendered)
         return np.concatenate(frames) if frames else np.zeros((0, 1, 1, 3), np.uint8)
 
-    def _cache_path(self) -> Path | None:
+    def _cache_dir(self) -> Path | None:
         if not self.persona_id:
             return None
-        return CACHE_DIR / self.persona_id / "assistant-cache" / f"{self.language}-{self.voice or 'persona'}.npz"
+        return CACHE_DIR / self.persona_id / "assistant-cache"
+
+    def _cache_file(self, kind: str) -> Path | None:
+        directory = self._cache_dir()
+        return None if directory is None else directory / f"{kind}-{self.language}-{self.voice or 'persona'}.npz"
+
+    async def _save_cache(self, kind: str, **arrays) -> None:
+        path = self._cache_file(kind)
+        if path is None:
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".tmp.npz")
+        await asyncio.to_thread(np.savez, str(tmp), **arrays)
+        tmp.rename(path)
 
     async def prepare(self) -> dict:
-        """Open the renderer and get a face on screen fast: a cached idle loop and
-        acknowledgement when this persona has been used before, otherwise two
-        chunks of idle motion now and the rest in the background."""
+        """Open the renderer and get a face on screen fast: the cached idle loop and
+        acknowledgement when this persona has been used before, otherwise two chunks
+        of idle motion now and the rest in the background."""
         started = time.monotonic()
         info = await self.renderer.open(self.directory / "image.png")
         t_open = time.monotonic()
-        cache = self._cache_path()
-        cached = False
-        if cache and cache.exists():
-            try:
-                data = await asyncio.to_thread(np.load, str(cache))
-                self.timeline.idle_frames = data["idle"]
-                self.ack = (data["ack_audio48"], data["ack_frames"])
-                cached = True
-            except Exception:
-                cached = False
-        if not cached:
-            idle = await self.render_all(np.zeros(self.renderer.samples * IDLE_CHUNKS, np.int16))
-            self.timeline.idle_frames = idle
+        cached = {"idle": False, "ack": False}
+        for kind in ("idle", "ack"):
+            path = self._cache_file(kind)
+            if path and path.exists():
+                try:
+                    data = await asyncio.to_thread(np.load, str(path))
+                    if kind == "idle":
+                        self.timeline.idle_frames = data["idle"]
+                    else:
+                        self.ack = (data["audio48"], data["frames"])
+                    cached[kind] = True
+                except Exception:
+                    pass
+        if not cached["idle"]:
+            self.timeline.idle_frames = await self.render_all(np.zeros(self.renderer.samples * IDLE_CHUNKS, np.int16))
         self.metrics["prepare"] = {
             "cached": cached, "renderer_open_seconds": round(t_open - started, 2),
             "idle_seconds_ready": round(len(self.timeline.idle_frames) / FPS, 2),
             "ack_ready": self.ack is not None,
             "chunk": {k: info[k] for k in ("frames_per_chunk", "samples_per_chunk", "seconds_per_chunk")},
             "total_seconds": round(time.monotonic() - started, 2)}
-        if not cached:
-            self.background = asyncio.create_task(self.finish_prepare())
+        if not (cached["idle"] and cached["ack"]):
+            self.background = asyncio.create_task(self.finish_prepare(grow_idle=not cached["idle"], make_ack=not cached["ack"]))
+        else:
+            self.notify("ready", idle_seconds=round(len(self.timeline.idle_frames) / FPS, 1))
         return self.metrics["prepare"]
 
     def turn_active(self) -> bool:
         return self.turn is not None and not self.turn.done()
 
-    async def finish_prepare(self) -> None:
-        """Grow the idle loop to IDLE_SECONDS (continuing the motion), render the
-        acknowledgement, then cache both for this persona. Yields to turns."""
+    async def finish_prepare(self, grow_idle: bool = True, make_ack: bool = True) -> None:
+        """Grow the idle loop to IDLE_SECONDS (continuing the motion) and render the
+        acknowledgement, yielding to turns; cache each as soon as it is complete."""
         try:
-            target = int(IDLE_SECONDS * FPS)
-            continuous = True                       # motion state still follows the last idle chunk
-            while len(self.timeline.idle_frames) < target and not self.closed:
-                if self.turn_active():
-                    continuous = False              # a reply moved the renderer's motion state
+            if grow_idle:
+                target = int(IDLE_SECONDS * FPS)
+                continuous = True                   # motion state still follows the last idle chunk
+                while len(self.timeline.idle_frames) < target and not self.closed:
+                    if self.turn_active():
+                        continuous = False          # a reply moved the renderer's motion state
+                        await asyncio.sleep(0.5)
+                        continue
+                    frames, _ = await self.renderer.render(np.zeros(self.renderer.samples, np.int16), not continuous, self.timeline.generation)
+                    continuous = True
+                    if len(frames):
+                        self.timeline.idle_frames = np.concatenate([self.timeline.idle_frames, frames])
+                if not self.closed:
+                    await self._save_cache("idle", idle=self.timeline.idle_frames)
+                    self.metrics["prepare"]["idle_seconds_final"] = round(len(self.timeline.idle_frames) / FPS, 2)
+            if make_ack:
+                while self.turn_active() and not self.closed:
                     await asyncio.sleep(0.5)
-                    continue
-                frames, _ = await self.renderer.render(np.zeros(self.renderer.samples, np.int16), not continuous, self.timeline.generation)
-                continuous = True
-                if len(frames):
-                    self.timeline.idle_frames = np.concatenate([self.timeline.idle_frames, frames])
-            while self.turn_active() and not self.closed:
-                await asyncio.sleep(0.5)
-            if self.closed:
-                return
-            t_ack = time.monotonic()
-            ack_pcm = await self.speak(ack_text(self.language))
-            ack_frames = await self.render_all(resample(ack_pcm, 24000, 16000))
-            self.ack = (resample(ack_pcm, 24000, 48000), ack_frames)
-            self.metrics["prepare"].update({"ack_ready": True, "ack_seconds": round(time.monotonic() - t_ack, 2),
-                                            "ack_audio_seconds": round(len(self.ack[0]) / 48000, 2),
-                                            "idle_seconds_final": round(len(self.timeline.idle_frames) / FPS, 2)})
+                if self.closed:
+                    return
+                t_ack = time.monotonic()
+                ack_pcm = await self.speak(ack_text(self.language))
+                ack_frames = await self.render_all(resample(ack_pcm, 24000, 16000))
+                self.ack = (resample(ack_pcm, 24000, 48000), ack_frames)
+                self.metrics["prepare"].update({"ack_ready": True, "ack_seconds": round(time.monotonic() - t_ack, 2),
+                                                "ack_audio_seconds": round(len(self.ack[0]) / 48000, 2)})
+                await self._save_cache("ack", audio48=self.ack[0], frames=self.ack[1])
             self.notify("ready", idle_seconds=round(len(self.timeline.idle_frames) / FPS, 1))
-            cache = self._cache_path()
-            if cache:
-                cache.parent.mkdir(parents=True, exist_ok=True)
-                tmp = cache.with_suffix(".tmp.npz")
-                await asyncio.to_thread(np.savez, str(tmp), idle=self.timeline.idle_frames,
-                                        ack_frames=self.ack[1], ack_audio48=self.ack[0])
-                tmp.rename(cache)
         except asyncio.CancelledError:
             raise
         except Exception as exc:

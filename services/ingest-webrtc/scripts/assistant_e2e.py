@@ -27,9 +27,18 @@ class Microphone(MediaStreamTrack):
 
     def __init__(self, samples, lead_seconds=2.0):
         super().__init__()
-        self.samples = np.concatenate([np.zeros(int(16000 * lead_seconds), np.int16), samples])
+        self.speech = samples
+        self.samples = np.zeros(int(16000 * lead_seconds), np.int16)
+        self.hold = False                 # while True, keep sending silence; speech is appended on release
         self.index = 0
         self.epoch = None
+
+    def release(self):
+        if self.hold:
+            self.hold = False
+            played = np.zeros(max(self.index, len(self.samples)), np.int16)
+            played[:len(self.samples)] = self.samples
+            self.samples = np.concatenate([played, np.zeros(8000, np.int16), self.speech])
 
     async def recv(self):
         if self.epoch is None:
@@ -51,6 +60,10 @@ async def run(args):
         samples = np.frombuffer(wav.readframes(wav.getnframes()), np.int16)
     pc = RTCPeerConnection()
     mic = Microphone(samples)
+    if args.wait_ready:
+        mic.hold = True
+    else:
+        mic.samples = np.concatenate([mic.samples, samples])
     pc.addTrack(mic)
     pc.addTransceiver("video", direction="recvonly")
     channel = pc.createDataChannel("events")
@@ -70,6 +83,9 @@ async def run(args):
         value["t"] = round(time.monotonic() - epoch, 3)
         events.append(value)
         kind = value.get("type")
+        if kind == "ready":
+            marks.setdefault("ready", time.monotonic())
+            mic.release()
         if kind in ("thinking", "acknowledging", "reply_scheduled", "speaking", "reply", "transcript") and kind not in marks:
             marks[kind] = time.monotonic()
         if kind == "listening":
@@ -120,6 +136,13 @@ async def run(args):
             result = await client.post(f"/assistant/sessions/{session}/offer", json={"sdp": pc.localDescription.sdp, "type": "offer"})
             result.raise_for_status()
             await pc.setRemoteDescription(RTCSessionDescription(**result.json()))
+            if args.wait_ready:
+                deadline = time.monotonic() + args.wait_ready
+                while "ready" not in marks and time.monotonic() < deadline:
+                    await asyncio.sleep(0.2)
+                if mic.hold:
+                    events.append({"type": "ready_timeout", "t": round(time.monotonic() - epoch, 3)})
+                    mic.release()
             try:
                 await asyncio.wait_for(listening_after_reply.wait(), args.timeout)
             except asyncio.TimeoutError:
@@ -154,6 +177,7 @@ async def run(args):
             motion_in_reply = [c for t, c in frame_change if speaking and t >= speaking and (reply_end is None or t <= reply_end)]
             report = {
                 "session": session, "connection": pc.connectionState, "prepare_seconds": round(prepare_seconds, 2),
+                "ready_after_seconds": round(marks["ready"] - created_at, 2) if "ready" in marks else None,
                 "server_prepare": body.get("prepare"),
                 "endpoint_to_ack_audio_seconds": round(first_ack_audio - endpoint, 3) if first_ack_audio and endpoint else None,
                 "endpoint_to_reply_scheduled_event_seconds": round(marks["reply_scheduled"] - endpoint, 3) if "reply_scheduled" in marks and endpoint else None,
@@ -186,5 +210,6 @@ if __name__ == "__main__":
     parser.add_argument("--interrupt-audio", help="second utterance; its reply is interrupted after 2 s")
     parser.add_argument("--ingest", default="http://localhost:8091")
     parser.add_argument("--timeout", type=float, default=120)
+    parser.add_argument("--wait-ready", type=float, default=0, help="hold the utterance until the session reports ready (seconds max)")
     parser.add_argument("--output", required=True)
     raise SystemExit(asyncio.run(run(parser.parse_args())))
