@@ -10,15 +10,23 @@ Services (ingest runs with host networking):
   ASSISTANT_BACKEND_URL   backend with /assistant/respond and /assistant/speak
   ASSISTANT_RENDERER_URL  FlashHead render service (services/flashhead)
 Tuning: ASSISTANT_HEAD_START (s, default 10), ASSISTANT_MAX_HEAD_START (20),
-ASSISTANT_IDLE_CHUNKS (2), ASSISTANT_ACK_TEXT_<LANG>, ASSISTANT_RENDER_TIMEOUT (30).
+ASSISTANT_IDLE_CHUNKS (2), ASSISTANT_IDLE_SECONDS (12), ASSISTANT_ACK_COUNT (3),
+ASSISTANT_ACK_TEXT_<LANG> ("|"-separated phrases), ASSISTANT_RENDER_TIMEOUT (30).
+
+Every renderer call of a session goes through one lock (`Renderer.lock`): idle growth,
+acknowledgements and reply chunks never interleave, and the renderer remembers which
+footage its motion state continues (`Renderer.motion`) so idle growth knows whether
+to extend the current segment or start a new one.
 """
 
 from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 import os
+import random
 import time
 import uuid
 import wave
@@ -48,19 +56,61 @@ HEAD_START = float(os.getenv("ASSISTANT_HEAD_START", "10"))
 MAX_HEAD_START = float(os.getenv("ASSISTANT_MAX_HEAD_START", "20"))
 IDLE_CHUNKS = int(os.getenv("ASSISTANT_IDLE_CHUNKS", "2"))          # rendered before the session answers
 IDLE_SECONDS = float(os.getenv("ASSISTANT_IDLE_SECONDS", "12"))      # grown to this in the background, then looped
+ACK_COUNT = int(os.getenv("ASSISTANT_ACK_COUNT", "3"))               # prepared acknowledgements to rotate through
 CACHE_DIR = Path(os.getenv("JOB_ARTIFACTS_DIR", "./jobs")).resolve() / "personas"
+CACHE_VERSION = 2                                                    # bump when cached footage changes meaning
 RENDER_TIMEOUT = float(os.getenv("ASSISTANT_RENDER_TIMEOUT", "30"))
 FPS = 25
 ACK_TEXT = {
-    "en": "Let me think about that for a second.", "es": "Déjame pensarlo un momento.",
-    "fr": "Laissez-moi réfléchir un instant.", "de": "Lass mich kurz nachdenken.",
-    "it": "Fammi pensare un attimo.", "pt": "Deixe-me pensar um instante.",
-    "zh": "让我想一想。", "ja": "少し考えさせてください。",
+    "en": ["Let me think about that for a second.", "Good question, give me a moment.", "Sure, one moment while I think about it."],
+    "es": ["Déjame pensarlo un momento.", "Buena pregunta, dame un segundo.", "Claro, un momento mientras lo pienso."],
+    "fr": ["Laissez-moi réfléchir un instant.", "Bonne question, donnez-moi un moment.", "Bien sûr, un instant, je réfléchis."],
+    "de": ["Lass mich kurz nachdenken.", "Gute Frage, einen Moment bitte.", "Klar, einen Augenblick, ich überlege."],
+    "it": ["Fammi pensare un attimo.", "Bella domanda, dammi un momento.", "Certo, un attimo che ci penso."],
+    "pt": ["Deixe-me pensar um instante.", "Boa pergunta, me dê um momento.", "Claro, um momento enquanto penso."],
+    "zh": ["让我想一想。", "好问题，请稍等一下。"], "ja": ["少し考えさせてください。", "いい質問ですね、少々お待ちください。"],
 }
 
 
+def ack_texts(language: str) -> list[str]:
+    """The acknowledgement phrases for a language, most natural first."""
+    override = os.getenv(f"ASSISTANT_ACK_TEXT_{language.upper()}")
+    phrases = [t.strip() for t in override.split("|") if t.strip()] if override else (ACK_TEXT.get(language) or ACK_TEXT["en"])
+    return phrases[:max(1, ACK_COUNT)]
+
+
 def ack_text(language: str) -> str:
-    return os.getenv(f"ASSISTANT_ACK_TEXT_{language.upper()}") or ACK_TEXT.get(language) or ACK_TEXT["en"]
+    return ack_texts(language)[0]
+
+
+class PcmQueue:
+    """PCM16 pieces awaiting the renderer; pops whole renderer chunks without
+    re-concatenating everything that is still pending."""
+
+    def __init__(self):
+        self.parts: deque = deque()
+        self.length = 0
+
+    def push(self, samples: np.ndarray) -> None:
+        if len(samples):
+            self.parts.append(samples)
+            self.length += len(samples)
+
+    def __len__(self) -> int:
+        return self.length
+
+    def pop(self, count: int) -> np.ndarray:
+        out, taken = [], 0
+        while self.parts and taken < count:
+            part = self.parts.popleft()
+            room = count - taken
+            if len(part) > room:
+                self.parts.appendleft(part[room:])
+                part = part[:room]
+            out.append(part)
+            taken += len(part)
+        self.length -= taken
+        return np.concatenate(out) if out else np.zeros(0, np.int16)
 
 
 def resample(samples: np.ndarray, src: int, dst: int) -> np.ndarray:
@@ -130,16 +180,28 @@ class Renderer:
         self.client = client
         self.session_id = None
         self.spec = None
+        self.model: dict = {}
         self.chunk_seconds = deque(maxlen=8)
         self.first_chunk_seconds = None
+        self.lock = asyncio.Lock()        # one request per session at a time, in call order
+        self.motion = None                # footage the renderer's motion state continues ("idle", "ack", "reply"); None after a reset
 
     async def open(self, image_path: Path) -> dict:
+        try:
+            health = await self.client.get(f"{RENDERER}/health", timeout=5)
+            self.model = {k: health.json().get(k) for k in ("model", "compile")}
+        except (httpx.HTTPError, ValueError):
+            self.model = {}
         response = await self.client.post(f"{RENDERER}/sessions", json={"image_path": str(image_path), "seed": 42}, timeout=120)
         response.raise_for_status()
         info = response.json()
         self.session_id = info["session_id"]
         self.spec = info
+        self.motion = None
         return info
+
+    def fingerprint(self) -> dict:
+        return {**self.model, "chunk": {k: self.spec.get(k) for k in ("frames_per_chunk", "samples_per_chunk", "seconds_per_chunk")}}
 
     @property
     def samples(self) -> int:
@@ -156,7 +218,12 @@ class Renderer:
             return 0.8
         return self.seconds / (sum(self.chunk_seconds) / len(self.chunk_seconds))
 
-    async def render(self, pcm16k: np.ndarray, reset: bool, generation: int) -> tuple[np.ndarray, float]:
+    async def render(self, pcm16k: np.ndarray, reset: bool, generation: int, motion: str = "reply") -> tuple[np.ndarray, float]:
+        async with self.lock:
+            return await self.render_locked(pcm16k, reset, generation, motion)
+
+    async def render_locked(self, pcm16k: np.ndarray, reset: bool, generation: int, motion: str) -> tuple[np.ndarray, float]:
+        """Render one chunk; the caller holds `self.lock`."""
         started = time.monotonic()
         response = await self.client.post(
             f"{RENDERER}/sessions/{self.session_id}/render",
@@ -170,14 +237,17 @@ class Renderer:
         self.chunk_seconds.append(elapsed)
         if self.first_chunk_seconds is None:
             self.first_chunk_seconds = elapsed
+        self.motion = motion
         return frames, elapsed
 
     async def reset(self) -> None:
         if self.session_id:
-            try:
-                await self.client.post(f"{RENDERER}/sessions/{self.session_id}/reset", timeout=30)
-            except httpx.HTTPError:
-                pass
+            async with self.lock:
+                try:
+                    await self.client.post(f"{RENDERER}/sessions/{self.session_id}/reset", timeout=30)
+                except httpx.HTTPError:
+                    pass
+                self.motion = None
 
     async def close(self) -> None:
         if self.session_id:
@@ -188,9 +258,13 @@ class Renderer:
 
 
 class Assistant:
-    def __init__(self, identifier, directory: Path, still, language, voice, persona_id=None):
+    def __init__(self, identifier, directory: Path, still, language, voice, persona_id=None,
+                 portrait_digest: str = "", voice_digest: str = "", enhance: dict | None = None):
         self.id, self.directory, self.language, self.voice = identifier, directory, language, voice
         self.persona_id = persona_id
+        self.portrait_digest = portrait_digest          # of the portrait as uploaded, before any restoration
+        self.voice_digest = voice_digest                # of the persona's voice conditioning (or the stock voice name)
+        self.enhance = enhance or {}
         self.timeline = Timeline(FPS, still=still)
         self.pc = None
         self.channel = None
@@ -203,7 +277,8 @@ class Assistant:
         self.closed = False
         self.owner = "local"
         self.history: list = []
-        self.ack = None                       # (audio48k, frames)
+        self.acks: list = []                  # (audio48k, frames, text), rotated across turns
+        self.last_ack = -1
         self.client = httpx.AsyncClient(headers={"x-internal-key": os.getenv("INTERNAL_API_KEY", "")})
         self.renderer = Renderer(self.client)
         self.metrics = {"turns": 0, "interruptions": 0, "renderer_errors": 0, "prepare": {},
@@ -233,14 +308,26 @@ class Assistant:
                     raise RuntimeError(event["message"])
         return np.concatenate(parts) if parts else np.zeros(0, np.int16)
 
-    async def render_all(self, pcm16k: np.ndarray, reset: bool = True) -> np.ndarray:
-        """Render a whole clip now (idle loop, acknowledgement); frames trimmed to the audio."""
-        frames = []
+    async def render_all(self, pcm16k: np.ndarray, motion: str) -> np.ndarray:
+        """Render a whole clip (idle footage, an acknowledgement) from the portrait pose.
+        A reply that takes the renderer in between would break the clip's motion, so
+        the clip waits for the turn and starts over when its motion state was moved."""
         step = self.renderer.samples
-        for index, start in enumerate(range(0, max(len(pcm16k), 1), step)):
-            chunk = pcm16k[start: start + step]
-            rendered, _ = await self.renderer.render(chunk, reset and index == 0, self.timeline.generation)
-            frames.append(rendered)
+        starts = list(range(0, max(len(pcm16k), 1), step))
+        frames: list = []
+        while len(frames) < len(starts) and not self.closed:
+            if self.turn_active():
+                await asyncio.sleep(0.25)
+                continue
+            async with self.renderer.lock:
+                if self.turn_active():
+                    continue
+                if frames and self.renderer.motion != motion:
+                    frames = []                          # someone else rendered since our last chunk: restart the clip
+                index = len(frames)
+                chunk = pcm16k[starts[index]: starts[index] + step]
+                rendered, _ = await self.renderer.render_locked(chunk, index == 0, self.timeline.generation, motion)
+                frames.append(rendered)
         return np.concatenate(frames) if frames else np.zeros((0, 1, 1, 3), np.uint8)
 
     def _cache_dir(self) -> Path | None:
@@ -249,13 +336,21 @@ class Assistant:
         return CACHE_DIR / self.persona_id / "assistant-cache"
 
     def _cache_file(self, kind: str) -> Path | None:
+        """Cached footage is only valid for the exact inputs that produced it: the
+        portrait as uploaded, the restoration settings, the renderer model and chunk
+        spec, the frame rate, and (for acknowledgements) the voice and the phrases."""
         directory = self._cache_dir()
         if directory is None:
             return None
-        # Keyed by the portrait's content so a re-cropped or replaced portrait is re-rendered.
-        import hashlib
-        digest = hashlib.sha256((self.directory / "image.png").read_bytes()).hexdigest()[:12]
-        return directory / f"{kind}-{self.language}-{self.voice or 'persona'}-{digest}.npz"
+        parts: dict = {"v": CACHE_VERSION, "kind": kind, "portrait": self.portrait_digest, "enhance": self.enhance,
+                       "renderer": self.renderer.fingerprint(), "fps": FPS}
+        if kind == "idle":
+            parts["seconds"] = IDLE_SECONDS
+        else:
+            parts.update(language=self.language, voice=self.voice or "", voice_digest=self.voice_digest,
+                         texts=ack_texts(self.language))
+        digest = hashlib.sha256(json.dumps(parts, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:16]
+        return directory / f"{kind}-{self.language}-{digest}.npz"
 
     async def _save_cache(self, kind: str, **arrays) -> None:
         path = self._cache_file(kind)
@@ -265,6 +360,9 @@ class Assistant:
         tmp = path.with_name(path.name + ".tmp.npz")
         await asyncio.to_thread(np.savez, str(tmp), **arrays)
         tmp.rename(path)
+        for stale in path.parent.glob(f"{kind}-*.npz"):      # one idle loop and one acknowledgement set per persona
+            if stale != path:
+                stale.unlink(missing_ok=True)
 
     async def prepare(self) -> dict:
         """Open the renderer and get a face on screen fast: the cached idle loop and
@@ -279,19 +377,20 @@ class Assistant:
             if path and path.exists():
                 try:
                     data = await asyncio.to_thread(np.load, str(path))
+                    count = int(data["count"])
                     if kind == "idle":
-                        self.timeline.idle_frames = data["idle"]
+                        self.timeline.idle_segments = [data[f"idle_{i}"] for i in range(count)]
                     else:
-                        self.ack = (data["audio48"], data["frames"])
+                        self.acks = [(data[f"audio48_{i}"], data[f"frames_{i}"], str(data[f"text_{i}"])) for i in range(count)]
                     cached[kind] = True
                 except Exception:
                     pass
         if not cached["idle"]:
-            self.timeline.idle_frames = await self.render_all(np.zeros(self.renderer.samples * IDLE_CHUNKS, np.int16))
+            self.timeline.add_idle(await self.render_all(np.zeros(self.renderer.samples * IDLE_CHUNKS, np.int16), "idle"), False)
         self.metrics["prepare"] = {
             "cached": cached, "renderer_open_seconds": round(t_open - started, 2),
-            "idle_seconds_ready": round(len(self.timeline.idle_frames) / FPS, 2),
-            "ack_ready": self.ack is not None,
+            "idle_seconds_ready": round(self.timeline.idle_seconds(), 2),
+            "ack_ready": bool(self.acks),
             "chunk": {k: info[k] for k in ("frames_per_chunk", "samples_per_chunk", "seconds_per_chunk")},
             "total_seconds": round(time.monotonic() - started, 2)}
         if not (cached["idle"] and cached["ack"]):
@@ -301,38 +400,56 @@ class Assistant:
     def turn_active(self) -> bool:
         return self.turn is not None and not self.turn.done()
 
+    async def make_ack(self, text: str) -> None:
+        """Synthesize and render one acknowledgement clip from the portrait pose."""
+        t_ack = time.monotonic()
+        pcm = await self.speak(text)
+        frames = await self.render_all(resample(pcm, 24000, 16000), "ack")
+        if len(frames):
+            self.acks.append((resample(pcm, 24000, 48000), frames, text))
+        self.metrics["prepare"].update({"ack_ready": bool(self.acks), "acks": len(self.acks),
+                                        "ack_seconds": round(time.monotonic() - t_ack, 2)})
+        self.notify("ack_ready", count=len(self.acks))
+
     async def finish_prepare(self, grow_idle: bool = True, make_ack: bool = True) -> None:
-        """Grow the idle loop to IDLE_SECONDS (continuing the motion) and render the
-        acknowledgement, yielding to turns; cache each as soon as it is complete."""
+        """Background preparation, in the order the user needs it: the first
+        acknowledgement (what they hear when they stop talking), the idle loop grown
+        to IDLE_SECONDS, then the remaining acknowledgements. Yields to turns; each
+        piece is cached as soon as it is complete."""
+        texts = ack_texts(self.language)
         try:
+            if make_ack and not self.acks:
+                await self.make_ack(texts[0])
             if grow_idle:
                 target = int(IDLE_SECONDS * FPS)
-                continuous = True                   # motion state still follows the last idle chunk
-                while len(self.timeline.idle_frames) < target and not self.closed:
+                while self.timeline.idle_frame_count < target and not self.closed:
                     if self.turn_active():
-                        continuous = False          # a reply moved the renderer's motion state
                         await asyncio.sleep(0.5)
                         continue
-                    frames, _ = await self.renderer.render(np.zeros(self.renderer.samples, np.int16), not continuous, self.timeline.generation)
-                    continuous = True
-                    if len(frames):
-                        self.timeline.idle_frames = np.concatenate([self.timeline.idle_frames, frames])
+                    async with self.renderer.lock:
+                        if self.turn_active():
+                            continue
+                        # Extend the current segment while the renderer's motion still follows it;
+                        # after a reply or an acknowledgement, start a new segment from the portrait.
+                        continuous = self.renderer.motion == "idle"
+                        frames, _ = await self.renderer.render_locked(np.zeros(self.renderer.samples, np.int16), not continuous,
+                                                                      self.timeline.generation, "idle")
+                    self.timeline.add_idle(frames, continuous)
                 if not self.closed:
-                    await self._save_cache("idle", idle=self.timeline.idle_frames)
-                    self.metrics["prepare"]["idle_seconds_final"] = round(len(self.timeline.idle_frames) / FPS, 2)
+                    segments = self.timeline.idle_segments
+                    await self._save_cache("idle", count=len(segments), **{f"idle_{i}": seg for i, seg in enumerate(segments)})
+                    self.metrics["prepare"].update(idle_seconds_final=round(self.timeline.idle_seconds(), 2), idle_segments=len(segments))
             if make_ack:
-                while self.turn_active() and not self.closed:
-                    await asyncio.sleep(0.5)
-                if self.closed:
-                    return
-                t_ack = time.monotonic()
-                ack_pcm = await self.speak(ack_text(self.language))
-                ack_frames = await self.render_all(resample(ack_pcm, 24000, 16000))
-                self.ack = (resample(ack_pcm, 24000, 48000), ack_frames)
-                self.metrics["prepare"].update({"ack_ready": True, "ack_seconds": round(time.monotonic() - t_ack, 2),
-                                                "ack_audio_seconds": round(len(self.ack[0]) / 48000, 2)})
-                await self._save_cache("ack", audio48=self.ack[0], frames=self.ack[1])
-            self.notify("ready", idle_seconds=round(len(self.timeline.idle_frames) / FPS, 1))
+                for text in texts[len(self.acks):]:
+                    if self.closed:
+                        return
+                    await self.make_ack(text)
+                if self.acks and not self.closed:
+                    arrays = {"count": len(self.acks)}
+                    for i, (audio48, frames, text) in enumerate(self.acks):
+                        arrays.update({f"audio48_{i}": audio48, f"frames_{i}": frames, f"text_{i}": np.array(text)})
+                    await self._save_cache("ack", **arrays)
+            self.notify("ready", idle_seconds=round(self.timeline.idle_seconds(), 1), acks=len(self.acks))
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -345,8 +462,15 @@ class Assistant:
         self.timeline.interrupt()
         if self.turn and not self.turn.done():
             self.turn.cancel()
-        asyncio.create_task(self.renderer.reset())
         self.notify("listening")
+
+    def pick_ack(self):
+        """A prepared acknowledgement, not the one used last time when there is a choice."""
+        if not self.acks:
+            return None
+        choices = [i for i in range(len(self.acks)) if i != self.last_ack] or [0]
+        self.last_ack = random.choice(choices)
+        return self.acks[self.last_ack]
 
     async def reply(self, samples: np.ndarray, generation: int):
         tl = self.timeline
@@ -362,15 +486,16 @@ class Assistant:
 
         # 1. The prepared acknowledgement lands immediately (when this persona's is ready).
         ack_end = tl.now() + 0.2
-        if self.ack is None:
+        ack = self.pick_ack()
+        if ack is None:
             self.notify("acknowledging", seconds=0, pending=True)
-        if self.ack is not None:
-            placed = tl.schedule(tl.now() + 0.1, self.ack[0], self.ack[1], generation)
+        else:
+            placed = tl.schedule(tl.now() + 0.1, ack[0], ack[1], generation)
             if placed:
                 ack_end = placed[1]
                 self.last_playout_start = placed[0]
                 self.metrics["ack_start_seconds"].append(round(placed[0] - t0, 2))
-                self.notify("acknowledging", seconds=round(placed[1] - placed[0], 2))
+                self.notify("acknowledging", seconds=round(placed[1] - placed[0], 2), text=ack[2])
 
         # 2. Plan then speak on the backend; audio arrives as PCM events.
         queue: asyncio.Queue = asyncio.Queue()
@@ -399,6 +524,11 @@ class Assistant:
                             self.notify("reply", text=event["text"])
                         elif kind == "audio":
                             await queue.put(np.frombuffer(base64.b64decode(event["pcm_b64"]), dtype=np.int16))
+                            if "verified_match" in event and (event.get("fallback") or event["takes"] > 1 or event["verified_match"] < 1):
+                                check = {"text": event.get("text", "")[:80], "match": round(float(event["verified_match"]), 2),
+                                         "takes": int(event["takes"]), "fallback": bool(event.get("fallback"))}
+                                self.metrics.setdefault("speech_checks", []).append(check)
+                                self.notify("speech_check", **check)
                         elif kind == "error":
                             raise RuntimeError(event["message"])
                 await queue.put(None)
@@ -408,19 +538,18 @@ class Assistant:
                 await queue.put(exc)
 
         producer = asyncio.create_task(receive())
-        pending24 = np.zeros(0, np.int16)       # TTS audio not yet rendered
+        pending24 = PcmQueue()                   # TTS audio not yet rendered
         rendered: list = []                      # (frames, audio48k) waiting for a start time
         state = {"reply_start": None, "offset": 0.0, "total": 0, "tts_done": False, "chunks": 0}
         need = self.renderer.samples * 24000 // 16000      # 24 kHz samples per renderer chunk
 
         def take(item):
-            nonlocal pending24
             if item is None:
                 state["tts_done"] = True
             elif isinstance(item, Exception):
                 raise item
             else:
-                pending24 = np.concatenate([pending24, item])
+                pending24.push(item)
                 state["total"] += len(item)
 
         def decide_start():
@@ -468,8 +597,8 @@ class Assistant:
                         break
                     take(await queue.get())
                     continue
-                piece, pending24 = pending24[:need], pending24[need:]
-                frames, _ = await self.renderer.render(resample(piece, 24000, 16000), state["chunks"] == 0, generation)
+                piece = pending24.pop(need)
+                frames, _ = await self.renderer.render(resample(piece, 24000, 16000), state["chunks"] == 0, generation, "reply")
                 if generation != tl.generation:
                     return
                 state["chunks"] += 1
@@ -596,12 +725,13 @@ class Assistant:
             except Exception:
                 continue
             entry: dict = {}
+            clock = 90000 if sender.track.kind == "video" else 48000     # RTCP jitter is in RTP clock ticks
             for stat in report.values():
                 if stat.type == "outbound-rtp":
                     entry.update(packets_sent=stat.packetsSent, bytes_sent=stat.bytesSent)
                 elif stat.type == "remote-inbound-rtp":
                     entry.update(packets_lost=stat.packetsLost, fraction_lost=round(float(stat.fractionLost), 4),
-                                 jitter_ms=round(float(stat.jitter) * 1000, 1), rtt_ms=round(float(stat.roundTripTime) * 1000, 1))
+                                 jitter_ms=round(float(stat.jitter) / clock * 1000, 1), rtt_ms=round(float(stat.roundTripTime) * 1000, 1))
             out[sender.track.kind] = entry
         return out
 
@@ -626,7 +756,8 @@ class Assistant:
                 "timeline": {"frames_sent": tl.frames_sent, "frames_skipped": tl.frames_skipped,
                              "idle_frames_sent": tl.idle_frames_sent, "scheduled_seconds": round(tl.scheduled_seconds, 2),
                              "now": round(tl.now(), 2)},
-                "renderer": {"session": self.renderer.session_id, "ratio": round(self.renderer.ratio, 3),
+                "idle": {"seconds": round(tl.idle_seconds(), 2), "segments": len(tl.idle_segments)}, "acks": len(self.acks),
+                "renderer": {"session": self.renderer.session_id, "ratio": round(self.renderer.ratio, 3), "motion": self.renderer.motion,
                              "first_chunk_seconds": self.renderer.first_chunk_seconds,
                              "chunk_seconds": [round(s, 3) for s in self.renderer.chunk_seconds]}}
 
@@ -646,8 +777,8 @@ async def require_warm():
     raise HTTPException(503, "The renderer is not ready yet; retry shortly.", headers={"Retry-After": "5"})
 
 
-async def _persona_portrait(persona_id: str, owner_id: str) -> bytes:
-    """The persona's portrait as the backend recorded it (same /jobs volume)."""
+async def _persona_portrait(persona_id: str, owner_id: str) -> tuple[bytes, dict]:
+    """The persona's portrait as the backend recorded it (same /jobs volume), and the record."""
     async with httpx.AsyncClient(timeout=10, headers={"x-internal-key": os.getenv("INTERNAL_API_KEY", ""),
                                                       "x-owner-id": owner_id}) as client:
         response = await client.get(f"{BACKEND}/personas/{persona_id}")
@@ -660,7 +791,18 @@ async def _persona_portrait(persona_id: str, owner_id: str) -> bytes:
     portrait = Path(record["files"].get("portrait_render") or record["files"]["portrait"])
     if not portrait.is_relative_to(ROOT.parent) or not portrait.exists():
         raise HTTPException(502, "persona portrait is not visible to the media service")
-    return portrait.read_bytes()
+    return portrait.read_bytes(), record
+
+
+def _voice_digest(record: dict) -> str:
+    """What the acknowledgement's voice depends on: the stock voice name, or the content
+    of the cloned conditioning file."""
+    if record.get("voice_mode") == "stock" or not (record.get("files") or {}).get("conditioning"):
+        return f"stock:{record.get('stock_voice') or ''}"
+    path = Path(record["files"]["conditioning"])
+    if path.is_relative_to(ROOT.parent) and path.exists():
+        return hashlib.sha256(path.read_bytes()).hexdigest()[:16]
+    return f"file:{path.name}"
 
 
 @router.post("/sessions")
@@ -673,8 +815,9 @@ async def create(image: UploadFile | None = File(None), language: str = Form("en
         raise HTTPException(400, "unsupported language")
     if persona_id and not __import__("re").fullmatch(r"[0-9a-f]{32}", persona_id):
         raise HTTPException(400, "invalid persona id")
+    record: dict = {}
     if persona_id:
-        payload = await _persona_portrait(persona_id, owner.get())
+        payload, record = await _persona_portrait(persona_id, owner.get())
     elif image is not None:
         payload = await image.read(5 * 1024 * 1024 + 1)
         if len(payload) > 5 * 1024 * 1024:
@@ -682,15 +825,15 @@ async def create(image: UploadFile | None = File(None), language: str = Form("en
     else:
         raise HTTPException(400, "upload a portrait or choose a persona")
     original = payload
+    portrait_digest = hashlib.sha256(original).hexdigest()[:16]
     enhanced = False
+    enhance = {"fidelity": float(os.getenv("ASSISTANT_ENHANCE_FIDELITY", "0.7")),
+               "blend": float(os.getenv("ASSISTANT_ENHANCE_BLEND", "0.85"))}
     if os.getenv("ASSISTANT_ENHANCE_PORTRAIT", "1") == "1":
         # Restore the still once before it conditions the renderer (see /portrait/enhance).
         try:
             async with httpx.AsyncClient(timeout=120) as client:
-                response = await client.post(f"{RENDERER}/portrait/enhance", json={
-                    "image_b64": base64.b64encode(payload).decode(),
-                    "fidelity": float(os.getenv("ASSISTANT_ENHANCE_FIDELITY", "0.7")),
-                    "blend": float(os.getenv("ASSISTANT_ENHANCE_BLEND", "0.85"))})
+                response = await client.post(f"{RENDERER}/portrait/enhance", json={"image_b64": base64.b64encode(payload).decode(), **enhance})
             if response.status_code == 200 and response.content:
                 payload = response.content
                 enhanced = True
@@ -712,7 +855,8 @@ async def create(image: UploadFile | None = File(None), language: str = Form("en
         (directory / "image-original.png").write_bytes(original)
     still = np.asarray(picture.resize((512, 512))).copy()
     session = Assistant(identifier, directory, still, language, voice if isinstance(voice, str) and voice else None,
-                        persona_id or None)
+                        persona_id or None, portrait_digest=portrait_digest,
+                        voice_digest=_voice_digest(record) if record else "", enhance={**enhance, "applied": enhanced})
     session.owner = owner.get()
     (directory / "owner.json").write_text(json.dumps({"owner_id": session.owner}))
     _sessions[identifier] = session
@@ -758,9 +902,9 @@ async def offer(identifier: str, body: Offer):
     @pc.on("datachannel")
     def on_channel(channel):
         session.channel = channel
-        if session.ack is not None and (session.background is None or session.background.done()):
+        if session.acks and (session.background is None or session.background.done()):
             # Everything was cached: tell the client now that the channel exists.
-            session.notify("ready", idle_seconds=round(len(session.timeline.idle_frames) / FPS, 1), cached=True)
+            session.notify("ready", idle_seconds=round(session.timeline.idle_seconds(), 1), acks=len(session.acks), cached=True)
 
         @channel.on("message")
         def message(value):

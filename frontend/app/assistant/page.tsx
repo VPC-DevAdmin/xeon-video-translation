@@ -17,6 +17,7 @@ export default function AssistantPage() {
   const [uploadMode, setUploadMode] = useState(false);
   const [image, setImage] = useState<File | null>(null);
   const [messages, setMessages] = useState<{ who: string; text: string }[]>([]);
+  const [notes, setNotes] = useState<string[]>([]);      // speech verification notes for the current reply
   const [error, setError] = useState("");
   const [countdown, setCountdown] = useState<number | null>(null);
   const [showSelf, setShowSelf] = useState(true);
@@ -117,12 +118,14 @@ export default function AssistantPage() {
         switch (data.type) {
           case "transcript": setMessages(old => [...old.slice(-19), { who: "You", text: data.text }]); return;
           case "reply": setMessages(old => [...old.slice(-19), { who: persona?.name ?? "Assistant", text: data.text }]); return;
-          case "thinking": setState("Thinking…"); setDetail(""); return;
-          case "acknowledging": if (!data.pending) setDetail("acknowledging"); return;
+          case "thinking": setState("Thinking…"); setDetail(""); setNotes([]); return;
+          case "acknowledging": setDetail(data.pending ? "acknowledgement still rendering" : "acknowledging"); return;
+          case "ack_ready": if (data.count === 1) setDetail("acknowledgement ready"); return;
+          case "speech_check": setNotes(old => [...old.slice(-2), `“${data.text}”: ${data.fallback ? "said in the stock voice after the cloned takes failed" : `take ${data.takes}, ${Math.round(data.match * 100)}% of words matched`}`]); return;
           case "reply_scheduled": replyAt.current = Date.now() + data.start_in * 1000; setState("Thinking…"); setDetail(`answer in ${Math.max(0, data.start_in).toFixed(0)} s`); return;
           case "speaking": replyAt.current = null; setCountdown(null); setState("Speaking"); setDetail("Speak to interrupt."); return;
           case "listening": setState("Listening"); setDetail(data.stalls !== undefined ? (data.stalls ? `${data.stalls} stalled frames` : "") : ""); replyAt.current = null; setCountdown(null); return;
-          case "ready": setDetail(`idle loop ${data.idle_seconds} s ready`); return;
+          case "ready": setDetail(`idle loop ${data.idle_seconds} s and ${data.acks ?? 1} acknowledgements ready`); return;
           case "error": setError(data.message); return;
           default: return;
         }
@@ -200,6 +203,7 @@ export default function AssistantPage() {
     {wizard && <PersonaWizard language={language} onCancel={() => setWizard(false)} onDone={p => { setWizard(false); setUploadMode(false); setPersonaId(p.id); void loadPersonas(); }} />}
     {error && <p role="alert" className="text-red-600">{error}</p>}
     <div aria-live="polite" className="space-y-1">{messages.map((m, i) => <p key={i}><span className="font-semibold">{m.who}:</span> {m.text}</p>)}</div>
+    {notes.length > 0 && <ul className="text-xs text-amber-700">{notes.map((n, i) => <li key={i}>voice check: {n}</li>)}</ul>}
     {live && rx && <p className="text-xs text-ink-400">video {rx.codec.replace("video/", "")} · {rx.fps} fps decoded · {rx.lost} packets lost · {rx.pli} picture-loss requests · {rx.nack} retransmit requests · jitter {rx.jitter} ms · {rx.dropped} frames dropped</p>}
     <p className="text-xs text-ink-400">Start chat turns on your microphone (and camera for your own preview only). The assistant answers after a short pause while its reply video renders.</p>
   </main>;

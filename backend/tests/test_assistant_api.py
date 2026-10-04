@@ -4,6 +4,7 @@ import base64
 
 import numpy as np
 
+import app.api.assistant as assistant
 from app.api.assistant import pcm_event, split_sentences
 
 
@@ -22,3 +23,49 @@ def test_pcm_event_is_int16_base64_with_clipping():
     pcm = np.frombuffer(base64.b64decode(event["pcm_b64"]), dtype=np.int16)
     assert pcm.tolist() == [0, 16383, 32767, -32767]
     assert (event["samples"], event["sentence_id"], event["final"], event["sample_rate"]) == (4, 3, True, 24000)
+
+
+class _Word:
+    def __init__(self, text, start, end):
+        self.text, self.start, self.end = text, start, end
+
+
+class _Transcript:
+    def __init__(self, words):
+        self.segments = [type("Seg", (), {"words": words})()]
+        self.text = " ".join(w.text for w in words)
+
+
+def test_verified_sentence_keeps_the_word_span_and_falls_back_to_the_stock_voice(monkeypatch):
+    """Three cloned takes that do not carry the words: the stock voice says the sentence
+    once; without a stock voice the best take is returned cut to its words, not clipped
+    to a duration estimate."""
+    import app.pipeline.tts as tts_module
+    sentence = "The meeting is at three tomorrow."
+    used = []
+
+    class Model:
+        def inference(self, text, lang, latent, embedding, **kw):
+            used.append(latent)
+            return {"wav": np.ones(24000 * 6, dtype=np.float32) * 0.1}      # a 6 s take
+
+    def fake_transcribe(wav, json_path, language):
+        if used[-1] == "clone":
+            return _Transcript([_Word("blah", 0.5, 0.9), _Word("blah", 1.0, 1.4)])
+        return _Transcript([_Word(w, 1.0 + 0.3 * i, 1.2 + 0.3 * i) for i, w in enumerate(sentence.rstrip(".").split())])
+
+    monkeypatch.setattr(tts_module, "_trim_tail_via_whisper", lambda *a, **k: False)
+    monkeypatch.setattr(assistant.transcribe, "transcribe", fake_transcribe)
+    monkeypatch.setattr(assistant.tts, "XTTS_LANG_CODES", {"en": "en"}, raising=False)
+    clone = {"gpt_cond_latent": "clone", "speaker_embedding": None}
+    stock = {"gpt_cond_latent": "stock", "speaker_embedding": None}
+
+    audio, match, heard, takes, fallback = assistant._verified_sentence(Model(), clone, sentence, "en", fallback_conditioning=stock)
+    assert fallback is True and takes == 4 and match == 1.0 and heard.startswith("The meeting")
+    # cut to the recognized span: first word start 1.0 - 0.3 pad .. last word end (1.2 + 0.3*5) + 0.35 pad
+    assert abs(len(audio) / 24000 - ((2.7 + 0.35) - 0.7)) < 0.02
+
+    used.clear()
+    audio, match, heard, takes, fallback = assistant._verified_sentence(Model(), clone, sentence, "en")
+    assert fallback is False and takes == 3 and match == 0.0
+    assert abs(len(audio) / 24000 - ((1.4 + 0.35) - 0.2)) < 0.02         # the babble's own word span, not 0.09*len+1.5

@@ -36,27 +36,37 @@ export default function PersonaWizard({ language, onDone, onCancel }: Props) {
   const stream = useRef<MediaStream | null>(null);
   const recorder = useRef<MediaRecorder | null>(null);
   const timer = useRef<number | null>(null);
-  const analyser = useRef<AnalyserNode | null>(null);
+  const audioContext = useRef<AudioContext | null>(null);
+  const urls = useRef<string[]>([]);               // object URLs to revoke
+
+  // Object URLs for previews are revoked when replaced and when the wizard closes.
+  function objectUrl(blob: Blob) { const url = URL.createObjectURL(blob); urls.current.push(url); return url; }
+  function revokeUrls() { urls.current.forEach(u => URL.revokeObjectURL(u)); urls.current = []; }
 
   useEffect(() => {
     fetch(`/api/personas/script?language=${encodeURIComponent(language)}`).then(async r => { if (r.ok) setScript(await r.json()); else setError(await r.text()); }).catch(e => setError(String(e)));
-    return () => { stopStream(); };
+    return () => { stopStream(); revokeUrls(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [language]);
 
   function stopStream() {
     recorder.current?.state === "recording" && recorder.current.stop();
     stream.current?.getTracks().forEach(t => t.stop()); stream.current = null;
     if (timer.current) { window.clearInterval(timer.current); timer.current = null; }
+    void audioContext.current?.close().catch(() => undefined); audioContext.current = null;
   }
 
-  async function openCamera(withAudio: boolean) {
+  // The portrait and idle steps need the camera; the voice step needs only the microphone.
+  async function openMedia(kind: "camera" | "microphone") {
     stopStream();
-    const media = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" }, audio: withAudio ? { echoCancellation: true, noiseSuppression: true } : false });
+    const media = await navigator.mediaDevices.getUserMedia(kind === "camera"
+      ? { video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" }, audio: false }
+      : { video: false, audio: { echoCancellation: true, noiseSuppression: true } });
     stream.current = media;
-    if (withAudio) {
-      const context = new AudioContext();
+    if (kind === "microphone") {
+      const context = new AudioContext(); audioContext.current = context;
       const source = context.createMediaStreamSource(media);
-      const node = context.createAnalyser(); node.fftSize = 1024; source.connect(node); analyser.current = node;
+      const node = context.createAnalyser(); node.fftSize = 1024; source.connect(node);
       const data = new Uint8Array(node.fftSize);
       timer.current = window.setInterval(() => { node.getByteTimeDomainData(data); let sum = 0; for (const v of data) { const d = (v - 128) / 128; sum += d * d; } setLevel(Math.sqrt(sum / data.length)); }, 100);
     }
@@ -68,8 +78,8 @@ export default function PersonaWizard({ language, onDone, onCancel }: Props) {
     let cancelled = false;
     async function setup() {
       setCameraReady(false);
-      if (step === "portrait" || step === "idle") await openCamera(false);
-      else if (step === "voice") await openCamera(true);
+      if (step === "portrait" || step === "idle") await openMedia("camera");
+      else if (step === "voice") await openMedia("microphone");
       else { stopStream(); return; }
       if (cancelled) return;
       if (video.current && stream.current) { video.current.srcObject = stream.current; await video.current.play().catch(() => undefined); }
@@ -89,7 +99,7 @@ export default function PersonaWizard({ language, onDone, onCancel }: Props) {
     const canvas = document.createElement("canvas"); canvas.width = 768; canvas.height = 768;
     const ctx = canvas.getContext("2d"); if (!ctx) return;
     ctx.drawImage(el, (el.videoWidth - side) / 2, (el.videoHeight - side) / 2, side, side, 0, 0, 768, 768);
-    canvas.toBlob(blob => { if (blob) { setPortrait(blob); setPortraitUrl(URL.createObjectURL(blob)); } }, "image/png");
+    canvas.toBlob(blob => { if (blob) { setPortrait(blob); setPortraitUrl(objectUrl(blob)); } }, "image/png");
   }
 
   function recordIdle() {
@@ -137,7 +147,7 @@ export default function PersonaWizard({ language, onDone, onCancel }: Props) {
       setChecks(body.checks); setPersona({ id: body.persona.id, name: body.persona.name });
       setBusy("Rendering a voice preview…");
       const preview = await fetch(`/api/personas/${body.persona.id}/preview`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
-      if (preview.ok) setPreviewUrl(URL.createObjectURL(await preview.blob()));
+      if (preview.ok) setPreviewUrl(objectUrl(await preview.blob()));
     } catch (e) { setError(String(e)); } finally { setBusy(""); }
   }
 
@@ -147,7 +157,7 @@ export default function PersonaWizard({ language, onDone, onCancel }: Props) {
   </>;
 
   return <section className="rounded border border-ink-200 p-4 space-y-3">
-    <div className="flex items-center justify-between"><h2 className="text-xl font-semibold">Use this person</h2><button className={SECONDARY} onClick={() => { stopStream(); onCancel(); }}>Close</button></div>
+    <div className="flex items-center justify-between"><h2 className="text-xl font-semibold">Use this person</h2><button className={SECONDARY} onClick={() => { stopStream(); revokeUrls(); onCancel(); }}>Close</button></div>
     <ol className="flex gap-3 text-sm">{STEPS.map(s => <li key={s} className={s === step ? "font-semibold underline" : "text-ink-400"}>{s}</li>)}</ol>
     {error && <p role="alert" className="text-red-600">{error}</p>}
 
@@ -169,7 +179,7 @@ export default function PersonaWizard({ language, onDone, onCancel }: Props) {
       <div className="flex gap-3 items-center flex-wrap">
         <button className={PRIMARY} onClick={capturePortrait} disabled={!cameraReady}>{portrait ? "Capture again" : "Capture portrait"}</button>
         <label className={SECONDARY + " cursor-pointer"}>Upload a photo instead
-          <input type="file" accept="image/*" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) { setPortrait(f); setPortraitUrl(URL.createObjectURL(f)); } }} />
+          <input type="file" accept="image/*" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) { setPortrait(f); setPortraitUrl(objectUrl(f)); } }} />
         </label>
         {portraitUrl && <img src={portraitUrl} alt="captured portrait" className="w-24 h-24 rounded object-cover" />}
         <button className={SECONDARY} disabled={!portrait} onClick={() => go(retaking ? "review" : "idle")}>{retaking ? "Back to review" : "Next"}</button>
@@ -226,7 +236,7 @@ export default function PersonaWizard({ language, onDone, onCancel }: Props) {
       {persona && <div className="space-y-2">
         <p className="text-green-700">Persona “{persona.name}” is ready.</p>
         {previewUrl ? <audio controls src={previewUrl} /> : <p className="text-sm text-ink-400">{busy || "No preview available."}</p>}
-        <button className={PRIMARY} onClick={() => { stopStream(); onDone(persona); }}>Use this persona</button>
+        <button className={PRIMARY} onClick={() => { stopStream(); revokeUrls(); onDone(persona); }}>Use this persona</button>
       </div>}
     </div>}
   </section>;

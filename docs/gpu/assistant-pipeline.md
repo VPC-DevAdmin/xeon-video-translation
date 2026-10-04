@@ -132,9 +132,22 @@ ASR of the recording and the XTTS conditioning; all checks passed; voice preview
 - FlashHead renders 512×512 from the portrait; expression follows the audio,
   texture is softer than a recording. A restoration or upscale pass is the
   quality lever; SageAttention or FlashAttention the speed lever (r 0.84 today).
-- Acknowledgement, idle and reply are separate generations, so there is a cut
-  between them. Cross-fading or carrying motion state across them is the next
-  smoothness item.
+- Acknowledgement, idle and reply are separate generations. Every switch
+  between idle footage and a clip is a half-second dissolve on the timeline,
+  and idle footage is a list of continuous segments whose boundaries (and the
+  loop wrap) dissolve the same way; motion state is not carried across them.
+- Background preparation order is acknowledgement first (about 4 s after the
+  face appears), then idle growth to 12 s, then two more acknowledgements that
+  rotate across turns. All renderer calls of a session go through one lock, and
+  the renderer records which footage its motion state continues, so idle growth
+  extends the current segment only when nothing else rendered in between.
+- Cached idle and acknowledgement footage is keyed by the uploaded portrait,
+  the restoration settings, the renderer model and chunk spec, the frame rate,
+  and (acknowledgements) the voice conditioning and phrases; one idle loop and
+  one acknowledgement set are kept per persona.
+- Speech verification keeps a take only when at least 90 percent of the
+  sentence's words are recognized; a cloned voice that fails three takes is
+  replaced by the stock voice for that sentence, and the UI shows a note.
 - One assistant session per box (`ASSISTANT_MAX_SESSIONS`); the renderer holds
   one portrait at a time and re-prepares on switch (0.2 s).
 - The idle clip is captured and stored but not yet used by any renderer.
