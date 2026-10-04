@@ -505,7 +505,7 @@ class Assistant:
             self.metrics["prepare"]["turn_error"] = f"{type(exc).__name__}: {exc}"
             return False
 
-    def turn(self, at: float, direction: str, generation: int) -> float:
+    def turn_head(self, at: float, direction: str, generation: int) -> float:
         """Schedule the head turn starting at `at` and switch the idle loop with it.
         Returns when the turn ends (= `at` when no turn footage exists)."""
         frames = self.turn_down if direction == "down" else self.turn_up
@@ -763,7 +763,7 @@ class Assistant:
                     cut_at = max(plan["opener_end"], start - 0.25 - turn_len - (closer_len + 0.15 if closer else 0.0))
                     cut = tl.truncate(cut_at, "filler")
                     tl.truncate(cut_at, "turn")
-                    back = self.turn(cut_at + 0.05, "up", generation) if working else cut_at
+                    back = self.turn_head(cut_at + 0.05, "up", generation) if working else cut_at
                     if closer and back + 0.1 + closer_len + 0.15 <= start:
                         tl.schedule(back + 0.1, closer.audio48, closer.frames, generation, tag="filler")
                         self.notify("filler", kind="closer", text=closer.text)
@@ -772,7 +772,7 @@ class Assistant:
                     return
                 now = tl.now()
                 if not working and tl.loop("working").ready and now >= plan["opener_end"] - 0.5:
-                    cursor = max(cursor, self.turn(plan["opener_end"] + 0.1, "down", generation))
+                    cursor = max(cursor, self.turn_head(plan["opener_end"] + 0.1, "down", generation))
                     working = True
                     self.notify("working")
                 if cursor - now < 1.5 and cursor < t0 + MAX_HEAD_START - 1.0:
