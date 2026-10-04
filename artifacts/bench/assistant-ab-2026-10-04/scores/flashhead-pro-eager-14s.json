@@ -1,0 +1,130 @@
+{
+ "label": "flashhead-pro-eager-14s",
+ "video": "/jobs/ab/out/flashhead-pro-eager-14s.mp4",
+ "audio": "/jobs/ab/inputs/reply14-16k.wav",
+ "reference": "/jobs/ab/inputs/portrait.png",
+ "frames": 339,
+ "fps": 25.0,
+ "width": 512,
+ "height": 512,
+ "faces_detected": 339,
+ "face_box_mean_px": [
+  236.1,
+  383.6
+ ],
+ "identity_vs_portrait": {
+  "mean": 0.9217,
+  "min": 0.8154,
+  "p05": 0.8623,
+  "p95": 0.9738,
+  "std": 0.0341
+ },
+ "identity_vs_source_video": {
+  "mean": 0.9157,
+  "min": 0.8002,
+  "p05": 0.8548,
+  "p95": 0.9478,
+  "std": 0.0299
+ },
+ "identity_drift_first_to_last_quarter": 0.0341,
+ "sharpness_face_laplacian_var": {
+  "mean": 308.7577,
+  "min": 158.7273,
+  "p05": 234.6585,
+  "p95": 380.2565,
+  "std": 44.4772
+ },
+ "sharpness_mouth_laplacian_var": {
+  "mean": 266.6639,
+  "min": 104.0989,
+  "p05": 146.3267,
+  "p95": 382.0453,
+  "std": 71.9565
+ },
+ "temporal_face_mean_abs_diff": {
+  "mean": 3.9769,
+  "min": 0.7022,
+  "p05": 2.1,
+  "p95": 6.9024,
+  "std": 1.5643
+ },
+ "mouth_flicker_std": 0.7962,
+ "mouth_openness": {
+  "mean": 0.0287,
+  "min": 0.0001,
+  "p05": 0.0003,
+  "p95": 0.0583,
+  "std": 0.0199
+ },
+ "sync_proxy": {
+  "peak_correlation": 0.377,
+  "lag_frames": 0,
+  "lag_ms": 0.0,
+  "frames_with_landmarks": 339
+ },
+ "syncnet": {
+  "windows": 20,
+  "cosine_at_zero": 0.7285,
+  "best_offset_frames": 1,
+  "cosine_at_best": 0.744,
+  "margin_over_shifted": 0.5916,
+  "per_offset": {
+   "-15": 0.0664,
+   "-14": 0.0631,
+   "-13": 0.0727,
+   "-12": 0.0774,
+   "-11": 0.0936,
+   "-10": 0.0994,
+   "-9": 0.1292,
+   "-8": 0.1642,
+   "-7": 0.1784,
+   "-6": 0.1553,
+   "-5": 0.1567,
+   "-4": 0.2033,
+   "-3": 0.2565,
+   "-2": 0.3716,
+   "-1": 0.5585,
+   "0": 0.7285,
+   "1": 0.744,
+   "2": 0.549,
+   "3": 0.3074,
+   "4": 0.1903,
+   "5": 0.1518,
+   "6": 0.1446,
+   "7": 0.1516,
+   "8": 0.1655,
+   "9": 0.1509,
+   "10": 0.1268,
+   "11": 0.1216,
+   "12": 0.0993,
+   "13": 0.0755,
+   "14": 0.0658,
+   "15": 0.0569
+  },
+  "state_dict_missing": 0,
+  "state_dict_unexpected": 0
+ },
+ "av": {
+  "programs": [],
+  "streams": [
+   {
+    "codec_type": "video",
+    "width": 512,
+    "height": 512,
+    "r_frame_rate": "25/1",
+    "duration": "13.560000",
+    "nb_frames": "339"
+   },
+   {
+    "codec_type": "audio",
+    "r_frame_rate": "0/0",
+    "duration": "13.520542",
+    "nb_frames": "318"
+   }
+  ],
+  "format": {
+   "duration": "13.560000"
+  }
+ },
+ "contact_sheet": "/jobs/ab/out/scores/flashhead-pro-eager-14s.sheet.png"
+}

@@ -1,0 +1,603 @@
+{
+ "event": "flashhead_chunks",
+ "design": "flashhead-lite-eager",
+ "label": "flashhead-lite-60s",
+ "t0_wall": 1791128871.431,
+ "num_frames": 24,
+ "fps": 25,
+ "frames": 1488,
+ "chunks": [
+  {
+   "chunk": 0,
+   "frames": 24,
+   "submit": 0.0,
+   "result": 0.207,
+   "restored": 0.209,
+   "seconds": 0.207,
+   "fps": 116.0
+  },
+  {
+   "chunk": 1,
+   "frames": 24,
+   "submit": 0.209,
+   "result": 0.415,
+   "restored": 0.417,
+   "seconds": 0.205,
+   "fps": 117.0
+  },
+  {
+   "chunk": 2,
+   "frames": 24,
+   "submit": 0.417,
+   "result": 0.622,
+   "restored": 0.624,
+   "seconds": 0.205,
+   "fps": 116.9
+  },
+  {
+   "chunk": 3,
+   "frames": 24,
+   "submit": 0.624,
+   "result": 0.829,
+   "restored": 0.831,
+   "seconds": 0.205,
+   "fps": 117.0
+  },
+  {
+   "chunk": 4,
+   "frames": 24,
+   "submit": 0.831,
+   "result": 1.039,
+   "restored": 1.041,
+   "seconds": 0.208,
+   "fps": 115.5
+  },
+  {
+   "chunk": 5,
+   "frames": 24,
+   "submit": 1.041,
+   "result": 1.245,
+   "restored": 1.247,
+   "seconds": 0.204,
+   "fps": 117.8
+  },
+  {
+   "chunk": 6,
+   "frames": 24,
+   "submit": 1.247,
+   "result": 1.45,
+   "restored": 1.452,
+   "seconds": 0.203,
+   "fps": 118.1
+  },
+  {
+   "chunk": 7,
+   "frames": 24,
+   "submit": 1.453,
+   "result": 1.656,
+   "restored": 1.658,
+   "seconds": 0.203,
+   "fps": 118.1
+  },
+  {
+   "chunk": 8,
+   "frames": 24,
+   "submit": 1.658,
+   "result": 1.861,
+   "restored": 1.863,
+   "seconds": 0.203,
+   "fps": 118.5
+  },
+  {
+   "chunk": 9,
+   "frames": 24,
+   "submit": 1.863,
+   "result": 2.066,
+   "restored": 2.068,
+   "seconds": 0.203,
+   "fps": 118.1
+  },
+  {
+   "chunk": 10,
+   "frames": 24,
+   "submit": 2.068,
+   "result": 2.271,
+   "restored": 2.273,
+   "seconds": 0.203,
+   "fps": 118.3
+  },
+  {
+   "chunk": 11,
+   "frames": 24,
+   "submit": 2.273,
+   "result": 2.476,
+   "restored": 2.478,
+   "seconds": 0.203,
+   "fps": 118.2
+  },
+  {
+   "chunk": 12,
+   "frames": 24,
+   "submit": 2.478,
+   "result": 2.681,
+   "restored": 2.683,
+   "seconds": 0.203,
+   "fps": 118.2
+  },
+  {
+   "chunk": 13,
+   "frames": 24,
+   "submit": 2.683,
+   "result": 2.887,
+   "restored": 2.889,
+   "seconds": 0.203,
+   "fps": 118.0
+  },
+  {
+   "chunk": 14,
+   "frames": 24,
+   "submit": 2.889,
+   "result": 3.095,
+   "restored": 3.097,
+   "seconds": 0.206,
+   "fps": 116.4
+  },
+  {
+   "chunk": 15,
+   "frames": 24,
+   "submit": 3.097,
+   "result": 3.301,
+   "restored": 3.303,
+   "seconds": 0.204,
+   "fps": 117.9
+  },
+  {
+   "chunk": 16,
+   "frames": 24,
+   "submit": 3.303,
+   "result": 3.506,
+   "restored": 3.508,
+   "seconds": 0.203,
+   "fps": 118.1
+  },
+  {
+   "chunk": 17,
+   "frames": 24,
+   "submit": 3.508,
+   "result": 3.711,
+   "restored": 3.713,
+   "seconds": 0.203,
+   "fps": 118.1
+  },
+  {
+   "chunk": 18,
+   "frames": 24,
+   "submit": 3.714,
+   "result": 3.916,
+   "restored": 3.918,
+   "seconds": 0.203,
+   "fps": 118.3
+  },
+  {
+   "chunk": 19,
+   "frames": 24,
+   "submit": 3.918,
+   "result": 4.121,
+   "restored": 4.123,
+   "seconds": 0.203,
+   "fps": 118.3
+  },
+  {
+   "chunk": 20,
+   "frames": 24,
+   "submit": 4.123,
+   "result": 4.329,
+   "restored": 4.331,
+   "seconds": 0.206,
+   "fps": 116.6
+  },
+  {
+   "chunk": 21,
+   "frames": 24,
+   "submit": 4.331,
+   "result": 4.534,
+   "restored": 4.536,
+   "seconds": 0.202,
+   "fps": 118.6
+  },
+  {
+   "chunk": 22,
+   "frames": 24,
+   "submit": 4.536,
+   "result": 4.739,
+   "restored": 4.741,
+   "seconds": 0.203,
+   "fps": 118.2
+  },
+  {
+   "chunk": 23,
+   "frames": 24,
+   "submit": 4.741,
+   "result": 4.944,
+   "restored": 4.946,
+   "seconds": 0.203,
+   "fps": 118.4
+  },
+  {
+   "chunk": 24,
+   "frames": 24,
+   "submit": 4.946,
+   "result": 5.148,
+   "restored": 5.151,
+   "seconds": 0.203,
+   "fps": 118.3
+  },
+  {
+   "chunk": 25,
+   "frames": 24,
+   "submit": 5.151,
+   "result": 5.355,
+   "restored": 5.357,
+   "seconds": 0.205,
+   "fps": 117.3
+  },
+  {
+   "chunk": 26,
+   "frames": 24,
+   "submit": 5.357,
+   "result": 5.562,
+   "restored": 5.564,
+   "seconds": 0.204,
+   "fps": 117.4
+  },
+  {
+   "chunk": 27,
+   "frames": 24,
+   "submit": 5.564,
+   "result": 5.768,
+   "restored": 5.77,
+   "seconds": 0.204,
+   "fps": 117.5
+  },
+  {
+   "chunk": 28,
+   "frames": 24,
+   "submit": 5.77,
+   "result": 5.974,
+   "restored": 5.976,
+   "seconds": 0.204,
+   "fps": 117.7
+  },
+  {
+   "chunk": 29,
+   "frames": 24,
+   "submit": 5.976,
+   "result": 6.18,
+   "restored": 6.182,
+   "seconds": 0.204,
+   "fps": 117.7
+  },
+  {
+   "chunk": 30,
+   "frames": 24,
+   "submit": 6.182,
+   "result": 6.387,
+   "restored": 6.389,
+   "seconds": 0.205,
+   "fps": 117.2
+  },
+  {
+   "chunk": 31,
+   "frames": 24,
+   "submit": 6.389,
+   "result": 6.595,
+   "restored": 6.597,
+   "seconds": 0.206,
+   "fps": 116.5
+  },
+  {
+   "chunk": 32,
+   "frames": 24,
+   "submit": 6.597,
+   "result": 6.801,
+   "restored": 6.803,
+   "seconds": 0.204,
+   "fps": 117.9
+  },
+  {
+   "chunk": 33,
+   "frames": 24,
+   "submit": 6.803,
+   "result": 7.007,
+   "restored": 7.009,
+   "seconds": 0.204,
+   "fps": 117.7
+  },
+  {
+   "chunk": 34,
+   "frames": 24,
+   "submit": 7.009,
+   "result": 7.212,
+   "restored": 7.214,
+   "seconds": 0.203,
+   "fps": 118.0
+  },
+  {
+   "chunk": 35,
+   "frames": 24,
+   "submit": 7.215,
+   "result": 7.418,
+   "restored": 7.42,
+   "seconds": 0.204,
+   "fps": 117.7
+  },
+  {
+   "chunk": 36,
+   "frames": 24,
+   "submit": 7.42,
+   "result": 7.629,
+   "restored": 7.631,
+   "seconds": 0.209,
+   "fps": 114.9
+  },
+  {
+   "chunk": 37,
+   "frames": 24,
+   "submit": 7.631,
+   "result": 7.836,
+   "restored": 7.838,
+   "seconds": 0.204,
+   "fps": 117.4
+  },
+  {
+   "chunk": 38,
+   "frames": 24,
+   "submit": 7.838,
+   "result": 8.042,
+   "restored": 8.044,
+   "seconds": 0.204,
+   "fps": 117.6
+  },
+  {
+   "chunk": 39,
+   "frames": 24,
+   "submit": 8.044,
+   "result": 8.249,
+   "restored": 8.261,
+   "seconds": 0.205,
+   "fps": 117.2
+  },
+  {
+   "chunk": 40,
+   "frames": 24,
+   "submit": 8.261,
+   "result": 8.464,
+   "restored": 8.476,
+   "seconds": 0.203,
+   "fps": 118.0
+  },
+  {
+   "chunk": 41,
+   "frames": 24,
+   "submit": 8.476,
+   "result": 8.679,
+   "restored": 8.691,
+   "seconds": 0.204,
+   "fps": 117.8
+  },
+  {
+   "chunk": 42,
+   "frames": 24,
+   "submit": 8.691,
+   "result": 8.896,
+   "restored": 8.907,
+   "seconds": 0.205,
+   "fps": 117.1
+  },
+  {
+   "chunk": 43,
+   "frames": 24,
+   "submit": 8.907,
+   "result": 9.112,
+   "restored": 9.123,
+   "seconds": 0.205,
+   "fps": 117.3
+  },
+  {
+   "chunk": 44,
+   "frames": 24,
+   "submit": 9.124,
+   "result": 9.327,
+   "restored": 9.339,
+   "seconds": 0.204,
+   "fps": 117.8
+  },
+  {
+   "chunk": 45,
+   "frames": 24,
+   "submit": 9.339,
+   "result": 9.542,
+   "restored": 9.554,
+   "seconds": 0.203,
+   "fps": 118.1
+  },
+  {
+   "chunk": 46,
+   "frames": 24,
+   "submit": 9.554,
+   "result": 9.758,
+   "restored": 9.769,
+   "seconds": 0.204,
+   "fps": 117.7
+  },
+  {
+   "chunk": 47,
+   "frames": 24,
+   "submit": 9.769,
+   "result": 9.973,
+   "restored": 9.984,
+   "seconds": 0.204,
+   "fps": 117.8
+  },
+  {
+   "chunk": 48,
+   "frames": 24,
+   "submit": 9.985,
+   "result": 10.189,
+   "restored": 10.2,
+   "seconds": 0.204,
+   "fps": 117.6
+  },
+  {
+   "chunk": 49,
+   "frames": 24,
+   "submit": 10.2,
+   "result": 10.404,
+   "restored": 10.416,
+   "seconds": 0.204,
+   "fps": 117.8
+  },
+  {
+   "chunk": 50,
+   "frames": 24,
+   "submit": 10.416,
+   "result": 10.619,
+   "restored": 10.631,
+   "seconds": 0.204,
+   "fps": 117.9
+  },
+  {
+   "chunk": 51,
+   "frames": 24,
+   "submit": 10.631,
+   "result": 10.835,
+   "restored": 10.846,
+   "seconds": 0.204,
+   "fps": 117.8
+  },
+  {
+   "chunk": 52,
+   "frames": 24,
+   "submit": 10.846,
+   "result": 11.049,
+   "restored": 11.061,
+   "seconds": 0.203,
+   "fps": 118.1
+  },
+  {
+   "chunk": 53,
+   "frames": 24,
+   "submit": 11.061,
+   "result": 11.264,
+   "restored": 11.276,
+   "seconds": 0.203,
+   "fps": 118.0
+  },
+  {
+   "chunk": 54,
+   "frames": 24,
+   "submit": 11.276,
+   "result": 11.48,
+   "restored": 11.492,
+   "seconds": 0.204,
+   "fps": 117.8
+  },
+  {
+   "chunk": 55,
+   "frames": 24,
+   "submit": 11.492,
+   "result": 11.696,
+   "restored": 11.707,
+   "seconds": 0.204,
+   "fps": 117.6
+  },
+  {
+   "chunk": 56,
+   "frames": 24,
+   "submit": 11.707,
+   "result": 11.91,
+   "restored": 11.922,
+   "seconds": 0.203,
+   "fps": 118.2
+  },
+  {
+   "chunk": 57,
+   "frames": 24,
+   "submit": 11.922,
+   "result": 12.128,
+   "restored": 12.14,
+   "seconds": 0.206,
+   "fps": 116.4
+  },
+  {
+   "chunk": 58,
+   "frames": 24,
+   "submit": 12.14,
+   "result": 12.343,
+   "restored": 12.354,
+   "seconds": 0.203,
+   "fps": 118.2
+  },
+  {
+   "chunk": 59,
+   "frames": 24,
+   "submit": 12.355,
+   "result": 12.558,
+   "restored": 12.569,
+   "seconds": 0.203,
+   "fps": 118.2
+  },
+  {
+   "chunk": 60,
+   "frames": 24,
+   "submit": 12.569,
+   "result": 12.776,
+   "restored": 12.787,
+   "seconds": 0.206,
+   "fps": 116.3
+  },
+  {
+   "chunk": 61,
+   "frames": 24,
+   "submit": 12.787,
+   "result": 12.99,
+   "restored": 13.002,
+   "seconds": 0.203,
+   "fps": 118.3
+  }
+ ],
+ "first_chunk_restored_seconds": 0.209,
+ "last_chunk_restored_seconds": 13.002,
+ "min_head_start_seconds": 0.209,
+ "restored_fps_aggregate": 114.44,
+ "load_and_prepare_seconds": 3.92,
+ "warmup_seconds": 0.59,
+ "warm_chunks": 2,
+ "compile": false,
+ "seed": 42,
+ "device": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+ "attention": "torch SDPA",
+ "peak_torch_allocated_bytes": 5356719616,
+ "audio_contract": {
+  "conditioning": {
+   "sample_rate": 16000,
+   "channels": 1,
+   "sample_width": 2,
+   "frames": 951896,
+   "duration": 59.4935
+  },
+  "playback": {
+   "sample_rate": 16000,
+   "channels": 1,
+   "sample_width": 2,
+   "frames": 951896,
+   "duration": 59.4935
+  },
+  "playback_path": "/jobs/ab/inputs/reply60-16k.wav"
+ },
+ "input_sha256": {
+  "/jobs/ab/inputs/reply60-16k.wav": "380fd46dc29840a4714c058a860c8fce472f14023d1a48190fb973b339626caf",
+  "/jobs/ab/inputs/portrait.png": "bb03f3ec6625d382b871cd766e5e0b110f0fe2db1df7deb4434d918dd603f41e"
+ },
+ "output": "/experiment/ab-out/flashhead-lite-60s.mp4"
+}

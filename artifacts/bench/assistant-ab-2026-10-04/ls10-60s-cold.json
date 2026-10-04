@@ -1,0 +1,1040 @@
+{
+ "label": "ls10-60s-cold",
+ "design": "latentsync-persona",
+ "request": {
+  "video_path": "/jobs/ab/inputs/persona52s-25fps.mp4",
+  "audio_path": "/jobs/ab/inputs/reply60-16k.wav",
+  "output_path": "/jobs/ab/out/ls10-60s-cold.mp4",
+  "num_inference_steps": 10,
+  "seed": 42,
+  "persona_key": "persona52",
+  "face_track_source": "/jobs/ab/inputs/persona52s-25fps.mp4",
+  "face_track_offset_frames": 0
+ },
+ "response": {
+  "status": "ok",
+  "output_path": "/jobs/ab/out/ls10-60s-cold.mp4",
+  "frames_processed": -1,
+  "duration_ms": 135864,
+  "detail": "num_inference_steps=10 guidance_scale=1.50 dry_run=False"
+ },
+ "wall_seconds": 135.87,
+ "prepare_seconds": null,
+ "prepare_response": null,
+ "events": {
+  "latentsync_face_prep": [
+   {
+    "event": "latentsync_face_prep",
+    "frames": 1302,
+    "detect_seconds": 0.0,
+    "warp_seconds": 10.88,
+    "shared_track": true
+   }
+  ],
+  "latentsync_stages": [
+   {
+    "persona_key": "persona52",
+    "prepared_ahead": false,
+    "decode_audio_face_seconds": 42.33,
+    "conditioning_seconds": 4.27,
+    "wait_for_worker_seconds": 42.66,
+    "collect_and_paste_seconds": 0.91,
+    "event": "latentsync_stages",
+    "frames": 1489,
+    "steps": 10,
+    "workers": 8,
+    "prefetch": 1
+   }
+  ],
+  "latentsync_restore_overlapped": [
+   {
+    "event": "latentsync_restore_overlapped",
+    "frames": 1489,
+    "restore_seconds_on_side_thread": 58.89
+   }
+  ],
+  "latentsync_chunks": [
+   {
+    "event": "latentsync_chunks",
+    "t0_wall": 1791129281.853,
+    "num_frames": 16,
+    "fps": 25,
+    "frames": 1489,
+    "persona_key": "persona52",
+    "chunks": [
+     {
+      "chunk": 0,
+      "submit": 42.379,
+      "result": 46.001,
+      "worker_received": 42.452,
+      "worker_done": 45.981,
+      "device": 0,
+      "persona_cached": false,
+      "restored": 46.896
+     },
+     {
+      "chunk": 1,
+      "submit": 42.433,
+      "result": 46.057,
+      "worker_received": 42.497,
+      "worker_done": 46.034,
+      "device": 1,
+      "persona_cached": false,
+      "restored": 47.72
+     },
+     {
+      "chunk": 2,
+      "submit": 42.489,
+      "result": 46.13,
+      "worker_received": 42.568,
+      "worker_done": 46.079,
+      "device": 2,
+      "persona_cached": false,
+      "restored": 48.516
+     },
+     {
+      "chunk": 3,
+      "submit": 42.533,
+      "result": 46.19,
+      "worker_received": 42.624,
+      "worker_done": 46.144,
+      "device": 3,
+      "persona_cached": false,
+      "restored": 49.318
+     },
+     {
+      "chunk": 4,
+      "submit": 42.604,
+      "result": 46.238,
+      "worker_received": 42.69,
+      "worker_done": 46.192,
+      "device": 4,
+      "persona_cached": false,
+      "restored": 50.143
+     },
+     {
+      "chunk": 5,
+      "submit": 42.64,
+      "result": 46.304,
+      "worker_received": 42.729,
+      "worker_done": 46.241,
+      "device": 5,
+      "persona_cached": false,
+      "restored": 50.922
+     },
+     {
+      "chunk": 6,
+      "submit": 42.707,
+      "result": 46.366,
+      "worker_received": 42.793,
+      "worker_done": 46.344,
+      "device": 6,
+      "persona_cached": false,
+      "restored": 51.747
+     },
+     {
+      "chunk": 7,
+      "submit": 42.788,
+      "result": 46.421,
+      "worker_received": 42.834,
+      "worker_done": 46.352,
+      "device": 7,
+      "persona_cached": false,
+      "restored": 52.577
+     },
+     {
+      "chunk": 8,
+      "submit": 46.048,
+      "result": 50.11,
+      "worker_received": 46.128,
+      "worker_done": 50.039,
+      "device": 0,
+      "persona_cached": false,
+      "restored": 53.43
+     },
+     {
+      "chunk": 9,
+      "submit": 46.121,
+      "result": 50.175,
+      "worker_received": 46.184,
+      "worker_done": 49.676,
+      "device": 1,
+      "persona_cached": false,
+      "restored": 54.28
+     },
+     {
+      "chunk": 10,
+      "submit": 46.177,
+      "result": 50.226,
+      "worker_received": 46.271,
+      "worker_done": 49.752,
+      "device": 2,
+      "persona_cached": false,
+      "restored": 55.173
+     },
+     {
+      "chunk": 11,
+      "submit": 46.224,
+      "result": 50.283,
+      "worker_received": 46.307,
+      "worker_done": 49.787,
+      "device": 3,
+      "persona_cached": false,
+      "restored": 56.03
+     },
+     {
+      "chunk": 12,
+      "submit": 46.291,
+      "result": 50.347,
+      "worker_received": 46.354,
+      "worker_done": 49.832,
+      "device": 4,
+      "persona_cached": false,
+      "restored": 56.875
+     },
+     {
+      "chunk": 13,
+      "submit": 46.343,
+      "result": 50.418,
+      "worker_received": 46.407,
+      "worker_done": 49.888,
+      "device": 5,
+      "persona_cached": false,
+      "restored": 57.715
+     },
+     {
+      "chunk": 14,
+      "submit": 46.407,
+      "result": 50.475,
+      "worker_received": 46.478,
+      "worker_done": 49.979,
+      "device": 6,
+      "persona_cached": false,
+      "restored": 58.427
+     },
+     {
+      "chunk": 15,
+      "submit": 46.474,
+      "result": 50.545,
+      "worker_received": 46.549,
+      "worker_done": 50.049,
+      "device": 7,
+      "persona_cached": false,
+      "restored": 59.361
+     },
+     {
+      "chunk": 16,
+      "submit": 50.163,
+      "result": 54.16,
+      "worker_received": 50.253,
+      "worker_done": 54.137,
+      "device": 0,
+      "persona_cached": false,
+      "restored": 60.23
+     },
+     {
+      "chunk": 17,
+      "submit": 50.212,
+      "result": 54.258,
+      "worker_received": 50.288,
+      "worker_done": 53.778,
+      "device": 1,
+      "persona_cached": false,
+      "restored": 61.086
+     },
+     {
+      "chunk": 18,
+      "submit": 50.271,
+      "result": 54.343,
+      "worker_received": 50.351,
+      "worker_done": 53.832,
+      "device": 2,
+      "persona_cached": false,
+      "restored": 61.946
+     },
+     {
+      "chunk": 19,
+      "submit": 50.333,
+      "result": 54.408,
+      "worker_received": 50.401,
+      "worker_done": 53.881,
+      "device": 3,
+      "persona_cached": false,
+      "restored": 62.617
+     },
+     {
+      "chunk": 20,
+      "submit": 50.401,
+      "result": 54.484,
+      "worker_received": 50.466,
+      "worker_done": 53.946,
+      "device": 4,
+      "persona_cached": false,
+      "restored": 63.486
+     },
+     {
+      "chunk": 21,
+      "submit": 50.46,
+      "result": 54.55,
+      "worker_received": 50.531,
+      "worker_done": 54.012,
+      "device": 5,
+      "persona_cached": false,
+      "restored": 64.315
+     },
+     {
+      "chunk": 22,
+      "submit": 50.527,
+      "result": 54.606,
+      "worker_received": 50.599,
+      "worker_done": 54.096,
+      "device": 6,
+      "persona_cached": false,
+      "restored": 65.197
+     },
+     {
+      "chunk": 23,
+      "submit": 50.597,
+      "result": 54.667,
+      "worker_received": 50.678,
+      "worker_done": 54.177,
+      "device": 7,
+      "persona_cached": false,
+      "restored": 66.048
+     },
+     {
+      "chunk": 24,
+      "submit": 54.209,
+      "result": 58.234,
+      "worker_received": 54.33,
+      "worker_done": 58.211,
+      "device": 0,
+      "persona_cached": false,
+      "restored": 66.691
+     },
+     {
+      "chunk": 25,
+      "submit": 54.331,
+      "result": 58.288,
+      "worker_received": 54.395,
+      "worker_done": 57.883,
+      "device": 1,
+      "persona_cached": false,
+      "restored": 67.573
+     },
+     {
+      "chunk": 26,
+      "submit": 54.393,
+      "result": 58.407,
+      "worker_received": 54.483,
+      "worker_done": 57.964,
+      "device": 2,
+      "persona_cached": false,
+      "restored": 68.416
+     },
+     {
+      "chunk": 27,
+      "submit": 54.466,
+      "result": 58.499,
+      "worker_received": 54.535,
+      "worker_done": 58.016,
+      "device": 3,
+      "persona_cached": false,
+      "restored": 69.279
+     },
+     {
+      "chunk": 28,
+      "submit": 54.533,
+      "result": 58.551,
+      "worker_received": 54.596,
+      "worker_done": 58.075,
+      "device": 4,
+      "persona_cached": false,
+      "restored": 70.151
+     },
+     {
+      "chunk": 29,
+      "submit": 54.594,
+      "result": 58.612,
+      "worker_received": 54.658,
+      "worker_done": 58.139,
+      "device": 5,
+      "persona_cached": false,
+      "restored": 70.786
+     },
+     {
+      "chunk": 30,
+      "submit": 54.65,
+      "result": 58.668,
+      "worker_received": 54.72,
+      "worker_done": 58.218,
+      "device": 6,
+      "persona_cached": false,
+      "restored": 71.657
+     },
+     {
+      "chunk": 31,
+      "submit": 54.71,
+      "result": 58.73,
+      "worker_received": 54.782,
+      "worker_done": 58.281,
+      "device": 7,
+      "persona_cached": false,
+      "restored": 72.51
+     },
+     {
+      "chunk": 32,
+      "submit": 58.274,
+      "result": 62.233,
+      "worker_received": 58.347,
+      "worker_done": 62.213,
+      "device": 0,
+      "persona_cached": false,
+      "restored": 73.363
+     },
+     {
+      "chunk": 33,
+      "submit": 58.335,
+      "result": 62.28,
+      "worker_received": 58.459,
+      "worker_done": 61.943,
+      "device": 1,
+      "persona_cached": false,
+      "restored": 74.203
+     },
+     {
+      "chunk": 34,
+      "submit": 58.484,
+      "result": 62.337,
+      "worker_received": 58.575,
+      "worker_done": 62.055,
+      "device": 2,
+      "persona_cached": false,
+      "restored": 74.802
+     },
+     {
+      "chunk": 35,
+      "submit": 58.532,
+      "result": 62.39,
+      "worker_received": 58.608,
+      "worker_done": 62.088,
+      "device": 3,
+      "persona_cached": false,
+      "restored": 75.639
+     },
+     {
+      "chunk": 36,
+      "submit": 58.594,
+      "result": 62.443,
+      "worker_received": 58.66,
+      "worker_done": 62.14,
+      "device": 4,
+      "persona_cached": false,
+      "restored": 76.473
+     },
+     {
+      "chunk": 37,
+      "submit": 58.651,
+      "result": 62.505,
+      "worker_received": 58.724,
+      "worker_done": 62.207,
+      "device": 5,
+      "persona_cached": false,
+      "restored": 77.288
+     },
+     {
+      "chunk": 38,
+      "submit": 58.71,
+      "result": 62.664,
+      "worker_received": 58.787,
+      "worker_done": 62.286,
+      "device": 6,
+      "persona_cached": false,
+      "restored": 78.126
+     },
+     {
+      "chunk": 39,
+      "submit": 58.771,
+      "result": 62.731,
+      "worker_received": 58.851,
+      "worker_done": 62.351,
+      "device": 7,
+      "persona_cached": false,
+      "restored": 78.739
+     },
+     {
+      "chunk": 40,
+      "submit": 62.27,
+      "result": 66.228,
+      "worker_received": 62.348,
+      "worker_done": 66.207,
+      "device": 0,
+      "persona_cached": false,
+      "restored": 79.58
+     },
+     {
+      "chunk": 41,
+      "submit": 62.328,
+      "result": 66.303,
+      "worker_received": 62.399,
+      "worker_done": 65.885,
+      "device": 1,
+      "persona_cached": false,
+      "restored": 80.394
+     },
+     {
+      "chunk": 42,
+      "submit": 62.38,
+      "result": 66.375,
+      "worker_received": 62.468,
+      "worker_done": 65.949,
+      "device": 2,
+      "persona_cached": false,
+      "restored": 81.202
+     },
+     {
+      "chunk": 43,
+      "submit": 62.425,
+      "result": 66.446,
+      "worker_received": 62.511,
+      "worker_done": 65.992,
+      "device": 3,
+      "persona_cached": false,
+      "restored": 82.002
+     },
+     {
+      "chunk": 44,
+      "submit": 62.494,
+      "result": 66.513,
+      "worker_received": 62.555,
+      "worker_done": 66.033,
+      "device": 4,
+      "persona_cached": false,
+      "restored": 82.617
+     },
+     {
+      "chunk": 45,
+      "submit": 62.613,
+      "result": 66.577,
+      "worker_received": 62.679,
+      "worker_done": 66.159,
+      "device": 5,
+      "persona_cached": false,
+      "restored": 83.477
+     },
+     {
+      "chunk": 46,
+      "submit": 62.718,
+      "result": 66.7,
+      "worker_received": 62.791,
+      "worker_done": 66.288,
+      "device": 6,
+      "persona_cached": false,
+      "restored": 84.297
+     },
+     {
+      "chunk": 47,
+      "submit": 62.772,
+      "result": 66.781,
+      "worker_received": 62.849,
+      "worker_done": 66.35,
+      "device": 7,
+      "persona_cached": false,
+      "restored": 85.136
+     },
+     {
+      "chunk": 48,
+      "submit": 66.293,
+      "result": 70.268,
+      "worker_received": 66.385,
+      "worker_done": 70.248,
+      "device": 0,
+      "persona_cached": false,
+      "restored": 85.964
+     },
+     {
+      "chunk": 49,
+      "submit": 66.366,
+      "result": 70.317,
+      "worker_received": 66.435,
+      "worker_done": 69.921,
+      "device": 1,
+      "persona_cached": false,
+      "restored": 86.638
+     },
+     {
+      "chunk": 50,
+      "submit": 66.432,
+      "result": 70.384,
+      "worker_received": 66.519,
+      "worker_done": 70.0,
+      "device": 2,
+      "persona_cached": false,
+      "restored": 87.518
+     },
+     {
+      "chunk": 51,
+      "submit": 66.499,
+      "result": 70.447,
+      "worker_received": 66.588,
+      "worker_done": 70.07,
+      "device": 3,
+      "persona_cached": false,
+      "restored": 88.34
+     },
+     {
+      "chunk": 52,
+      "submit": 66.566,
+      "result": 70.51,
+      "worker_received": 66.626,
+      "worker_done": 70.104,
+      "device": 4,
+      "persona_cached": false,
+      "restored": 89.167
+     },
+     {
+      "chunk": 53,
+      "submit": 66.686,
+      "result": 70.581,
+      "worker_received": 66.753,
+      "worker_done": 70.234,
+      "device": 5,
+      "persona_cached": false,
+      "restored": 89.982
+     },
+     {
+      "chunk": 54,
+      "submit": 66.771,
+      "result": 70.645,
+      "worker_received": 66.844,
+      "worker_done": 70.341,
+      "device": 6,
+      "persona_cached": false,
+      "restored": 90.664
+     },
+     {
+      "chunk": 55,
+      "submit": 66.832,
+      "result": 70.762,
+      "worker_received": 66.91,
+      "worker_done": 70.41,
+      "device": 7,
+      "persona_cached": false,
+      "restored": 91.038
+     },
+     {
+      "chunk": 56,
+      "submit": 70.309,
+      "result": 74.285,
+      "worker_received": 70.397,
+      "worker_done": 74.264,
+      "device": 0,
+      "persona_cached": false,
+      "restored": 91.411
+     },
+     {
+      "chunk": 57,
+      "submit": 70.374,
+      "result": 74.356,
+      "worker_received": 70.447,
+      "worker_done": 73.934,
+      "device": 1,
+      "persona_cached": false,
+      "restored": 91.783
+     },
+     {
+      "chunk": 58,
+      "submit": 70.432,
+      "result": 74.433,
+      "worker_received": 70.52,
+      "worker_done": 74.002,
+      "device": 2,
+      "persona_cached": false,
+      "restored": 92.164
+     },
+     {
+      "chunk": 59,
+      "submit": 70.5,
+      "result": 74.505,
+      "worker_received": 70.583,
+      "worker_done": 74.066,
+      "device": 3,
+      "persona_cached": false,
+      "restored": 92.545
+     },
+     {
+      "chunk": 60,
+      "submit": 70.565,
+      "result": 74.575,
+      "worker_received": 70.63,
+      "worker_done": 74.11,
+      "device": 4,
+      "persona_cached": false,
+      "restored": 92.924
+     },
+     {
+      "chunk": 61,
+      "submit": 70.628,
+      "result": 74.639,
+      "worker_received": 70.695,
+      "worker_done": 74.176,
+      "device": 5,
+      "persona_cached": false,
+      "restored": 93.301
+     },
+     {
+      "chunk": 62,
+      "submit": 70.692,
+      "result": 74.696,
+      "worker_received": 70.83,
+      "worker_done": 74.329,
+      "device": 6,
+      "persona_cached": false,
+      "restored": 93.676
+     },
+     {
+      "chunk": 63,
+      "submit": 70.816,
+      "result": 74.806,
+      "worker_received": 70.901,
+      "worker_done": 74.401,
+      "device": 7,
+      "persona_cached": false,
+      "restored": 94.052
+     },
+     {
+      "chunk": 64,
+      "submit": 74.346,
+      "result": 78.344,
+      "worker_received": 74.44,
+      "worker_done": 78.324,
+      "device": 0,
+      "persona_cached": false,
+      "restored": 94.428
+     },
+     {
+      "chunk": 65,
+      "submit": 74.423,
+      "result": 78.394,
+      "worker_received": 74.489,
+      "worker_done": 77.975,
+      "device": 1,
+      "persona_cached": false,
+      "restored": 94.803
+     },
+     {
+      "chunk": 66,
+      "submit": 74.49,
+      "result": 78.452,
+      "worker_received": 74.581,
+      "worker_done": 78.062,
+      "device": 2,
+      "persona_cached": false,
+      "restored": 95.18
+     },
+     {
+      "chunk": 67,
+      "submit": 74.56,
+      "result": 78.509,
+      "worker_received": 74.649,
+      "worker_done": 78.131,
+      "device": 3,
+      "persona_cached": false,
+      "restored": 95.552
+     },
+     {
+      "chunk": 68,
+      "submit": 74.627,
+      "result": 78.572,
+      "worker_received": 74.691,
+      "worker_done": 78.172,
+      "device": 4,
+      "persona_cached": false,
+      "restored": 95.927
+     },
+     {
+      "chunk": 69,
+      "submit": 74.684,
+      "result": 78.64,
+      "worker_received": 74.747,
+      "worker_done": 78.228,
+      "device": 5,
+      "persona_cached": false,
+      "restored": 96.303
+     },
+     {
+      "chunk": 70,
+      "submit": 74.796,
+      "result": 78.765,
+      "worker_received": 74.865,
+      "worker_done": 78.364,
+      "device": 6,
+      "persona_cached": false,
+      "restored": 96.651
+     },
+     {
+      "chunk": 71,
+      "submit": 74.887,
+      "result": 78.832,
+      "worker_received": 74.966,
+      "worker_done": 78.465,
+      "device": 7,
+      "persona_cached": false,
+      "restored": 97.0
+     },
+     {
+      "chunk": 72,
+      "submit": 78.386,
+      "result": 82.396,
+      "worker_received": 78.481,
+      "worker_done": 82.376,
+      "device": 0,
+      "persona_cached": false,
+      "restored": 97.351
+     },
+     {
+      "chunk": 73,
+      "submit": 78.441,
+      "result": 82.47,
+      "worker_received": 78.521,
+      "worker_done": 82.008,
+      "device": 1,
+      "persona_cached": false,
+      "restored": 97.707
+     },
+     {
+      "chunk": 74,
+      "submit": 78.5,
+      "result": 82.59,
+      "worker_received": 78.59,
+      "worker_done": 82.073,
+      "device": 2,
+      "persona_cached": false,
+      "restored": 98.06
+     },
+     {
+      "chunk": 75,
+      "submit": 78.554,
+      "result": 82.658,
+      "worker_received": 78.646,
+      "worker_done": 82.13,
+      "device": 3,
+      "persona_cached": false,
+      "restored": 98.416
+     },
+     {
+      "chunk": 76,
+      "submit": 78.626,
+      "result": 82.737,
+      "worker_received": 78.69,
+      "worker_done": 82.17,
+      "device": 4,
+      "persona_cached": false,
+      "restored": 98.769
+     },
+     {
+      "chunk": 77,
+      "submit": 78.742,
+      "result": 82.807,
+      "worker_received": 78.817,
+      "worker_done": 82.298,
+      "device": 5,
+      "persona_cached": false,
+      "restored": 99.143
+     },
+     {
+      "chunk": 78,
+      "submit": 78.819,
+      "result": 82.866,
+      "worker_received": 78.89,
+      "worker_done": 82.389,
+      "device": 6,
+      "persona_cached": false,
+      "restored": 99.502
+     },
+     {
+      "chunk": 79,
+      "submit": 78.876,
+      "result": 82.924,
+      "worker_received": 78.956,
+      "worker_done": 82.455,
+      "device": 7,
+      "persona_cached": false,
+      "restored": 99.858
+     },
+     {
+      "chunk": 80,
+      "submit": 82.46,
+      "result": 86.453,
+      "worker_received": 82.544,
+      "worker_done": 86.432,
+      "device": 0,
+      "persona_cached": false,
+      "restored": 100.216
+     },
+     {
+      "chunk": 81,
+      "submit": 82.532,
+      "result": 86.506,
+      "worker_received": 82.653,
+      "worker_done": 86.14,
+      "device": 1,
+      "persona_cached": false,
+      "restored": 100.572
+     },
+     {
+      "chunk": 82,
+      "submit": 82.645,
+      "result": 86.613,
+      "worker_received": 82.724,
+      "worker_done": 86.206,
+      "device": 2,
+      "persona_cached": false,
+      "restored": 100.958
+     },
+     {
+      "chunk": 83,
+      "submit": 82.723,
+      "result": 86.684,
+      "worker_received": 82.805,
+      "worker_done": 86.288,
+      "device": 3,
+      "persona_cached": false,
+      "restored": 101.346
+     },
+     {
+      "chunk": 84,
+      "submit": 82.79,
+      "result": 86.763,
+      "worker_received": 82.855,
+      "worker_done": 86.336,
+      "device": 4,
+      "persona_cached": false,
+      "restored": 101.737
+     },
+     {
+      "chunk": 85,
+      "submit": 82.851,
+      "result": 86.832,
+      "worker_received": 82.927,
+      "worker_done": 86.407,
+      "device": 5,
+      "persona_cached": false,
+      "restored": 102.13
+     },
+     {
+      "chunk": 86,
+      "submit": 82.906,
+      "result": 86.869,
+      "worker_received": 82.985,
+      "worker_done": 86.484,
+      "device": 6,
+      "persona_cached": false,
+      "restored": 102.52
+     },
+     {
+      "chunk": 87,
+      "submit": 82.967,
+      "result": 86.887,
+      "worker_received": 83.049,
+      "worker_done": 86.547,
+      "device": 7,
+      "persona_cached": false,
+      "restored": 102.911
+     },
+     {
+      "chunk": 88,
+      "submit": 86.497,
+      "result": 90.504,
+      "worker_received": 86.59,
+      "worker_done": 90.482,
+      "device": 0,
+      "persona_cached": false,
+      "restored": 103.314
+     },
+     {
+      "chunk": 89,
+      "submit": 86.554,
+      "result": 90.523,
+      "worker_received": 86.668,
+      "worker_done": 90.154,
+      "device": 1,
+      "persona_cached": false,
+      "restored": 103.705
+     },
+     {
+      "chunk": 90,
+      "submit": 86.666,
+      "result": 90.541,
+      "worker_received": 86.759,
+      "worker_done": 90.242,
+      "device": 2,
+      "persona_cached": false,
+      "restored": 104.098
+     },
+     {
+      "chunk": 91,
+      "submit": 86.746,
+      "result": 90.556,
+      "worker_received": 86.837,
+      "worker_done": 90.321,
+      "device": 3,
+      "persona_cached": false,
+      "restored": 104.49
+     },
+     {
+      "chunk": 92,
+      "submit": 86.819,
+      "result": 90.574,
+      "worker_received": 86.89,
+      "worker_done": 90.371,
+      "device": 4,
+      "persona_cached": false,
+      "restored": 104.88
+     },
+     {
+      "chunk": 93,
+      "submit": 86.856,
+      "result": 90.639,
+      "worker_received": 86.891,
+      "worker_done": 87.425,
+      "device": 5,
+      "persona_cached": false,
+      "restored": 104.907
+     }
+    ],
+    "first_chunk_restored_seconds": 46.896,
+    "last_chunk_restored_seconds": 104.907,
+    "min_head_start_seconds": 56.104,
+    "restored_fps_aggregate": 23.81,
+    "persona_cache_hits": 0
+   }
+  ],
+  "latentsync_finish": [
+   {
+    "event": "latentsync_finish",
+    "frames": 1489,
+    "restore_seconds": 0.0,
+    "write_seconds": 8.74
+   }
+  ]
+ },
+ "output": "/jobs/ab/out/ls10-60s-cold.mp4",
+ "output_master_audio": null,
+ "probe": {
+  "programs": [],
+  "streams": [
+   {
+    "width": 1080,
+    "height": 1920,
+    "r_frame_rate": "25/1",
+    "nb_read_frames": "1489"
+   }
+  ],
+  "format": {
+   "duration": "59.560000"
+  }
+ },
+ "t0_wall": 1791129262.6741095,
+ "gpu_samples": "/home/user/ab-results/ls10-60s-cold.gpu.jsonl"
+}

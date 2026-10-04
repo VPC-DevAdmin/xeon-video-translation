@@ -114,7 +114,8 @@ for path in sorted(root.glob("*.json")):
         row["stage_wait_workers_s"] = stages.get("wait_for_worker_seconds")
         row["stage_write_s"] = finish.get("write_seconds")
         t0 = data.get("t0_wall"); t1 = t0 + data.get("wall_seconds", 0)
-        row["gpu"] = load_gpu(data.get("gpu_samples"), t0, t1) if t0 else None
+        local = root / f"{label}.gpu.jsonl"
+        row["gpu"] = load_gpu(local if local.exists() else data.get("gpu_samples"), t0, t1) if t0 else None
     else:
         continue
     score_path = root / "scores" / f"{label}.json"

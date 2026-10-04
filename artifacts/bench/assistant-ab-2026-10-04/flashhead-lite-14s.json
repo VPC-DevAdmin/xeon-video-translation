@@ -1,0 +1,181 @@
+{
+ "event": "flashhead_chunks",
+ "design": "flashhead-lite-eager",
+ "label": "flashhead-lite-14s",
+ "t0_wall": 1791128666.75,
+ "num_frames": 24,
+ "fps": 25,
+ "frames": 339,
+ "chunks": [
+  {
+   "chunk": 0,
+   "frames": 24,
+   "submit": 0.0,
+   "result": 0.204,
+   "restored": 0.206,
+   "seconds": 0.204,
+   "fps": 117.6
+  },
+  {
+   "chunk": 1,
+   "frames": 24,
+   "submit": 0.206,
+   "result": 0.409,
+   "restored": 0.412,
+   "seconds": 0.203,
+   "fps": 118.1
+  },
+  {
+   "chunk": 2,
+   "frames": 24,
+   "submit": 0.412,
+   "result": 0.614,
+   "restored": 0.617,
+   "seconds": 0.203,
+   "fps": 118.3
+  },
+  {
+   "chunk": 3,
+   "frames": 24,
+   "submit": 0.617,
+   "result": 0.819,
+   "restored": 0.821,
+   "seconds": 0.203,
+   "fps": 118.3
+  },
+  {
+   "chunk": 4,
+   "frames": 24,
+   "submit": 0.822,
+   "result": 1.027,
+   "restored": 1.029,
+   "seconds": 0.205,
+   "fps": 116.9
+  },
+  {
+   "chunk": 5,
+   "frames": 24,
+   "submit": 1.029,
+   "result": 1.231,
+   "restored": 1.233,
+   "seconds": 0.202,
+   "fps": 118.8
+  },
+  {
+   "chunk": 6,
+   "frames": 24,
+   "submit": 1.233,
+   "result": 1.435,
+   "restored": 1.437,
+   "seconds": 0.202,
+   "fps": 119.0
+  },
+  {
+   "chunk": 7,
+   "frames": 24,
+   "submit": 1.437,
+   "result": 1.641,
+   "restored": 1.643,
+   "seconds": 0.204,
+   "fps": 117.6
+  },
+  {
+   "chunk": 8,
+   "frames": 24,
+   "submit": 1.643,
+   "result": 1.845,
+   "restored": 1.847,
+   "seconds": 0.202,
+   "fps": 119.0
+  },
+  {
+   "chunk": 9,
+   "frames": 24,
+   "submit": 1.847,
+   "result": 2.05,
+   "restored": 2.052,
+   "seconds": 0.203,
+   "fps": 118.0
+  },
+  {
+   "chunk": 10,
+   "frames": 24,
+   "submit": 2.052,
+   "result": 2.254,
+   "restored": 2.256,
+   "seconds": 0.202,
+   "fps": 119.0
+  },
+  {
+   "chunk": 11,
+   "frames": 24,
+   "submit": 2.256,
+   "result": 2.459,
+   "restored": 2.461,
+   "seconds": 0.203,
+   "fps": 118.5
+  },
+  {
+   "chunk": 12,
+   "frames": 24,
+   "submit": 2.461,
+   "result": 2.665,
+   "restored": 2.667,
+   "seconds": 0.204,
+   "fps": 117.8
+  },
+  {
+   "chunk": 13,
+   "frames": 24,
+   "submit": 2.667,
+   "result": 2.868,
+   "restored": 2.87,
+   "seconds": 0.201,
+   "fps": 119.3
+  },
+  {
+   "chunk": 14,
+   "frames": 24,
+   "submit": 2.87,
+   "result": 3.073,
+   "restored": 3.075,
+   "seconds": 0.203,
+   "fps": 118.0
+  }
+ ],
+ "first_chunk_restored_seconds": 0.206,
+ "last_chunk_restored_seconds": 3.075,
+ "min_head_start_seconds": 0.206,
+ "restored_fps_aggregate": 110.24,
+ "load_and_prepare_seconds": 4.37,
+ "warmup_seconds": 0.63,
+ "warm_chunks": 2,
+ "compile": false,
+ "seed": 42,
+ "device": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+ "attention": "torch SDPA",
+ "peak_torch_allocated_bytes": 5356719616,
+ "audio_contract": {
+  "conditioning": {
+   "sample_rate": 16000,
+   "channels": 1,
+   "sample_width": 2,
+   "frames": 216329,
+   "duration": 13.5205625
+  },
+  "playback": {
+   "sample_rate": 24000,
+   "channels": 1,
+   "sample_width": 2,
+   "frames": 324493,
+   "duration": 13.520541666666666
+  },
+  "playback_path": "/jobs/ab/inputs/reply14-master24k.wav"
+ },
+ "input_sha256": {
+  "/jobs/ab/inputs/reply14-master24k.wav": "3f93047958da1e55f08c778ad1d46ebf2417a59d5f4fe19d39ae63696dd5fc84",
+  "/jobs/ab/inputs/reply14-16k.wav": "8e0bf26122dd7563e149afb2058b92badb63afa2780c8d3ffdcdb5804c3f6ca7",
+  "/jobs/ab/inputs/portrait.png": "bb03f3ec6625d382b871cd766e5e0b110f0fe2db1df7deb4434d918dd603f41e"
+ },
+ "output": "/experiment/ab-out/flashhead-lite-14s.mp4"
+}

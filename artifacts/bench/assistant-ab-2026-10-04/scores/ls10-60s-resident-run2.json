@@ -1,0 +1,130 @@
+{
+ "label": "ls10-60s-resident-run2",
+ "video": "/jobs/ab/out/ls10-60s-resident-run2.mp4",
+ "audio": "/jobs/ab/inputs/reply60-16k.wav",
+ "reference": "/jobs/ab/inputs/portrait.png",
+ "frames": 750,
+ "fps": 25.0,
+ "width": 1080,
+ "height": 1920,
+ "faces_detected": 750,
+ "face_box_mean_px": [
+  501.7,
+  779.9
+ ],
+ "identity_vs_portrait": {
+  "mean": 0.9281,
+  "min": 0.8783,
+  "p05": 0.903,
+  "p95": 0.9504,
+  "std": 0.0145
+ },
+ "identity_vs_source_video": {
+  "mean": 0.9592,
+  "min": 0.9325,
+  "p05": 0.9482,
+  "p95": 0.97,
+  "std": 0.0068
+ },
+ "identity_drift_first_to_last_quarter": 0.0009,
+ "sharpness_face_laplacian_var": {
+  "mean": 293.0106,
+  "min": 226.8409,
+  "p05": 254.8329,
+  "p95": 324.5917,
+  "std": 20.5482
+ },
+ "sharpness_mouth_laplacian_var": {
+  "mean": 153.2894,
+  "min": 49.4674,
+  "p05": 101.3095,
+  "p95": 203.0629,
+  "std": 30.4035
+ },
+ "temporal_face_mean_abs_diff": {
+  "mean": 3.3258,
+  "min": 0.9958,
+  "p05": 1.6722,
+  "p95": 6.0471,
+  "std": 1.4006
+ },
+ "mouth_flicker_std": 0.8834,
+ "mouth_openness": {
+  "mean": 0.0078,
+  "min": 0.0001,
+  "p05": 0.0002,
+  "p95": 0.0303,
+  "std": 0.0106
+ },
+ "sync_proxy": {
+  "peak_correlation": 0.549,
+  "lag_frames": 1,
+  "lag_ms": 40.0,
+  "frames_with_landmarks": 750
+ },
+ "syncnet": {
+  "windows": 46,
+  "cosine_at_zero": 0.8953,
+  "best_offset_frames": 0,
+  "cosine_at_best": 0.8953,
+  "margin_over_shifted": 0.6772,
+  "per_offset": {
+   "-15": 0.1768,
+   "-14": 0.1863,
+   "-13": 0.1841,
+   "-12": 0.1799,
+   "-11": 0.1929,
+   "-10": 0.2069,
+   "-9": 0.2163,
+   "-8": 0.2242,
+   "-7": 0.2451,
+   "-6": 0.2706,
+   "-5": 0.2844,
+   "-4": 0.294,
+   "-3": 0.3429,
+   "-2": 0.4911,
+   "-1": 0.7546,
+   "0": 0.8953,
+   "1": 0.7316,
+   "2": 0.481,
+   "3": 0.3247,
+   "4": 0.2574,
+   "5": 0.2353,
+   "6": 0.2226,
+   "7": 0.2245,
+   "8": 0.2301,
+   "9": 0.2198,
+   "10": 0.2062,
+   "11": 0.1831,
+   "12": 0.183,
+   "13": 0.1891,
+   "14": 0.1989,
+   "15": 0.1802
+  },
+  "state_dict_missing": 0,
+  "state_dict_unexpected": 0
+ },
+ "av": {
+  "programs": [],
+  "streams": [
+   {
+    "codec_type": "video",
+    "width": 1080,
+    "height": 1920,
+    "r_frame_rate": "25/1",
+    "duration": "59.560000",
+    "nb_frames": "1489"
+   },
+   {
+    "codec_type": "audio",
+    "r_frame_rate": "0/0",
+    "duration": "59.493500",
+    "nb_frames": "931"
+   }
+  ],
+  "format": {
+   "duration": "59.560000"
+  }
+ },
+ "contact_sheet": "/jobs/ab/out/scores/ls10-60s-resident-run2.sheet.png"
+}

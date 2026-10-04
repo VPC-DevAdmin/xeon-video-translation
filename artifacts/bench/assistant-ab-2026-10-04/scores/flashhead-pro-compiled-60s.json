@@ -1,0 +1,130 @@
+{
+ "label": "flashhead-pro-compiled-60s",
+ "video": "/jobs/ab/out/flashhead-pro-compiled-60s.mp4",
+ "audio": "/jobs/ab/inputs/reply60-16k.wav",
+ "reference": "/jobs/ab/inputs/portrait.png",
+ "frames": 750,
+ "fps": 25.0,
+ "width": 512,
+ "height": 512,
+ "faces_detected": 750,
+ "face_box_mean_px": [
+  236.3,
+  382.9
+ ],
+ "identity_vs_portrait": {
+  "mean": 0.9241,
+  "min": 0.826,
+  "p05": 0.8757,
+  "p95": 0.9635,
+  "std": 0.0272
+ },
+ "identity_vs_source_video": {
+  "mean": 0.9189,
+  "min": 0.8255,
+  "p05": 0.8738,
+  "p95": 0.9498,
+  "std": 0.025
+ },
+ "identity_drift_first_to_last_quarter": 0.0255,
+ "sharpness_face_laplacian_var": {
+  "mean": 314.963,
+  "min": 154.2568,
+  "p05": 214.7078,
+  "p95": 405.2865,
+  "std": 55.4047
+ },
+ "sharpness_mouth_laplacian_var": {
+  "mean": 282.0525,
+  "min": 99.9289,
+  "p05": 154.8732,
+  "p95": 406.9057,
+  "std": 76.1563
+ },
+ "temporal_face_mean_abs_diff": {
+  "mean": 3.9833,
+  "min": 0.6922,
+  "p05": 1.4796,
+  "p95": 7.2314,
+  "std": 1.7422
+ },
+ "mouth_flicker_std": 0.7849,
+ "mouth_openness": {
+  "mean": 0.0203,
+  "min": 0.0,
+  "p05": 0.0004,
+  "p95": 0.0532,
+  "std": 0.0193
+ },
+ "sync_proxy": {
+  "peak_correlation": 0.41,
+  "lag_frames": 1,
+  "lag_ms": 40.0,
+  "frames_with_landmarks": 750
+ },
+ "syncnet": {
+  "windows": 46,
+  "cosine_at_zero": 0.8125,
+  "best_offset_frames": 0,
+  "cosine_at_best": 0.8125,
+  "margin_over_shifted": 0.6135,
+  "per_offset": {
+   "-15": 0.1752,
+   "-14": 0.183,
+   "-13": 0.1854,
+   "-12": 0.1777,
+   "-11": 0.1824,
+   "-10": 0.201,
+   "-9": 0.2084,
+   "-8": 0.2088,
+   "-7": 0.218,
+   "-6": 0.2383,
+   "-5": 0.2589,
+   "-4": 0.2819,
+   "-3": 0.3378,
+   "-2": 0.4777,
+   "-1": 0.7028,
+   "0": 0.8125,
+   "1": 0.6862,
+   "2": 0.4708,
+   "3": 0.3165,
+   "4": 0.2387,
+   "5": 0.2173,
+   "6": 0.2045,
+   "7": 0.1998,
+   "8": 0.1982,
+   "9": 0.183,
+   "10": 0.1723,
+   "11": 0.1617,
+   "12": 0.1709,
+   "13": 0.1785,
+   "14": 0.192,
+   "15": 0.1772
+  },
+  "state_dict_missing": 0,
+  "state_dict_unexpected": 0
+ },
+ "av": {
+  "programs": [],
+  "streams": [
+   {
+    "codec_type": "video",
+    "width": 512,
+    "height": 512,
+    "r_frame_rate": "25/1",
+    "duration": "59.520000",
+    "nb_frames": "1488"
+   },
+   {
+    "codec_type": "audio",
+    "r_frame_rate": "0/0",
+    "duration": "59.493500",
+    "nb_frames": "931"
+   }
+  ],
+  "format": {
+   "duration": "59.520000"
+  }
+ },
+ "contact_sheet": "/jobs/ab/out/scores/flashhead-pro-compiled-60s.sheet.png"
+}

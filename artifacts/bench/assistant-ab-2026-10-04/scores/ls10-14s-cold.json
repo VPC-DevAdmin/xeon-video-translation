@@ -1,0 +1,130 @@
+{
+ "label": "ls10-14s-cold",
+ "video": "/jobs/ab/out/ls10-14s-cold.mp4",
+ "audio": "/jobs/ab/inputs/reply14-16k.wav",
+ "reference": "/jobs/ab/inputs/portrait.png",
+ "frames": 340,
+ "fps": 25.0,
+ "width": 1080,
+ "height": 1920,
+ "faces_detected": 340,
+ "face_box_mean_px": [
+  501.7,
+  780.0
+ ],
+ "identity_vs_portrait": {
+  "mean": 0.9276,
+  "min": 0.8878,
+  "p05": 0.9035,
+  "p95": 0.9512,
+  "std": 0.0146
+ },
+ "identity_vs_source_video": {
+  "mean": 0.9592,
+  "min": 0.9381,
+  "p05": 0.9481,
+  "p95": 0.9702,
+  "std": 0.0068
+ },
+ "identity_drift_first_to_last_quarter": 0.0018,
+ "sharpness_face_laplacian_var": {
+  "mean": 291.1545,
+  "min": 229.1149,
+  "p05": 252.0107,
+  "p95": 318.992,
+  "std": 19.7082
+ },
+ "sharpness_mouth_laplacian_var": {
+  "mean": 148.6714,
+  "min": 63.5843,
+  "p05": 105.0722,
+  "p95": 187.256,
+  "std": 25.3583
+ },
+ "temporal_face_mean_abs_diff": {
+  "mean": 3.2971,
+  "min": 0.9651,
+  "p05": 1.63,
+  "p95": 5.7005,
+  "std": 1.4021
+ },
+ "mouth_flicker_std": 0.7454,
+ "mouth_openness": {
+  "mean": 0.0088,
+  "min": 0.0,
+  "p05": 0.0003,
+  "p95": 0.0307,
+  "std": 0.0104
+ },
+ "sync_proxy": {
+  "peak_correlation": 0.571,
+  "lag_frames": 1,
+  "lag_ms": 40.0,
+  "frames_with_landmarks": 340
+ },
+ "syncnet": {
+  "windows": 20,
+  "cosine_at_zero": 0.8694,
+  "best_offset_frames": 0,
+  "cosine_at_best": 0.8694,
+  "margin_over_shifted": 0.7275,
+  "per_offset": {
+   "-15": 0.0873,
+   "-14": 0.0878,
+   "-13": 0.1063,
+   "-12": 0.1151,
+   "-11": 0.1266,
+   "-10": 0.1392,
+   "-9": 0.171,
+   "-8": 0.178,
+   "-7": 0.1731,
+   "-6": 0.1609,
+   "-5": 0.1885,
+   "-4": 0.2568,
+   "-3": 0.3463,
+   "-2": 0.5429,
+   "-1": 0.7625,
+   "0": 0.8694,
+   "1": 0.7064,
+   "2": 0.4244,
+   "3": 0.2451,
+   "4": 0.1798,
+   "5": 0.1447,
+   "6": 0.1371,
+   "7": 0.15,
+   "8": 0.1623,
+   "9": 0.1489,
+   "10": 0.1268,
+   "11": 0.1261,
+   "12": 0.1052,
+   "13": 0.0887,
+   "14": 0.0857,
+   "15": 0.0854
+  },
+  "state_dict_missing": 0,
+  "state_dict_unexpected": 0
+ },
+ "av": {
+  "programs": [],
+  "streams": [
+   {
+    "codec_type": "video",
+    "width": 1080,
+    "height": 1920,
+    "r_frame_rate": "25/1",
+    "duration": "13.600000",
+    "nb_frames": "340"
+   },
+   {
+    "codec_type": "audio",
+    "r_frame_rate": "0/0",
+    "duration": "13.520563",
+    "nb_frames": "213"
+   }
+  ],
+  "format": {
+   "duration": "13.600000"
+  }
+ },
+ "contact_sheet": "/jobs/ab/out/scores/ls10-14s-cold.sheet.png"
+}

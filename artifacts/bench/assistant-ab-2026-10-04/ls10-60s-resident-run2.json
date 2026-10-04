@@ -1,0 +1,1046 @@
+{
+ "label": "ls10-60s-resident-run2",
+ "design": "latentsync-persona",
+ "request": {
+  "video_path": "/jobs/ab/inputs/persona52s-25fps.mp4",
+  "audio_path": "/jobs/ab/inputs/reply60-16k.wav",
+  "output_path": "/jobs/ab/out/ls10-60s-resident-run2.mp4",
+  "num_inference_steps": 10,
+  "seed": 42,
+  "persona_key": "persona52",
+  "face_track_source": "/jobs/ab/inputs/persona52s-25fps.mp4",
+  "face_track_offset_frames": 0
+ },
+ "response": {
+  "status": "ok",
+  "output_path": "/jobs/ab/out/ls10-60s-resident-run2.mp4",
+  "frames_processed": -1,
+  "duration_ms": 70728,
+  "detail": "num_inference_steps=10 guidance_scale=1.50 dry_run=False"
+ },
+ "wall_seconds": 70.73,
+ "prepare_seconds": 42.36,
+ "prepare_response": {
+  "status": "ok",
+  "frames": 1489,
+  "seconds": 42.26,
+  "total_seconds": 42.36,
+  "duration_ms": 42357
+ },
+ "events": {
+  "latentsync_face_prep": [
+   {
+    "event": "latentsync_face_prep",
+    "frames": 1302,
+    "detect_seconds": 0.0,
+    "warp_seconds": 11.22,
+    "shared_track": true
+   }
+  ],
+  "latentsync_stages": [
+   {
+    "persona_key": "persona52",
+    "prepared_ahead": true,
+    "decode_audio_face_seconds": 0.0,
+    "conditioning_seconds": 4.3,
+    "wait_for_worker_seconds": 37.83,
+    "collect_and_paste_seconds": 0.8,
+    "event": "latentsync_stages",
+    "frames": 1489,
+    "steps": 10,
+    "workers": 8,
+    "prefetch": 1
+   }
+  ],
+  "latentsync_restore_overlapped": [
+   {
+    "event": "latentsync_restore_overlapped",
+    "frames": 1489,
+    "restore_seconds_on_side_thread": 55.24
+   }
+  ],
+  "latentsync_chunks": [
+   {
+    "event": "latentsync_chunks",
+    "t0_wall": 1791129593.826,
+    "num_frames": 16,
+    "fps": 25,
+    "frames": 1489,
+    "persona_key": "persona52",
+    "chunks": [
+     {
+      "chunk": 0,
+      "submit": 0.033,
+      "result": 3.29,
+      "worker_received": 0.118,
+      "worker_done": 3.265,
+      "device": 0,
+      "persona_cached": true,
+      "restored": 4.09
+     },
+     {
+      "chunk": 1,
+      "submit": 0.077,
+      "result": 3.39,
+      "worker_received": 0.192,
+      "worker_done": 3.363,
+      "device": 1,
+      "persona_cached": true,
+      "restored": 4.907
+     },
+     {
+      "chunk": 2,
+      "submit": 0.121,
+      "result": 3.446,
+      "worker_received": 0.239,
+      "worker_done": 3.372,
+      "device": 2,
+      "persona_cached": true,
+      "restored": 5.729
+     },
+     {
+      "chunk": 3,
+      "submit": 0.211,
+      "result": 3.517,
+      "worker_received": 0.334,
+      "worker_done": 3.469,
+      "device": 3,
+      "persona_cached": true,
+      "restored": 6.571
+     },
+     {
+      "chunk": 4,
+      "submit": 0.258,
+      "result": 3.586,
+      "worker_received": 0.419,
+      "worker_done": 3.554,
+      "device": 4,
+      "persona_cached": true,
+      "restored": 7.342
+     },
+     {
+      "chunk": 5,
+      "submit": 0.315,
+      "result": 3.648,
+      "worker_received": 0.431,
+      "worker_done": 3.562,
+      "device": 5,
+      "persona_cached": true,
+      "restored": 8.182
+     },
+     {
+      "chunk": 6,
+      "submit": 0.423,
+      "result": 3.716,
+      "worker_received": 0.533,
+      "worker_done": 3.692,
+      "device": 6,
+      "persona_cached": true,
+      "restored": 8.982
+     },
+     {
+      "chunk": 7,
+      "submit": 0.457,
+      "result": 3.782,
+      "worker_received": 0.548,
+      "worker_done": 3.686,
+      "device": 7,
+      "persona_cached": true,
+      "restored": 9.8
+     },
+     {
+      "chunk": 8,
+      "submit": 3.335,
+      "result": 6.91,
+      "worker_received": 3.394,
+      "worker_done": 6.884,
+      "device": 0,
+      "persona_cached": true,
+      "restored": 10.611
+     },
+     {
+      "chunk": 9,
+      "submit": 3.429,
+      "result": 6.963,
+      "worker_received": 3.483,
+      "worker_done": 6.62,
+      "device": 1,
+      "persona_cached": true,
+      "restored": 11.438
+     },
+     {
+      "chunk": 10,
+      "submit": 3.496,
+      "result": 7.03,
+      "worker_received": 3.554,
+      "worker_done": 6.681,
+      "device": 2,
+      "persona_cached": true,
+      "restored": 12.278
+     },
+     {
+      "chunk": 11,
+      "submit": 3.567,
+      "result": 7.1,
+      "worker_received": 3.649,
+      "worker_done": 6.78,
+      "device": 3,
+      "persona_cached": true,
+      "restored": 13.121
+     },
+     {
+      "chunk": 12,
+      "submit": 3.627,
+      "result": 7.154,
+      "worker_received": 3.71,
+      "worker_done": 6.842,
+      "device": 4,
+      "persona_cached": true,
+      "restored": 13.956
+     },
+     {
+      "chunk": 13,
+      "submit": 3.693,
+      "result": 7.216,
+      "worker_received": 3.754,
+      "worker_done": 6.886,
+      "device": 5,
+      "persona_cached": true,
+      "restored": 14.683
+     },
+     {
+      "chunk": 14,
+      "submit": 3.765,
+      "result": 7.319,
+      "worker_received": 3.837,
+      "worker_done": 6.971,
+      "device": 6,
+      "persona_cached": true,
+      "restored": 15.538
+     },
+     {
+      "chunk": 15,
+      "submit": 3.845,
+      "result": 7.383,
+      "worker_received": 3.907,
+      "worker_done": 7.04,
+      "device": 7,
+      "persona_cached": true,
+      "restored": 16.363
+     },
+     {
+      "chunk": 16,
+      "submit": 6.951,
+      "result": 10.578,
+      "worker_received": 7.02,
+      "worker_done": 10.526,
+      "device": 0,
+      "persona_cached": true,
+      "restored": 17.192
+     },
+     {
+      "chunk": 17,
+      "submit": 7.005,
+      "result": 10.635,
+      "worker_received": 7.075,
+      "worker_done": 10.207,
+      "device": 1,
+      "persona_cached": true,
+      "restored": 18.001
+     },
+     {
+      "chunk": 18,
+      "submit": 7.084,
+      "result": 10.689,
+      "worker_received": 7.153,
+      "worker_done": 10.28,
+      "device": 2,
+      "persona_cached": true,
+      "restored": 18.833
+     },
+     {
+      "chunk": 19,
+      "submit": 7.134,
+      "result": 10.756,
+      "worker_received": 7.218,
+      "worker_done": 10.347,
+      "device": 3,
+      "persona_cached": true,
+      "restored": 19.646
+     },
+     {
+      "chunk": 20,
+      "submit": 7.195,
+      "result": 10.812,
+      "worker_received": 7.271,
+      "worker_done": 10.402,
+      "device": 4,
+      "persona_cached": true,
+      "restored": 20.444
+     },
+     {
+      "chunk": 21,
+      "submit": 7.252,
+      "result": 10.868,
+      "worker_received": 7.384,
+      "worker_done": 10.521,
+      "device": 5,
+      "persona_cached": true,
+      "restored": 21.232
+     },
+     {
+      "chunk": 22,
+      "submit": 7.363,
+      "result": 10.926,
+      "worker_received": 7.436,
+      "worker_done": 10.569,
+      "device": 6,
+      "persona_cached": true,
+      "restored": 21.885
+     },
+     {
+      "chunk": 23,
+      "submit": 7.419,
+      "result": 11.001,
+      "worker_received": 7.49,
+      "worker_done": 10.623,
+      "device": 7,
+      "persona_cached": true,
+      "restored": 22.753
+     },
+     {
+      "chunk": 24,
+      "submit": 10.619,
+      "result": 14.224,
+      "worker_received": 10.701,
+      "worker_done": 14.184,
+      "device": 0,
+      "persona_cached": true,
+      "restored": 23.545
+     },
+     {
+      "chunk": 25,
+      "submit": 10.675,
+      "result": 14.284,
+      "worker_received": 10.757,
+      "worker_done": 13.889,
+      "device": 1,
+      "persona_cached": true,
+      "restored": 24.348
+     },
+     {
+      "chunk": 26,
+      "submit": 10.735,
+      "result": 14.361,
+      "worker_received": 10.813,
+      "worker_done": 13.94,
+      "device": 2,
+      "persona_cached": true,
+      "restored": 25.165
+     },
+     {
+      "chunk": 27,
+      "submit": 10.793,
+      "result": 14.433,
+      "worker_received": 10.882,
+      "worker_done": 14.013,
+      "device": 3,
+      "persona_cached": true,
+      "restored": 25.918
+     },
+     {
+      "chunk": 28,
+      "submit": 10.853,
+      "result": 14.51,
+      "worker_received": 10.94,
+      "worker_done": 14.073,
+      "device": 4,
+      "persona_cached": true,
+      "restored": 26.737
+     },
+     {
+      "chunk": 29,
+      "submit": 10.914,
+      "result": 14.645,
+      "worker_received": 11.009,
+      "worker_done": 14.142,
+      "device": 5,
+      "persona_cached": true,
+      "restored": 27.558
+     },
+     {
+      "chunk": 30,
+      "submit": 10.978,
+      "result": 14.727,
+      "worker_received": 11.06,
+      "worker_done": 14.194,
+      "device": 6,
+      "persona_cached": true,
+      "restored": 28.366
+     },
+     {
+      "chunk": 31,
+      "submit": 11.037,
+      "result": 14.803,
+      "worker_received": 11.106,
+      "worker_done": 14.24,
+      "device": 7,
+      "persona_cached": true,
+      "restored": 29.01
+     },
+     {
+      "chunk": 32,
+      "submit": 14.273,
+      "result": 17.853,
+      "worker_received": 14.339,
+      "worker_done": 17.827,
+      "device": 0,
+      "persona_cached": true,
+      "restored": 29.869
+     },
+     {
+      "chunk": 33,
+      "submit": 14.35,
+      "result": 17.968,
+      "worker_received": 14.413,
+      "worker_done": 17.548,
+      "device": 1,
+      "persona_cached": true,
+      "restored": 30.679
+     },
+     {
+      "chunk": 34,
+      "submit": 14.421,
+      "result": 18.045,
+      "worker_received": 14.479,
+      "worker_done": 17.605,
+      "device": 2,
+      "persona_cached": true,
+      "restored": 31.496
+     },
+     {
+      "chunk": 35,
+      "submit": 14.495,
+      "result": 18.124,
+      "worker_received": 14.573,
+      "worker_done": 17.704,
+      "device": 3,
+      "persona_cached": true,
+      "restored": 32.31
+     },
+     {
+      "chunk": 36,
+      "submit": 14.58,
+      "result": 18.203,
+      "worker_received": 14.704,
+      "worker_done": 17.838,
+      "device": 4,
+      "persona_cached": true,
+      "restored": 32.91
+     },
+     {
+      "chunk": 37,
+      "submit": 14.712,
+      "result": 18.314,
+      "worker_received": 14.784,
+      "worker_done": 17.916,
+      "device": 5,
+      "persona_cached": true,
+      "restored": 33.735
+     },
+     {
+      "chunk": 38,
+      "submit": 14.791,
+      "result": 18.379,
+      "worker_received": 14.85,
+      "worker_done": 17.987,
+      "device": 6,
+      "persona_cached": true,
+      "restored": 34.526
+     },
+     {
+      "chunk": 39,
+      "submit": 14.862,
+      "result": 18.458,
+      "worker_received": 14.929,
+      "worker_done": 18.062,
+      "device": 7,
+      "persona_cached": true,
+      "restored": 35.329
+     },
+     {
+      "chunk": 40,
+      "submit": 17.915,
+      "result": 21.55,
+      "worker_received": 18.023,
+      "worker_done": 21.525,
+      "device": 0,
+      "persona_cached": true,
+      "restored": 36.141
+     },
+     {
+      "chunk": 41,
+      "submit": 18.033,
+      "result": 21.599,
+      "worker_received": 18.089,
+      "worker_done": 21.222,
+      "device": 1,
+      "persona_cached": true,
+      "restored": 36.909
+     },
+     {
+      "chunk": 42,
+      "submit": 18.107,
+      "result": 21.674,
+      "worker_received": 18.172,
+      "worker_done": 21.298,
+      "device": 2,
+      "persona_cached": true,
+      "restored": 37.728
+     },
+     {
+      "chunk": 43,
+      "submit": 18.186,
+      "result": 21.746,
+      "worker_received": 18.264,
+      "worker_done": 21.404,
+      "device": 3,
+      "persona_cached": true,
+      "restored": 38.523
+     },
+     {
+      "chunk": 44,
+      "submit": 18.288,
+      "result": 21.862,
+      "worker_received": 18.351,
+      "worker_done": 21.482,
+      "device": 4,
+      "persona_cached": true,
+      "restored": 39.346
+     },
+     {
+      "chunk": 45,
+      "submit": 18.364,
+      "result": 21.921,
+      "worker_received": 18.433,
+      "worker_done": 21.565,
+      "device": 5,
+      "persona_cached": true,
+      "restored": 39.981
+     },
+     {
+      "chunk": 46,
+      "submit": 18.442,
+      "result": 21.97,
+      "worker_received": 18.506,
+      "worker_done": 21.639,
+      "device": 6,
+      "persona_cached": true,
+      "restored": 40.82
+     },
+     {
+      "chunk": 47,
+      "submit": 18.496,
+      "result": 22.048,
+      "worker_received": 18.562,
+      "worker_done": 21.697,
+      "device": 7,
+      "persona_cached": true,
+      "restored": 41.637
+     },
+     {
+      "chunk": 48,
+      "submit": 21.587,
+      "result": 25.182,
+      "worker_received": 21.656,
+      "worker_done": 25.154,
+      "device": 0,
+      "persona_cached": true,
+      "restored": 42.439
+     },
+     {
+      "chunk": 49,
+      "submit": 21.662,
+      "result": 25.226,
+      "worker_received": 21.721,
+      "worker_done": 24.852,
+      "device": 1,
+      "persona_cached": true,
+      "restored": 43.251
+     },
+     {
+      "chunk": 50,
+      "submit": 21.729,
+      "result": 25.279,
+      "worker_received": 21.794,
+      "worker_done": 24.92,
+      "device": 2,
+      "persona_cached": true,
+      "restored": 43.679
+     },
+     {
+      "chunk": 51,
+      "submit": 21.804,
+      "result": 25.359,
+      "worker_received": 21.922,
+      "worker_done": 25.06,
+      "device": 3,
+      "persona_cached": true,
+      "restored": 44.029
+     },
+     {
+      "chunk": 52,
+      "submit": 21.9,
+      "result": 25.408,
+      "worker_received": 21.979,
+      "worker_done": 25.118,
+      "device": 4,
+      "persona_cached": true,
+      "restored": 44.398
+     },
+     {
+      "chunk": 53,
+      "submit": 21.956,
+      "result": 25.47,
+      "worker_received": 22.047,
+      "worker_done": 25.179,
+      "device": 5,
+      "persona_cached": true,
+      "restored": 44.747
+     },
+     {
+      "chunk": 54,
+      "submit": 22.029,
+      "result": 25.554,
+      "worker_received": 22.11,
+      "worker_done": 25.242,
+      "device": 6,
+      "persona_cached": true,
+      "restored": 45.097
+     },
+     {
+      "chunk": 55,
+      "submit": 22.116,
+      "result": 25.615,
+      "worker_received": 22.177,
+      "worker_done": 25.311,
+      "device": 7,
+      "persona_cached": true,
+      "restored": 45.447
+     },
+     {
+      "chunk": 56,
+      "submit": 25.213,
+      "result": 28.8,
+      "worker_received": 25.285,
+      "worker_done": 28.779,
+      "device": 0,
+      "persona_cached": true,
+      "restored": 45.795
+     },
+     {
+      "chunk": 57,
+      "submit": 25.266,
+      "result": 28.856,
+      "worker_received": 25.339,
+      "worker_done": 28.47,
+      "device": 1,
+      "persona_cached": true,
+      "restored": 46.144
+     },
+     {
+      "chunk": 58,
+      "submit": 25.343,
+      "result": 28.979,
+      "worker_received": 25.414,
+      "worker_done": 28.541,
+      "device": 2,
+      "persona_cached": true,
+      "restored": 46.494
+     },
+     {
+      "chunk": 59,
+      "submit": 25.394,
+      "result": 29.051,
+      "worker_received": 25.471,
+      "worker_done": 28.611,
+      "device": 3,
+      "persona_cached": true,
+      "restored": 46.844
+     },
+     {
+      "chunk": 60,
+      "submit": 25.451,
+      "result": 29.124,
+      "worker_received": 25.535,
+      "worker_done": 28.667,
+      "device": 4,
+      "persona_cached": true,
+      "restored": 47.193
+     },
+     {
+      "chunk": 61,
+      "submit": 25.541,
+      "result": 29.185,
+      "worker_received": 25.617,
+      "worker_done": 28.75,
+      "device": 5,
+      "persona_cached": true,
+      "restored": 47.546
+     },
+     {
+      "chunk": 62,
+      "submit": 25.594,
+      "result": 29.266,
+      "worker_received": 25.666,
+      "worker_done": 28.798,
+      "device": 6,
+      "persona_cached": true,
+      "restored": 47.895
+     },
+     {
+      "chunk": 63,
+      "submit": 25.673,
+      "result": 29.341,
+      "worker_received": 25.732,
+      "worker_done": 28.866,
+      "device": 7,
+      "persona_cached": true,
+      "restored": 48.243
+     },
+     {
+      "chunk": 64,
+      "submit": 28.845,
+      "result": 32.425,
+      "worker_received": 28.912,
+      "worker_done": 32.404,
+      "device": 0,
+      "persona_cached": true,
+      "restored": 48.592
+     },
+     {
+      "chunk": 65,
+      "submit": 28.919,
+      "result": 32.488,
+      "worker_received": 29.032,
+      "worker_done": 32.165,
+      "device": 1,
+      "persona_cached": true,
+      "restored": 48.94
+     },
+     {
+      "chunk": 66,
+      "submit": 29.038,
+      "result": 32.567,
+      "worker_received": 29.107,
+      "worker_done": 32.235,
+      "device": 2,
+      "persona_cached": true,
+      "restored": 49.294
+     },
+     {
+      "chunk": 67,
+      "submit": 29.112,
+      "result": 32.642,
+      "worker_received": 29.185,
+      "worker_done": 32.317,
+      "device": 3,
+      "persona_cached": true,
+      "restored": 49.64
+     },
+     {
+      "chunk": 68,
+      "submit": 29.166,
+      "result": 32.723,
+      "worker_received": 29.244,
+      "worker_done": 32.377,
+      "device": 4,
+      "persona_cached": true,
+      "restored": 49.988
+     },
+     {
+      "chunk": 69,
+      "submit": 29.249,
+      "result": 32.8,
+      "worker_received": 29.315,
+      "worker_done": 32.458,
+      "device": 5,
+      "persona_cached": true,
+      "restored": 50.343
+     },
+     {
+      "chunk": 70,
+      "submit": 29.327,
+      "result": 32.933,
+      "worker_received": 29.387,
+      "worker_done": 32.52,
+      "device": 6,
+      "persona_cached": true,
+      "restored": 50.707
+     },
+     {
+      "chunk": 71,
+      "submit": 29.397,
+      "result": 33.012,
+      "worker_received": 29.455,
+      "worker_done": 32.588,
+      "device": 7,
+      "persona_cached": true,
+      "restored": 51.065
+     },
+     {
+      "chunk": 72,
+      "submit": 32.479,
+      "result": 36.117,
+      "worker_received": 32.553,
+      "worker_done": 36.05,
+      "device": 0,
+      "persona_cached": true,
+      "restored": 51.417
+     },
+     {
+      "chunk": 73,
+      "submit": 32.557,
+      "result": 36.168,
+      "worker_received": 32.622,
+      "worker_done": 35.753,
+      "device": 1,
+      "persona_cached": true,
+      "restored": 51.764
+     },
+     {
+      "chunk": 74,
+      "submit": 32.63,
+      "result": 36.249,
+      "worker_received": 32.703,
+      "worker_done": 35.83,
+      "device": 2,
+      "persona_cached": true,
+      "restored": 52.12
+     },
+     {
+      "chunk": 75,
+      "submit": 32.71,
+      "result": 36.329,
+      "worker_received": 32.785,
+      "worker_done": 35.922,
+      "device": 3,
+      "persona_cached": true,
+      "restored": 52.47
+     },
+     {
+      "chunk": 76,
+      "submit": 32.789,
+      "result": 36.401,
+      "worker_received": 32.844,
+      "worker_done": 35.976,
+      "device": 4,
+      "persona_cached": true,
+      "restored": 52.821
+     },
+     {
+      "chunk": 77,
+      "submit": 32.914,
+      "result": 36.458,
+      "worker_received": 32.988,
+      "worker_done": 36.124,
+      "device": 5,
+      "persona_cached": true,
+      "restored": 53.172
+     },
+     {
+      "chunk": 78,
+      "submit": 33.0,
+      "result": 36.505,
+      "worker_received": 33.051,
+      "worker_done": 36.183,
+      "device": 6,
+      "persona_cached": true,
+      "restored": 53.524
+     },
+     {
+      "chunk": 79,
+      "submit": 33.067,
+      "result": 36.574,
+      "worker_received": 33.131,
+      "worker_done": 36.263,
+      "device": 7,
+      "persona_cached": true,
+      "restored": 53.889
+     },
+     {
+      "chunk": 80,
+      "submit": 36.154,
+      "result": 39.75,
+      "worker_received": 36.228,
+      "worker_done": 39.729,
+      "device": 0,
+      "persona_cached": true,
+      "restored": 54.242
+     },
+     {
+      "chunk": 81,
+      "submit": 36.236,
+      "result": 39.795,
+      "worker_received": 36.299,
+      "worker_done": 39.432,
+      "device": 1,
+      "persona_cached": true,
+      "restored": 54.6
+     },
+     {
+      "chunk": 82,
+      "submit": 36.311,
+      "result": 39.868,
+      "worker_received": 36.378,
+      "worker_done": 39.505,
+      "device": 2,
+      "persona_cached": true,
+      "restored": 54.952
+     },
+     {
+      "chunk": 83,
+      "submit": 36.385,
+      "result": 39.987,
+      "worker_received": 36.459,
+      "worker_done": 39.591,
+      "device": 3,
+      "persona_cached": true,
+      "restored": 55.302
+     },
+     {
+      "chunk": 84,
+      "submit": 36.439,
+      "result": 40.065,
+      "worker_received": 36.527,
+      "worker_done": 39.661,
+      "device": 4,
+      "persona_cached": true,
+      "restored": 55.653
+     },
+     {
+      "chunk": 85,
+      "submit": 36.494,
+      "result": 40.139,
+      "worker_received": 36.602,
+      "worker_done": 39.735,
+      "device": 5,
+      "persona_cached": true,
+      "restored": 56.011
+     },
+     {
+      "chunk": 86,
+      "submit": 36.561,
+      "result": 40.17,
+      "worker_received": 36.666,
+      "worker_done": 39.8,
+      "device": 6,
+      "persona_cached": true,
+      "restored": 56.374
+     },
+     {
+      "chunk": 87,
+      "submit": 36.644,
+      "result": 40.197,
+      "worker_received": 36.711,
+      "worker_done": 39.843,
+      "device": 7,
+      "persona_cached": true,
+      "restored": 56.728
+     },
+     {
+      "chunk": 88,
+      "submit": 39.783,
+      "result": 43.36,
+      "worker_received": 39.848,
+      "worker_done": 43.339,
+      "device": 0,
+      "persona_cached": true,
+      "restored": 57.085
+     },
+     {
+      "chunk": 89,
+      "submit": 39.857,
+      "result": 43.384,
+      "worker_received": 39.906,
+      "worker_done": 43.038,
+      "device": 1,
+      "persona_cached": true,
+      "restored": 57.453
+     },
+     {
+      "chunk": 90,
+      "submit": 39.973,
+      "result": 43.407,
+      "worker_received": 40.04,
+      "worker_done": 43.168,
+      "device": 2,
+      "persona_cached": true,
+      "restored": 57.811
+     },
+     {
+      "chunk": 91,
+      "submit": 40.05,
+      "result": 43.429,
+      "worker_received": 40.121,
+      "worker_done": 43.252,
+      "device": 3,
+      "persona_cached": true,
+      "restored": 58.175
+     },
+     {
+      "chunk": 92,
+      "submit": 40.126,
+      "result": 43.448,
+      "worker_received": 40.188,
+      "worker_done": 43.32,
+      "device": 4,
+      "persona_cached": true,
+      "restored": 58.523
+     },
+     {
+      "chunk": 93,
+      "submit": 40.154,
+      "result": 43.461,
+      "worker_received": 40.164,
+      "worker_done": 40.593,
+      "device": 5,
+      "persona_cached": true,
+      "restored": 58.542
+     }
+    ],
+    "first_chunk_restored_seconds": 4.09,
+    "last_chunk_restored_seconds": 58.542,
+    "min_head_start_seconds": 11.891,
+    "restored_fps_aggregate": 25.45,
+    "persona_cache_hits": 94
+   }
+  ],
+  "latentsync_finish": [
+   {
+    "event": "latentsync_finish",
+    "frames": 1489,
+    "restore_seconds": 0.0,
+    "write_seconds": 8.53
+   }
+  ]
+ },
+ "output": "/jobs/ab/out/ls10-60s-resident-run2.mp4",
+ "output_master_audio": null,
+ "probe": {
+  "programs": [],
+  "streams": [
+   {
+    "width": 1080,
+    "height": 1920,
+    "r_frame_rate": "25/1",
+    "nb_read_frames": "1489"
+   }
+  ],
+  "format": {
+   "duration": "59.560000"
+  }
+ },
+ "t0_wall": 1791129593.5069072,
+ "gpu_samples": "/home/user/ab-results/ls10-60s-resident-run2.gpu.jsonl"
+}
