@@ -23,7 +23,25 @@ Interrupt to cut it off. **Use this person…** opens the guided capture for a n
 face and voice; "or upload a portrait" keeps the older portrait-only path.
 
 Switch the box into this mode with `scripts/mode.sh assistant` (stops LatentSync
-and MuseTalk; starts backend, LLM, frontend, ingest; reuses a running renderer).
+and MuseTalk; starts backend, LLM, frontend, ingest, TURN relay; reuses a running
+renderer).
+
+Media path: browsers reach the box over the overlay network, where direct UDP
+between host candidates is not guaranteed and Chrome hides its own addresses
+behind mDNS, so assistant mode runs a coturn relay on the box (port 3478 UDP and
+TCP, relay ports 49160 to 49200). Ingest hands both peers STUN and TURN servers
+with credentials derived from `TURN_SHARED_SECRET`. The `.env` values are JSON
+and must be single-quoted so Compose keeps the quotes:
+
+```
+TURN_SHARED_SECRET=<random>
+TURN_PUBLIC_IP=100.67.151.209
+TURN_URLS_JSON='["turn:100.67.151.209:3478?transport=udp","turn:100.67.151.209:3478?transport=tcp","turn:localhost:3478?transport=tcp"]'
+ICE_SERVERS_JSON='[{"urls":["stun:100.67.151.209:3478"]}]'
+```
+
+If UDP to the box is blocked entirely, add `-L 3478:localhost:3478` to the SSH
+command and the browser relays over TCP through the tunnel.
 
 ## What happens on a turn
 
