@@ -230,6 +230,7 @@ def _build(directory: Path, language: str, script: str) -> dict:
         samples = samples.mean(axis=1)
     voice = voice_level_checks(samples, rate)
     heard = ""
+    transcript = None
     if voice["duration_seconds"] >= 3:
         transcript = transcribe.transcribe(directory / "voice16.wav", directory / "voice16.json", language)
         heard = transcript.text.strip()
@@ -258,14 +259,50 @@ def _build(directory: Path, language: str, script: str) -> dict:
             idle = {"frames": None}
     checks = {"voice": voice, "portrait": portrait, "idle": idle}
     if voice["ok"] and portrait["ok"]:
-        model = tts._get_xtts().synthesizer.tts_model
-        import torch
-        with torch.inference_mode():
-            gpt_cond_latent, speaker_embedding = model.get_conditioning_latents(
-                audio_path=[str(directory / "voice.wav")], gpt_cond_len=30, gpt_cond_chunk_len=4, max_ref_length=60)
-        torch.save({"gpt_cond_latent": gpt_cond_latent.detach().cpu(), "speaker_embedding": speaker_embedding.detach().cpu()},
-                   directory / "voice.pt")
+        reference = reference_span(directory, transcript)
+        voice["reference"] = reference
+        build_conditioning(directory)
     return checks
+
+
+def reference_span(directory: Path, transcript, max_seconds: float = 25.0, pad: float = 0.2) -> dict:
+    """Cut `voice_ref.wav`: the speech-dense span of the recording the clone is built
+    from. Leading and trailing silence, breaths and room noise before the first word
+    make XTTS clones babble; a tight, words-only reference is what it was trained on."""
+    import soundfile as sf
+
+    audio, rate = sf.read(str(directory / "voice.wav"), dtype="float32", always_2d=False)
+    total = len(audio) / rate
+    words = [w for seg in (transcript.segments if transcript else []) for w in seg.words if w.start is not None and w.end is not None]
+    if not words:
+        start, end = 0.0, min(total, max_seconds)
+    else:
+        start, end = max(0.0, float(words[0].start) - pad), min(total, float(words[-1].end) + pad)
+        if end - start > max_seconds:
+            # the window of max_seconds with the most words
+            best, best_count = start, 0
+            for w in words:
+                left = float(w.start) - pad
+                count = sum(1 for x in words if left <= float(x.start) and float(x.end) <= left + max_seconds)
+                if count > best_count:
+                    best, best_count = left, count
+            start, end = max(0.0, best), min(total, best + max_seconds)
+    sf.write(str(directory / "voice_ref.wav"), audio[int(start * rate): int(end * rate)], rate)
+    return {"start": round(start, 2), "end": round(end, 2), "seconds": round(end - start, 2), "words": len(words)}
+
+
+def build_conditioning(directory: Path) -> None:
+    import torch
+    from ..pipeline import tts
+    reference = directory / "voice_ref.wav"
+    if not reference.exists():
+        reference = directory / "voice.wav"
+    model = tts._get_xtts().synthesizer.tts_model
+    with torch.inference_mode():
+        gpt_cond_latent, speaker_embedding = model.get_conditioning_latents(
+            audio_path=[str(reference)], gpt_cond_len=30, gpt_cond_chunk_len=4, max_ref_length=30)
+    torch.save({"gpt_cond_latent": gpt_cond_latent.detach().cpu(), "speaker_embedding": speaker_embedding.detach().cpu()},
+               directory / "voice.pt")
 
 
 @lru_cache(maxsize=8)
@@ -281,7 +318,17 @@ def conditioning(persona_id: str, owner_id: str | None = None) -> dict:
     record = _load(persona_id)
     if owner_id is not None and record.get("owner_id", "local") != owner_id:
         raise HTTPException(404, "persona not found")
-    path = ROOT / persona_id / "voice.pt"
+    directory = ROOT / persona_id
+    path = directory / "voice.pt"
+    if not (directory / "voice_ref.wav").exists() and (directory / "voice.wav").exists():
+        # Persona built before reference trimming: cut the reference and redo the latents once.
+        from ..pipeline import transcribe
+        transcript = transcribe.transcribe(directory / "voice16.wav", directory / "voice16.json", record.get("language", "en")) \
+            if (directory / "voice16.wav").exists() else None
+        record.setdefault("checks", {}).setdefault("voice", {})["reference"] = reference_span(directory, transcript)
+        build_conditioning(directory)
+        (directory / "persona.json").write_text(json.dumps(record, indent=1))
+        _cached_conditioning.cache_clear()
     if not path.exists():
         raise HTTPException(409, "persona has no usable voice")
     state = _cached_conditioning(persona_id, path.stat().st_mtime)

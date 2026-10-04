@@ -106,33 +106,45 @@ def _synthesize(model, conditioning, text: str, language: str):
             return
 
 
-def _verified_sentence(model, conditioning, sentence: str, language: str, attempts: int = 2):
-    """Synthesize one sentence and check it with the recognizer; XTTS occasionally
-    produces a garbled take, especially for cloned voices, and a bad take must not
-    be spoken (or cached as the acknowledgement). Returns (audio, match, heard)."""
+def _verified_sentence(model, conditioning, sentence: str, language: str, attempts: int = 3):
+    """Synthesize one sentence and keep only a take whose recognized words are exactly
+    the sentence, trimmed to those words (the generation pipeline's rule). Cloned
+    voices sometimes babble, repeat or trail off; such takes are re-synthesized.
+    Falls back to the shortest fuzzy-matching take when every attempt fails."""
     import tempfile
     import numpy as np
     import soundfile as sf
     import torch
     from .personas import script_match
+    from ..pipeline.tts import _trim_tail_via_whisper, _trim_to_speech
 
-    best = None
+    fallback = None
     for attempt in range(attempts):
         with torch.inference_mode():
             result = model.inference(sentence, tts.XTTS_LANG_CODES[language], conditioning["gpt_cond_latent"],
-                                     conditioning["speaker_embedding"], temperature=0.65 + 0.1 * attempt)
+                                     conditioning["speaker_embedding"], temperature=max(0.45, 0.7 - 0.1 * attempt),
+                                     repetition_penalty=10.0)
         audio = np.asarray(result["wav"], dtype=np.float32)
         with tempfile.TemporaryDirectory(prefix="speak-") as directory:
             wav = Path(directory) / "take.wav"
             sf.write(str(wav), audio, SAMPLE_RATE)
+            verdict = _trim_tail_via_whisper(wav, language, sentence)
+            if verdict is True:
+                trimmed, _ = sf.read(str(wav), dtype="float32", always_2d=False)
+                return trimmed, 1.0, sentence, attempt + 1
             heard = transcribe.transcribe(wav, wav.with_suffix(".json"), language).text.strip()
-        match = script_match(sentence, heard)
-        if best is None or match > best[1]:
-            best = (audio, match, heard)
-        if match >= 0.6:
-            break
-        log.warning("tts take rejected (%.2f): wanted %r heard %r", match, sentence[:80], heard[:80])
-    return best
+            match = script_match(sentence, heard)
+            expected = 0.09 * len(sentence) + 1.5
+            if verdict is None and match >= 0.6 and len(audio) / SAMPLE_RATE <= expected:
+                _trim_to_speech(wav)
+                trimmed, _ = sf.read(str(wav), dtype="float32", always_2d=False)
+                return trimmed, match, heard, attempt + 1
+            if fallback is None or (match, -len(audio)) > (fallback[1], -len(fallback[0])):
+                fallback = (audio, match, heard)
+        log.warning("tts take %d rejected (%s, match %.2f): wanted %r heard %r", attempt + 1, verdict, match, sentence[:60], heard[:60])
+    audio, match, heard = fallback
+    limit = int((0.09 * len(sentence) + 1.5) * SAMPLE_RATE)
+    return audio[:limit], match, heard, attempts
 
 
 def _speak_events(text: str, language: str, voice, persona_id=None, verify: bool = True):
@@ -141,12 +153,12 @@ def _speak_events(text: str, language: str, voice, persona_id=None, verify: bool
     sentences = split_sentences(text)
     for sentence_id, sentence in enumerate(sentences):
         if verify:
-            audio, match, heard = _verified_sentence(model, conditioning, sentence, language)
+            audio, match, heard, takes = _verified_sentence(model, conditioning, sentence, language)
             chunks = [audio[i: i + CHUNK_SAMPLES] for i in range(0, len(audio), CHUNK_SAMPLES)] or [np.zeros(0, np.float32)]
             for index, chunk in enumerate(chunks):
                 event = pcm_event(chunk, sentence_id, index == len(chunks) - 1, sentence)
                 if index == len(chunks) - 1:
-                    event["verified_match"] = match
+                    event.update(verified_match=match, takes=takes, seconds=round(len(audio) / SAMPLE_RATE, 2))
                 yield event
         else:
             chunks = list(_synthesize(model, conditioning, sentence, language))
