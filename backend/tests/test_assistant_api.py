@@ -79,3 +79,10 @@ def test_alignment_accepts_contractions_and_interjection_spellings():
     assert matched == 1.0
     matched, _, _ = assistant._aligned_span("Alright, here we go.", [_Word("All", 0.1, 0.2), _Word("right,", 0.2, 0.4), _Word("here", 0.4, 0.5), _Word("we", 0.5, 0.6), _Word("go.", 0.6, 0.8)])
     assert matched == 1.0
+
+
+def test_sentences_get_a_pause_and_a_fade():
+    audio = assistant.with_pause(np.ones(2400, np.float32), "Is that right?")
+    assert len(audio) == 2400 + int((assistant.SENTENCE_PAUSE + 0.2) * 24000)
+    assert audio[-1] == 0 and audio[2399] == 0 and 0 < audio[2200] < 1 and audio[0] == 1
+    assert len(assistant.with_pause(np.ones(2400, np.float32), "Fine.")) == 2400 + int(assistant.SENTENCE_PAUSE * 24000)

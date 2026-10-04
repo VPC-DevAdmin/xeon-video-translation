@@ -79,14 +79,12 @@ def test_idle_frame_wrap_is_a_dissolve_from_the_continuation():
 
 
 def test_idle_loop_grows_without_moving_the_frame_on_screen():
-    """Appending footage (or a new segment) while the loop plays must not jump."""
+    """Appending footage while the loop plays must not jump."""
     a = np.arange(10, dtype=np.uint8)[:, None, None, None] * 10               # one continuous recording
     tl = Timeline(fps=4, idle_frames=a, transition_seconds=0)
     shown = [int(tl.frame_at(t / 4)[0].reshape(-1)[0]) for t in range(5)]     # cursor at 4 (frame 40)
-    tl.add_idle(np.arange(10, 15, dtype=np.uint8)[:, None, None, None] * 10, continuous=True)
+    tl.add_idle(np.arange(10, 15, dtype=np.uint8)[:, None, None, None] * 10)
     assert int(tl.frame_at(5 / 4)[0].reshape(-1)[0]) == 50                    # continues, no modulo jump
-    tl.add_idle(np.full((8, 1, 1, 1), 200, np.uint8), continuous=False)        # a new segment after a reply
-    assert int(tl.frame_at(6 / 4)[0].reshape(-1)[0]) == 60
     assert shown[2:] == [20, 30, 40] and 0 < shown[1] < shown[0] < 90      # head frames dissolve from the tail (80, 90)
 
 
@@ -99,7 +97,6 @@ def test_idle_loop_dissolves_across_segments_and_the_wrap():
     first_of_b = int(idle_loop_frame([a, b], 8, k)[0, 0, 0])
     assert 80 < first_of_b < 200 and first_of_b < int(idle_loop_frame([a, b], 9, k)[0, 0, 0]) < 200
     assert int(idle_loop_frame([a, b], 10, k)[0, 0, 0]) == 200
-    # b plays 6 frames (8-2); the wrap blends a's head with b's continuation (200)
     wrapped = int(idle_loop_frame([a, b], 14, k)[0, 0, 0])
     assert 0 < wrapped < 200 and int(idle_loop_frame([a, b], 16, k)[0, 0, 0]) == 20
 
@@ -118,30 +115,27 @@ def test_switching_between_idle_and_a_clip_is_a_dissolve():
 
 
 def test_idle_growth_waits_while_the_wrap_dissolve_is_on_screen():
-    """Appending while the loop shows its wrap dissolve would change the tail being
-    blended; the footage is staged until the cursor leaves that region."""
     a = np.arange(0, 100, 10, dtype=np.uint8)[:, None, None, None]            # k = 2, play region 8 frames
     tl = Timeline(fps=4, idle_frames=a, transition_seconds=0)
     for t in range(8):
-        tl.frame_at(t / 4)                                                     # cursor 7, the last play frame
+        tl.frame_at(t / 4)
     tl.frame_at(8 / 4)                                                         # cursor 8 -> wraps to j=0: in the dissolve
-    tl.add_idle(np.full((6, 1, 1, 1), 200, np.uint8), continuous=True)
+    tl.add_idle(np.full((6, 1, 1, 1), 200, np.uint8))
     assert len(tl.idle_segments[0]) == 10 and tl.idle_frame_count == 16       # staged, counted, not yet visible
-    tl.frame_at(9 / 4)                                                         # j=1, still dissolving
+    tl.frame_at(9 / 4)
     assert len(tl.idle_segments[0]) == 10
     tl.frame_at(10 / 4)                                                        # j=2: out of the dissolve, publish
     assert len(tl.idle_segments[0]) == 16 and not tl.loop("front").pending
 
 
 def test_idle_loop_growth_after_a_wrap_does_not_jump():
-    """Once the cursor has wrapped, a longer loop must not change where it lands."""
     a = np.arange(0, 100, 10, dtype=np.uint8)[:, None, None, None]            # loop of 8 (k = 2)
     tl = Timeline(fps=4, idle_frames=a, transition_seconds=0)
     for t in range(13):
-        tl.frame_at(t / 4)                                                     # second pass, position 12 -> j = 4 (frame 40)
+        tl.frame_at(t / 4)
     assert int(tl.frame_at(13 / 4)[0].reshape(-1)[0]) == 50
-    tl.add_idle(np.full((20, 1, 1, 1), 200, np.uint8), continuous=False)       # new segment: loop grows to 26
-    assert int(tl.frame_at(14 / 4)[0].reshape(-1)[0]) == 60                    # still the next frame, not 14 % 26
+    tl.add_idle(np.full((20, 1, 1, 1), 200, np.uint8))                        # loop grows to 28
+    assert int(tl.frame_at(14 / 4)[0].reshape(-1)[0]) == 60                    # still the next frame, not 14 % 28
     assert int(tl.frame_at(15 / 4)[0].reshape(-1)[0]) == 70
 
 
@@ -151,7 +145,7 @@ def test_idle_modes_switch_at_scheduled_times_and_fall_back_to_front():
     tl.set_mode(1.0, "working", tl.generation)
     assert tl.frame_at(0.5)[1] == "idle:front"
     assert tl.frame_at(1.25)[1] == "idle:front"                                # no working footage yet: front
-    tl.add_idle(np.full((6, 1, 1, 1), 200, np.uint8), continuous=False, name="working")
+    tl.add_idle(np.full((6, 1, 1, 1), 200, np.uint8), name="working")
     image, source = tl.frame_at(1.5)
     assert source == "idle:working" and int(image.reshape(-1)[0]) == 200
     tl.set_mode(2.0, "front", tl.generation)
@@ -163,7 +157,7 @@ def test_idle_modes_switch_at_scheduled_times_and_fall_back_to_front():
 def test_truncate_cuts_tagged_clips_with_a_fade_and_keeps_the_reply():
     tl = Timeline(fps=25, transition_seconds=0)
     gen = tl.generation
-    tl.schedule(1.0, np.full(96000, 1000, np.int16), frames(50, 1), gen, tag="filler")      # 1.0 - 3.0
+    tl.schedule(1.0, np.full(96000, 1000, np.int16), frames(50, 100), gen, tag="filler")    # 1.0 - 3.0
     tl.schedule(3.5, np.full(48000, 1000, np.int16), frames(25, 1), gen, tag="filler")      # 3.5 - 4.5 dropped
     tl.schedule(2.5, np.full(48000, 7, np.int16), frames(25, 2), gen)                        # the reply, untouched
     assert tl.truncate(2.2, "filler") == (2, 2.2)
@@ -172,6 +166,10 @@ def test_truncate_cuts_tagged_clips_with_a_fade_and_keeps_the_reply():
     audio = fillers[0][2]
     assert len(audio) == 48000 * 12 // 10 and audio[-1] == 0 and audio[-3840] == 1000       # 80 ms fade to silence
     assert tl.clips_tagged("reply")[0][1] == 3.5 and tl.audio_packet(2.6, 960)[0] == 7
+    affected, end = tl.truncate(2.0, "filler", settle_to=frames(1, 0)[0], settle_count=5)
+    clip = tl.clips_tagged("filler")[0]
+    assert (affected, end) == (1, 2.2) and len(clip[3]) == 30 and int(clip[3][-1][0, 0, 0]) == 0 and 0 < int(clip[3][26][0, 0, 0]) < 100
+    assert settle_frames(frames(1, 10)[0], frames(1, 0)[0], 2)[0][0, 0, 0] == 5
 
 
 def test_turn_clips_get_a_short_dissolve():
@@ -184,39 +182,17 @@ def test_turn_clips_get_a_short_dissolve():
     assert values[0] < values[3] and values[4] == 200 and values[5] == 200                   # fully there after 4 frames
 
 
-def test_settled_loop_wraps_with_a_hard_cut_and_truncate_settles_into_the_anchor():
-    a = np.arange(0, 100, 10, dtype=np.uint8)[:, None, None, None]            # anchor is frame 0 (value 0)
+def test_finalized_loop_cuts_at_the_frame_closest_to_its_start():
+    # a take that drifts away and comes back near its first frame at index 9, then drifts again
+    values = [0, 10, 20, 30, 40, 30, 20, 10, 5, 1, 30, 50, 70]
+    a = np.array(values, dtype=np.uint8)[:, None, None, None]
     tl = Timeline(fps=4, idle_frames=a, transition_seconds=0)
     loop = tl.loop("front")
-    assert loop.effective_crossfade() == 2 and not loop.settled[0]
-    for t in range(3):
-        tl.frame_at(t / 4)                                                     # cursor leaves the wrap dissolve so new footage publishes
-    loop.settle(3)                                                              # 3 frames dissolving 90 -> 0, last is the anchor
-    assert loop.settled == [True] and len(loop.segments[0]) == 13 and int(loop.segments[0][-1].reshape(-1)[0]) == 0
-    assert loop.effective_crossfade() == 0
-    shown = [int(tl.frame_at(t / 4)[0].reshape(-1)[0]) for t in range(3, 15)]
-    assert shown[:7] == list(range(30, 100, 10)) and shown[9] == 0 and shown[10] == 0 and shown[11] == 10   # wrap: anchor to anchor, no blend
-    tl2 = Timeline(fps=25, transition_seconds=0)
-    tl2.schedule(1.0, np.full(96000, 1000, np.int16), frames(50, 7), tl2.generation, tag="filler")
-    affected, end = tl2.truncate(2.0, "filler", settle_to=frames(1, 0)[0], settle_count=5)
-    clip = tl2.clips_tagged("filler")[0]
-    assert (affected, end) == (1, 2.2) and len(clip[3]) == 30 and int(clip[3][-1][0, 0, 0]) == 0 and 0 < int(clip[3][26][0, 0, 0]) < 7
-    assert settle_frames(frames(1, 10)[0], frames(1, 0)[0], 2)[0][0, 0, 0] == 5
-
-
-def test_settling_the_last_segment_keeps_the_cursor_on_the_same_frame():
-    a = np.arange(0, 100, 10, dtype=np.uint8)[:, None, None, None]            # segment 0: 0..90, k = 2 while growing
-    tl = Timeline(fps=4, idle_frames=a, transition_seconds=0)
-    loop = tl.loop("front")
-    loop.settle(2)                                                              # cursor 0 is in the wrap dissolve: staged
-    for t in range(3):
-        tl.frame_at(t / 4)                                                     # cursor 2: published, settled, crossfade now 0
-    loop.add(np.full((8, 1, 1, 1), 200, np.uint8), continuous=False)          # segment 1 (unsettled: crossfade back to 2)
-    for t in range(3, 14):
-        tl.frame_at(t / 4)                                                     # cursor 13: segment 0 plays 10 (12 - 2), so segment 1, j = 3
-    seg, j, _ = __import__("app.timeline", fromlist=["idle_loop_locate"]).idle_loop_locate(loop.segments, loop.cursor, loop.effective_crossfade())
-    assert (seg, j) == (1, 3)
-    loop.settle(2)                                                              # all settled: layout changes, cursor remapped
-    assert loop.effective_crossfade() == 0
-    seg2, j2, _ = __import__("app.timeline", fromlist=["idle_loop_locate"]).idle_loop_locate(loop.segments, loop.cursor, 0)
-    assert (seg2, j2) == (1, 3) and loop.cursor == 15
+    assert loop.effective_crossfade() == 2
+    assert loop.finalize(min_seconds=1.5, fps=4)                              # candidates from index 6 on: index 9 (value 1) wins
+    assert loop.finalized and len(loop.frames) == 9 and loop.effective_crossfade() == 2
+    shown = [int(tl.frame_at(t / 4)[0].reshape(-1)[0]) for t in range(10)]
+    assert shown[2:7] == [20, 30, 40, 30, 20] and shown[7] < 12 and shown[9] == 20   # wraps 10, 5 -> 0, 10 with a 2-frame blend
+    assert not Timeline(fps=4, idle_frames=a[:3]).loop("front").finalize(1.5, 4)      # too short to cut
+    loop.restart()
+    assert not loop.ready and loop.frame_count == 0

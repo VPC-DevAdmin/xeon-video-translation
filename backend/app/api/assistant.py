@@ -30,6 +30,7 @@ SAMPLE_RATE = 24000
 MAX_TOKENS = int(os.getenv("ASSISTANT_MAX_TOKENS", "220"))
 CHUNK_SAMPLES = int(os.getenv("ASSISTANT_TTS_CHUNK_SAMPLES", "12000"))   # 0.5 s per audio event
 MATCH_THRESHOLD = float(os.getenv("ASSISTANT_TTS_MATCH", "0.9"))          # share of the sentence's words a take must carry
+SENTENCE_PAUSE = float(os.getenv("ASSISTANT_SENTENCE_PAUSE", "0.45"))      # silence after each sentence (s); 0.65 after ? and !
 
 
 class Turn(BaseModel):
@@ -223,6 +224,20 @@ def _verified_sentence(model, conditioning, sentence: str, language: str, attemp
     return audio, matched, heard, attempts, False
 
 
+def with_pause(audio, sentence: str):
+    """The sentence's audio with a short fade at its end and the pause a speaker leaves
+    before the next sentence. Sentences are synthesized one by one; without this they
+    run together and sound like clips butted end to end."""
+    import numpy as np
+    audio = np.asarray(audio, dtype=np.float32)
+    fade = min(len(audio), int(0.02 * SAMPLE_RATE))
+    if fade:
+        audio = audio.copy()
+        audio[-fade:] *= np.linspace(1.0, 0.0, fade, dtype=np.float32)
+    pause = SENTENCE_PAUSE + (0.2 if sentence.rstrip().endswith(("?", "!", "？", "！")) else 0.0)
+    return np.concatenate([audio, np.zeros(int(pause * SAMPLE_RATE), np.float32)])
+
+
 def _speak_events(text: str, language: str, voice, persona_id=None, verify: bool = True):
     import numpy as np
     model, conditioning = _speaker(voice, persona_id)
@@ -237,6 +252,7 @@ def _speak_events(text: str, language: str, voice, persona_id=None, verify: bool
         if verify:
             audio, match, heard, takes, fallback = _verified_sentence(model, conditioning, sentence, language,
                                                                       fallback_conditioning=stock)
+            audio = with_pause(audio, sentence)
             chunks = [audio[i: i + CHUNK_SAMPLES] for i in range(0, len(audio), CHUNK_SAMPLES)] or [np.zeros(0, np.float32)]
             for index, chunk in enumerate(chunks):
                 event = pcm_event(chunk, sentence_id, index == len(chunks) - 1, sentence)
@@ -245,6 +261,8 @@ def _speak_events(text: str, language: str, voice, persona_id=None, verify: bool
                 yield event
         else:
             chunks = list(_synthesize(model, conditioning, sentence, language))
+            if chunks:
+                chunks[-1] = with_pause(chunks[-1], sentence)
             for index, audio in enumerate(chunks):
                 yield pcm_event(audio, sentence_id, index == len(chunks) - 1, sentence)
 

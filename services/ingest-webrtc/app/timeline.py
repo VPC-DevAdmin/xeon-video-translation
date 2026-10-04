@@ -19,12 +19,13 @@ tablet) and the active one is switched at scheduled times, so the filler plan of
 turn can send the persona to its tablet and back. Filler clips carry a tag so the
 plan can cut them off (with a short fade) the moment the reply is ready.
 
-Anchors: every piece of pre-rendered footage starts from the renderer's rest pose
-(each clip and idle segment is rendered from a reset) and ends by settling back into
-that rest frame (`settle_frames`), so clips, idle segments and the loop wrap join
-with a hard cut instead of a dissolve between two different poses. Only switches
-that cannot be anchored (an opener landing mid-idle, a head-turn clip) get a very
-short dissolve."""
+Anchors: every clip starts from the renderer's rest pose (it is rendered from a reset)
+and ends by settling back into that rest frame (`settle_frames`) after its trailing
+silence, and every idle loop starts from that same rest pose, so clips and idle join
+with a hard cut instead of a dissolve between two different poses. The idle loop
+itself never returns to centre: it is one continuous take cut at the frame that best
+matches its start. Only switches that cannot be anchored (an opener landing mid-idle,
+a head-turn clip) get a very short dissolve."""
 
 from __future__ import annotations
 
@@ -46,92 +47,103 @@ def settle_frames(last_frame, anchor, count: int):
     return np.stack(out) if out else np.zeros((0,) + np.asarray(anchor).shape, np.asarray(anchor).dtype)
 
 
+def best_loop_end(frames, start: int, step: int = 4) -> int:
+    """Index j >= start whose frame is closest to frame 0, so frames[0:j] loops back to
+    its start through a naturally similar pose instead of a cut or a dissolve."""
+    frames = np.asarray(frames)
+    head = frames[0, ::step, ::step].astype(np.float32)
+    best, best_diff = len(frames), None
+    for j in range(start, len(frames)):
+        diff = float(np.abs(frames[j, ::step, ::step].astype(np.float32) - head).mean())
+        if best_diff is None or diff < best_diff:
+            best, best_diff = j, diff
+    return best
+
+
 class IdleLoop:
-    """Continuous segments of idle footage played as one loop. Boundaries dissolve
-    while footage is still growing; once every segment is settled into the anchor
-    (its first frame), boundaries and the wrap are hard cuts."""
+    """One continuous take of idle footage played as a loop.
+
+    While the take is still growing, the wrap is hidden by a crossfade. Once the take is
+    finalized it is cut at the frame that best matches its first frame (`best_loop_end`),
+    so the wrap is a natural continuation with only two frames of blend: no return to a
+    rest pose, no dissolve between two different poses. Frame 0 is the renderer's rest
+    pose (every take starts from a reset), which is also where clips start and end."""
 
     def __init__(self, crossfade: int, frames=None):
         self.crossfade = int(crossfade)
-        self.segments: list = []
-        self.settled: list = []         # per segment: ends in the anchor frame
-        self.pending: list = []         # footage waiting until the loop is outside its wrap dissolve
+        self.frames = np.asarray(frames) if frames is not None and len(frames) else None
+        self.pending: list = []         # footage waiting until the loop is outside its wrap blend
         self.cursor = 0
-        if frames is not None and len(frames):
-            self.segments.append(np.asarray(frames))
-            self.settled.append(False)
+        self.finalized = False
+        self.wrap_blend = 2
 
     @property
     def ready(self) -> bool:
-        return bool(self.segments)
-
-    @property
-    def anchor(self):
-        """The rest pose every segment starts from (and settled ones end in)."""
-        return self.segments[0][0] if self.segments else None
-
-    def effective_crossfade(self) -> int:
-        return 0 if self.segments and all(self.settled) and not self.pending else self.crossfade
-
-    def settle(self, count: int) -> None:
-        """End the last segment in the anchor frame (no-op when already settled)."""
-        if self.segments and not self.settled[-1] and not self.pending:
-            self.pending.append((settle_frames(self.segments[-1][-1], self.anchor, count), True, True))
-            self.publish()
+        return self.frames is not None
 
     @property
     def frame_count(self) -> int:
-        return sum(len(s) for s in self.segments) + sum(len(f) for f, _, _ in self.pending)
+        return (len(self.frames) if self.frames is not None else 0) + sum(len(f) for f in self.pending)
 
-    def add(self, frames, continuous: bool) -> None:
-        """Append footage: to the last segment when the renderer's motion continued it,
-        otherwise as a new segment whose boundary the loop will dissolve across.
+    @property
+    def anchor(self):
+        """The rest pose the take starts from."""
+        return self.frames[0] if self.frames is not None else None
 
-        The wrap dissolve blends the first frames of the loop with the tail of the last
-        segment; changing that tail while the dissolve is on screen would be a visible
-        jump, so footage is staged until the cursor has left that region."""
+    @property
+    def segments(self) -> list:
+        return [self.frames] if self.frames is not None else []
+
+    def effective_crossfade(self) -> int:
+        return self.wrap_blend if self.finalized else self.crossfade
+
+    def add(self, frames, continuous: bool = True) -> None:
+        """Append footage that continues the take."""
         frames = np.asarray(frames)
-        if not len(frames):
+        if not len(frames) or self.finalized:
             return
-        self.pending.append((frames, continuous, False))
+        self.pending.append(frames)
         self.publish()
 
     def publish(self) -> None:
         if not self.pending:
             return
-        before = None
-        if self.segments:
-            crossfade = self.effective_crossfade()
-            segment, j, k = idle_loop_locate(self.segments, self.cursor, crossfade)
-            if segment == 0 and j < k:
-                return
-            before = (crossfade, segment, j)
-        for frames, continuous, settles in self.pending:
-            if continuous and self.segments:
-                self.segments[-1] = np.concatenate([self.segments[-1], frames])
-                if settles:
-                    self.settled[-1] = True
-            else:
-                self.segments.append(frames)
-                self.settled.append(settles)
+        if self.frames is not None:
+            segment, j, k = idle_loop_locate([self.frames], self.cursor, self.effective_crossfade())
+            if j < k:
+                return                                   # the wrap blend is on screen; its tail must not change now
+            self.frames = np.concatenate([self.frames] + self.pending)
+        else:
+            self.frames = np.concatenate(self.pending)
         self.pending.clear()
-        if before is not None and self.effective_crossfade() != before[0]:
-            # The loop just became fully settled: boundaries stop holding frames back for a
-            # dissolve, which shifts every position after the first segment. Keep the
-            # cursor on the same frame under the new layout.
-            crossfade, segment, j = before
-            held = _held(self.segments, self.effective_crossfade())
-            self.cursor = sum(len(s) - k for s, k in zip(self.segments[:segment], held[:segment])) + min(j, len(self.segments[segment]) - held[segment] - 1)
+
+    def finalize(self, min_seconds: float, fps: int) -> bool:
+        """Cut the take at its best loop point (at least `min_seconds` in) and stop growing."""
+        if self.finalized:
+            return True
+        self.publish()
+        if self.frames is None or len(self.frames) < int(min_seconds * fps) + 2:
+            return False
+        j = best_loop_end(self.frames, int(min_seconds * fps))
+        self.frames = self.frames[:j]
+        self.pending.clear()
+        self.finalized = True
+        self.cursor %= idle_loop_length([self.frames], self.effective_crossfade())
+        return True
+
+    def restart(self) -> None:
+        """Drop the take (used when the renderer's motion no longer continues it)."""
+        self.frames, self.pending, self.cursor, self.finalized = None, [], 0, False
 
     def advance(self, delta: int) -> None:
         """Move the cursor by `delta` frames, kept inside the loop as it is now; footage
         published afterwards only extends the loop beyond it."""
-        if self.segments:
-            self.cursor = (self.cursor + max(0, delta)) % idle_loop_length(self.segments, self.effective_crossfade())
+        if self.frames is not None:
+            self.cursor = (self.cursor + max(0, delta)) % idle_loop_length([self.frames], self.effective_crossfade())
         self.publish()
 
     def frame(self):
-        return idle_loop_frame(self.segments, self.cursor, self.effective_crossfade())
+        return idle_loop_frame([self.frames], self.cursor, self.effective_crossfade())
 
 
 class Timeline:
@@ -172,10 +184,10 @@ class Timeline:
 
     @idle_segments.setter
     def idle_segments(self, segments) -> None:
-        self.loops["front"].segments = list(segments)
-        self.loops["front"].settled = [False] * len(self.loops["front"].segments)
+        segments = [np.asarray(x) for x in segments if len(x)]
+        self.loops["front"].frames = np.concatenate(segments) if segments else None
 
-    def add_idle(self, frames, continuous: bool, name: str = "front") -> None:
+    def add_idle(self, frames, continuous: bool = True, name: str = "front") -> None:
         self.loop(name).add(frames, continuous)
 
     @property

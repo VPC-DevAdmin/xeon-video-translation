@@ -72,13 +72,15 @@ class EnhanceRequest(BaseModel):
 
 class PoseRequest(BaseModel):
     image_b64: str = Field(..., description="PNG or JPEG portrait")
-    pitch: float = Field(14.0, ge=-30, le=30, description="degrees; positive looks down")
-    yaw: float = Field(-14.0, ge=-40, le=40)
+    pitch: float = Field(20.0, ge=-30, le=30, description="degrees; positive looks down")
+    yaw: float = Field(-16.0, ge=-40, le=40)
     roll: float = Field(0.0, ge=-30, le=30)
     eyes_x: float = Field(-6.0, ge=-20, le=20)
-    eyes_y: float = Field(-14.0, ge=-20, le=20, description="negative lowers the gaze")
+    eyes_y: float = Field(-15.0, ge=-20, le=20, description="negative lowers the gaze")
     steps: int = Field(1, ge=1, le=60, description="1: the posed portrait as PNG; more: that many frames turning the head, raw RGB")
-    size: int = Field(0, ge=0, le=2048, description="side of the square frames returned for steps > 1 (0 keeps the portrait size)")
+    size: int = Field(0, ge=0, le=2048, description="side of the square frames returned for sequences (0 keeps the portrait size)")
+    motion: str = Field("turn", pattern="^(turn|reading)$", description="turn: frames from rest to the pose; reading: a periodic loop at the pose")
+    frames: int = Field(150, ge=25, le=750, description="frames of the reading loop (25 fps)")
 
 
 class RenderRequest(BaseModel):
@@ -296,11 +298,14 @@ def pose(body: PoseRequest) -> Response:
     started = time.perf_counter()
     try:
         with _LOCK:
-            frames = pose_module.pose_sequence(image, body.pitch, body.yaw, body.roll, body.eyes_x, body.eyes_y, steps=body.steps)
+            if body.motion == "reading":
+                frames = pose_module.reading_loop(image, body.pitch, body.yaw, body.roll, body.eyes_x, body.eyes_y, frames=body.frames)
+            else:
+                frames = pose_module.pose_sequence(image, body.pitch, body.yaw, body.roll, body.eyes_x, body.eyes_y, steps=body.steps)
     except Exception as exc:
         raise HTTPException(422, f"pose edit failed: {type(exc).__name__}: {exc}")
     seconds = f"{time.perf_counter() - started:.2f}"
-    if body.steps == 1:
+    if body.steps == 1 and body.motion == "turn":
         ok, png = cv2.imencode(".png", frames[-1])
         if not ok:
             raise HTTPException(500, "could not encode the posed portrait")

@@ -64,12 +64,14 @@ MAX_HEAD_START = float(os.getenv("ASSISTANT_MAX_HEAD_START", "20"))
 IDLE_CHUNKS = int(os.getenv("ASSISTANT_IDLE_CHUNKS", "2"))          # rendered before the session answers
 IDLE_SECONDS = float(os.getenv("ASSISTANT_IDLE_SECONDS", "12"))      # grown to this in the background, then looped
 WORKING_IDLE_SECONDS = float(os.getenv("ASSISTANT_WORKING_IDLE_SECONDS", "6"))
-_POSE_VALUES = [float(v) for v in os.getenv("ASSISTANT_WORKING_POSE", "14,-14,0,-6,-14").split(",")]
+_POSE_VALUES = [float(v) for v in os.getenv("ASSISTANT_WORKING_POSE", "20,-16,0,-6,-15").split(",")]
 WORKING_POSE = dict(zip(("pitch", "yaw", "roll", "eyes_x", "eyes_y"), _POSE_VALUES + [0.0] * 5))
 WORKING_POSE_ENABLED = os.getenv("ASSISTANT_WORKING_POSE_ENABLED", "1") == "1"
 CACHE_DIR = Path(os.getenv("JOB_ARTIFACTS_DIR", "./jobs")).resolve() / "personas"
-CACHE_VERSION = 4                                                    # bump when cached footage changes meaning
-SETTLE_FRAMES = int(os.getenv("ASSISTANT_SETTLE_FRAMES", "7"))       # frames a clip takes to settle back into the rest pose
+CACHE_VERSION = 5                                                    # bump when cached footage changes meaning
+SETTLE_FRAMES = int(os.getenv("ASSISTANT_SETTLE_FRAMES", "10"))      # frames a clip takes to settle back into the rest pose
+MIN_IDLE_SECONDS = float(os.getenv("ASSISTANT_MIN_IDLE_SECONDS", "6"))   # shortest take kept as a loop when growth is interrupted
+READING_FRAMES = int(os.getenv("ASSISTANT_READING_FRAMES", "150"))   # reading loop at the tablet (LivePortrait), 25 fps
 TURN_FRAMES = int(os.getenv("ASSISTANT_TURN_FRAMES", "12"))          # head turn to/from the tablet, at 25 fps
 RENDER_TIMEOUT = float(os.getenv("ASSISTANT_RENDER_TIMEOUT", "30"))
 FPS = 25
@@ -445,7 +447,7 @@ class Assistant:
         if directory is None:
             return None
         seconds = IDLE_SECONDS if pose == "front" else WORKING_IDLE_SECONDS
-        return directory / f"idle-{pose}-{self._fingerprint(kind='idle', pose=pose, seconds=seconds, posed=WORKING_POSE if pose != 'front' else None)}.npz"
+        return directory / f"idle-{pose}-{self._fingerprint(kind='idle', pose=pose, seconds=seconds, posed=WORKING_POSE if pose != 'front' else None, reading=READING_FRAMES if pose != 'front' else None)}.npz"
 
     def _clip_prefix(self) -> str:
         return self._fingerprint(kind="clip", language=self.language, voice=self.voice or "", voice_digest=self.voice_digest,
@@ -506,6 +508,30 @@ class Assistant:
             self.metrics["prepare"]["turn_error"] = f"{type(exc).__name__}: {exc}"
             return False
 
+    async def make_reading_loop(self) -> bool:
+        """The working idle: LivePortrait animates the posed portrait reading (eyes
+        scanning, slight head drift, blinks) as a periodic loop; frame 0 is the pose the
+        turn footage arrives at."""
+        if not self.working_pose:
+            return False
+        try:
+            response = await self.client.post(f"{RENDERER}/portrait/pose", json={
+                "image_b64": base64.b64encode((self.directory / "image.png").read_bytes()).decode(), **WORKING_POSE,
+                "motion": "reading", "frames": READING_FRAMES, "size": int(self.renderer.spec.get("height") or 512)}, timeout=300)
+            if response.status_code != 200:
+                self.metrics["prepare"]["reading_error"] = response.status_code
+                return False
+            count, height, width = (int(response.headers[k]) for k in ("X-Frames", "X-Height", "X-Width"))
+            loop = self.timeline.loop("working")
+            loop.frames = np.frombuffer(response.content, dtype=np.uint8).reshape(count, height, width, 3).copy()
+            loop.finalized, loop.wrap_blend, loop.cursor = True, 0, 0
+            self.metrics["prepare"]["reading_seconds"] = float(response.headers.get("X-Seconds", 0))
+            await self._save_idle("working")
+            return True
+        except (httpx.HTTPError, ValueError, OSError) as exc:
+            self.metrics["prepare"]["reading_error"] = f"{type(exc).__name__}: {exc}"
+            return False
+
     def turn_head(self, at: float, direction: str, generation: int) -> float:
         """Schedule the head turn starting at `at` and switch the idle loop with it.
         Returns when the turn ends (= `at` when no turn footage exists)."""
@@ -527,12 +553,11 @@ class Assistant:
         tmp.rename(path)
 
     async def _save_idle(self, pose: str) -> None:
-        segments = self.timeline.loop(pose).segments
+        loop = self.timeline.loop(pose)
         path = self._idle_file(pose)
-        if path is None or not segments:
+        if path is None or not loop.ready or not loop.finalized:
             return
-        await self._save_npz(path, count=len(segments), settled=np.array(self.timeline.loop(pose).settled, dtype=bool),
-                             **{f"idle_{i}": seg for i, seg in enumerate(segments)})
+        await self._save_npz(path, idle=loop.frames, finalized=np.array(True), wrap_blend=np.array(loop.wrap_blend))
         for stale in path.parent.glob(f"idle-{pose}-*.npz"):
             if stale != path:
                 stale.unlink(missing_ok=True)
@@ -547,8 +572,9 @@ class Assistant:
         try:
             data = await asyncio.to_thread(np.load, str(path))
             loop = self.timeline.loop(pose)
-            loop.segments = [data[f"idle_{i}"] for i in range(int(data["count"]))]
-            loop.settled = [bool(v) for v in data["settled"]] if "settled" in data else [False] * len(loop.segments)
+            loop.frames = data["idle"]
+            loop.finalized = bool(data["finalized"]) if "finalized" in data else True
+            loop.wrap_blend = int(data["wrap_blend"]) if "wrap_blend" in data else 2
             return True
         except Exception:
             return False
@@ -613,7 +639,7 @@ class Assistant:
             self.timeline.add_idle(await self.render_all(np.zeros(self.renderer.samples * IDLE_CHUNKS, np.int16), "idle:front"), False)
         self.metrics["prepare"] = {
             "cached": cached, "renderer_open_seconds": round(t_open - started, 2),
-            "idle_seconds_ready": round(self.timeline.idle_seconds(), 2),
+            "idle_seconds_ready": round(self.timeline.idle_seconds(), 2), "idle_finalized": self.timeline.loop("front").finalized,
             "ack_ready": bool(self.clips["opener"]), "clips": self.clip_count(), "working_pose": self.working_pose,
             "chunk": {k: info[k] for k in ("frames_per_chunk", "samples_per_chunk", "seconds_per_chunk")},
             "total_seconds": round(time.monotonic() - started, 2)}
@@ -661,14 +687,14 @@ class Assistant:
         return np.concatenate([frames, settle_frames(frames[-1], anchor, SETTLE_FRAMES)])
 
     async def grow_idle(self, pose: str, target_seconds: float) -> None:
-        """Grow the idle loop of `pose` to `target_seconds`, yielding to turns. Footage
-        extends the current segment while the renderer's motion still follows it; after
-        anything else rendered, the segment is settled into the anchor and a new one
-        starts from it, so the finished loop joins everywhere with hard cuts."""
+        """Grow the idle loop of `pose` as one continuous take to `target_seconds`, then
+        cut it at its best loop point. A turn in between moves the renderer's motion
+        state, so the take cannot continue: a take already longer than MIN_IDLE_SECONDS
+        is finalized as it is, a shorter one starts over from the rest pose."""
         loop = self.timeline.loop(pose)
         target = int(target_seconds * FPS)
         motion = f"idle:{pose}"
-        while loop.frame_count < target and not self.closed:
+        while not loop.finalized and not self.closed:
             if self.turn_active():
                 await asyncio.sleep(0.5)
                 continue
@@ -676,13 +702,16 @@ class Assistant:
                 if self.turn_active():
                     continue
                 continuous = self.renderer.motion == motion
+                if not continuous and loop.ready:
+                    if loop.finalize(MIN_IDLE_SECONDS, FPS):
+                        break
+                    loop.restart()                       # too short to loop well: start a new take
                 frames, _ = await self.renderer.render_locked(np.zeros(self.renderer.samples, np.int16), not continuous,
                                                               self.timeline.generation, motion, pose)
-            if not continuous:
-                loop.settle(SETTLE_FRAMES)
-            loop.add(frames, continuous)
-        if not self.closed:
-            loop.settle(SETTLE_FRAMES)
+            loop.add(frames)
+            if loop.frame_count >= target:
+                loop.finalize(min(MIN_IDLE_SECONDS, target_seconds / 2), FPS)
+        if not self.closed and loop.finalized and loop.frame_count >= MIN_IDLE_SECONDS * FPS:
             await self._save_idle(pose)
 
     async def open_working_pose(self) -> bool:
@@ -725,11 +754,12 @@ class Assistant:
                 await self.make_clip(kind, text)
             await self.grow_idle("front", IDLE_SECONDS)
             self.metrics["prepare"].update(idle_seconds_final=round(self.timeline.idle_seconds(), 2),
-                                           idle_segments=len(self.timeline.idle_segments))
+                                           idle_finalized=self.timeline.loop("front").finalized)
             if await self.open_working_pose():
                 if self.turn_down is None:
                     await self.make_turn()
-                await self.grow_idle("working", WORKING_IDLE_SECONDS)
+                if not self.timeline.loop("working").ready and not await self.make_reading_loop():
+                    await self.grow_idle("working", WORKING_IDLE_SECONDS)      # no LivePortrait loop: FlashHead idle at the pose
                 self.metrics["prepare"]["working_idle_seconds"] = round(self.timeline.idle_seconds("working"), 2)
             for kind, text in plan:
                 if self.closed:
@@ -1110,8 +1140,8 @@ class Assistant:
                 "timeline": {"frames_sent": tl.frames_sent, "frames_skipped": tl.frames_skipped,
                              "idle_frames_sent": tl.idle_frames_sent, "scheduled_seconds": round(tl.scheduled_seconds, 2),
                              "now": round(tl.now(), 2)},
-                "idle": {"seconds": round(tl.idle_seconds(), 2), "segments": len(tl.idle_segments),
-                         "working_seconds": round(tl.idle_seconds("working"), 2)},
+                "idle": {"seconds": round(tl.idle_seconds(), 2), "finalized": tl.loop("front").finalized,
+                         "working_seconds": round(tl.idle_seconds("working"), 2), "working_finalized": tl.loop("working").finalized},
                 "clips": {kind: [c.text for c in clips] for kind, clips in self.clips.items()}, "working_pose": self.working_pose,
                 "renderer": {"sessions": self.renderer.sessions, "ratio": round(self.renderer.ratio, 3), "motion": self.renderer.motion,
                              "first_chunk_seconds": self.renderer.first_chunk_seconds,

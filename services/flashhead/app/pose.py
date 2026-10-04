@@ -88,3 +88,39 @@ def pose_sequence(image_bgr: np.ndarray, pitch: float, yaw: float, roll: float =
                 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, float(eyes_x) * eyes, float(eyes_y) * eyes, path, scale, True, True)
             frames.append(cv2.cvtColor(np.asarray(blended), cv2.COLOR_RGB2BGR))
     return frames
+
+
+def reading_loop(image_bgr: np.ndarray, pitch: float, yaw: float, roll: float = 0.0, eyes_x: float = 0.0,
+                 eyes_y: float = 0.0, frames: int = 150, fps: int = 25, scale: float = 2.3) -> list[np.ndarray]:
+    """A periodic loop of the posed portrait reading: the eyes scan across the lines, the
+    head drifts slightly, and the eyes blink twice. Every motion is a whole number of
+    cycles over the loop, so the last frame leads straight back to the first; frame 0 is
+    the posed portrait at rest (the pose the turn footage arrives at)."""
+    import math
+    import cv2
+
+    pipeline = _load()
+    seconds = frames / fps
+    out = []
+    with tempfile.TemporaryDirectory(prefix="read-") as directory:
+        path = str(Path(directory) / "portrait.png")
+        cv2.imwrite(path, image_bgr)
+        eye_ratio, lip_ratio = pipeline.init_retargeting_image(scale, 0, 0, path)
+        for i in range(frames):
+            t = i / fps
+            scan = math.sin(2 * math.pi * t / (seconds / 3))                    # three sweeps across the page
+            ex = eyes_x + 6.0 * scan
+            ey = eyes_y + 1.5 * math.sin(2 * math.pi * t / (seconds / 2))       # down a line, back up
+            p = pitch + 1.2 * math.sin(2 * math.pi * t / seconds)
+            y = yaw + 1.0 * math.sin(2 * math.pi * t / (seconds / 2) + 1.0)
+            blink = 0.0
+            for at in (seconds * 0.35, seconds * 0.78):                           # two blinks, each 4 frames
+                phase = (t - at) * fps
+                if 0 <= phase < 4:
+                    blink = 1.0 if 1 <= phase < 3 else 0.6
+            ratio = eye_ratio * (1.0 - 0.9 * blink)
+            _, blended = pipeline.execute_image_retargeting(
+                ratio, lip_ratio, float(p), float(y), float(roll), 0.0, 0.0, 1.0,
+                0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, float(ex), float(ey), path, scale, True, True)
+            out.append(cv2.cvtColor(np.asarray(blended), cv2.COLOR_RGB2BGR))
+    return out
