@@ -7,8 +7,9 @@
 # same ports. It swaps images to the CUDA builds, hands each service its
 # own GPU(s), and adds the WebRTC ingest service.
 #
-# Shared-host defaults: GPU 0 speech, 1-2 external vLLM, 3 fast renderer,
-# 4 and 7 batch, 5 avatar speech, 6 avatar renderer + WebRTC codec engines.
+# XE7740 layout (4 Oct 2026): fast lipsync workers on 3,2,0 (+1 when vLLM is
+# shrunk to 0.70), batch workers on 4,5,6,7; whisper/XTTS on 0, LLM on 1,
+# avatar renderer + codecs on 2 share their cards with a fast worker.
 # Apply docker-compose.avatar.yml for the dedicated avatar services.
 # Generate a UUID-based assignment overlay with scripts/gpu_layout.py.
 # The quality-audio profile needs GPU 7 excluded from LATENTSYNC_GPUS.
@@ -115,10 +116,13 @@ services:
               device_ids: ["${BACKEND_GPU:-0}"]
               capabilities: [gpu]
 
-  # Dedicated fast LatentSync renderer (10 steps). Denoise is ~65% of each
-  # render window, so it shards the UNet one process per GPU exactly like the
-  # batch service; LATENTSYNC_FAST_GPUS is a comma list (default 3,5) and must
-  # not overlap LATENTSYNC_GPUS.
+  # Fast LatentSync renderer (10 steps). Shards the UNet one worker process
+  # per GPU in LATENTSYNC_FAST_GPUS (comma list; the first entry also hosts
+  # the coordinator). Lipsync is an order of magnitude heavier than any
+  # other stage, so workers are co-located with the light services: the
+  # default 3,2,0 shares GPU 2 with the avatar renderer and GPU 0 with
+  # whisper/XTTS. All models stay resident; only SM time is shared. Keep
+  # the list disjoint from LATENTSYNC_GPUS.
   lipsync-fast:
     image: polyglot-demo/lipsync-latentsync:gpu
     build:
@@ -141,7 +145,7 @@ services:
       JOB_ARTIFACTS_DIR: /jobs
       HF_HOME: /models/huggingface
       HF_TOKEN_PATH: /run/secrets/hf_token
-      NVIDIA_VISIBLE_DEVICES: ${LATENTSYNC_FAST_GPUS:-3,5}
+      NVIDIA_VISIBLE_DEVICES: ${LATENTSYNC_FAST_GPUS:-3,2,0}
       CUDA_VISIBLE_DEVICES: "0,1,2,3,4,5,6,7"
       NVIDIA_DRIVER_CAPABILITIES: compute,utility,video
       LATENTSYNC_DTYPE: fp16
@@ -244,7 +248,7 @@ services:
       GPU_PROFILE: ${GPU_PROFILE:-0}
       GPU_CUDNN_BENCHMARK: ${GPU_CUDNN_BENCHMARK:-0}
       ORT_CUDNN_CONV_ALGO_SEARCH: ${ORT_CUDNN_CONV_ALGO_SEARCH:-HEURISTIC}
-      NVIDIA_VISIBLE_DEVICES: ${LATENTSYNC_GPUS:-4,7}
+      NVIDIA_VISIBLE_DEVICES: ${LATENTSYNC_GPUS:-4,5,6,7}
       # The base compose file blanks CUDA_VISIBLE_DEVICES; re-expose every
       # card the runtime passed in (CUDA ignores indices that don't exist).
       CUDA_VISIBLE_DEVICES: "0,1,2,3,4,5,6,7"
