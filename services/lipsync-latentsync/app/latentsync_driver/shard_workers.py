@@ -95,8 +95,8 @@ def _worker_main(dev_index: int, in_q, out_q, build: dict) -> None:  # pragma: n
                         # masks and 256 px pixel crops; this process encodes
                         # them with its own VAE so the coordinator's single
                         # thread no longer serialises a VAE pass per chunk.
-                        _, lat, masks, masked, ref, ae = (
-                            None if x is None else x.to(device, non_blocking=True) for x in cond
+                        lat, masks, masked, ref, ae = (
+                            None if x is None else x.to(device, non_blocking=True) for x in cond[1:]
                         )
                         import torch.nn.functional as F
                         vsf = 2 ** (len(vae.config.block_out_channels) - 1)
