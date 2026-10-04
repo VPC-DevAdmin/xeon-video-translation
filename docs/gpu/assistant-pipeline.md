@@ -12,12 +12,15 @@ browser needs a secure origin for the microphone and camera):
 ssh -L 3030:localhost:3030 user@xe7740
 ```
 
-Then open http://localhost:3030/assistant. Signalling goes through the tunnel;
-audio and video flow directly between the browser and the box over the LAN.
-
-- **Portrait upload + bundled voice**: pick an image, Start conversation, speak.
-- **Use this person…**: the guided capture (consent, portrait, 8 s idle clip,
-  scripted voice recording, checks, voice preview), then Start.
+Open http://localhost:3030/assistant. The page shows who will answer (the most
+recent persona is preselected) and one button, **Start chat**. It turns on your
+microphone (and camera for a small self-view; the camera is not sent anywhere),
+and the person's face appears in the stage with a 12 s idle loop as soon as the
+call connects, in about 3 s the first time a persona is used and under a second
+after that. Speak; the assistant acknowledges at once, shows "Thinking… answer in
+N s", and the reply video starts after the head start. Speak again or press
+Interrupt to cut it off. **Use this person…** opens the guided capture for a new
+face and voice; "or upload a portrait" keeps the older portrait-only path.
 
 Switch the box into this mode with `scripts/mode.sh assistant` (stops LatentSync
 and MuseTalk; starts backend, LLM, frontend, ingest; reuses a running renderer).
@@ -46,7 +49,12 @@ Components:
 
 ## Measured (ingest-side WebRTC client, same box, Oct 4)
 
-Session preparation (renderer session, idle loop from 2.2 s of silence, acknowledgement TTS and render): 6.3 to 7.6 s.
+Session start: the renderer session opens in 0.2 s; the first time a persona is
+used, two chunks of idle motion are rendered before the session answers (3.0 to
+3.2 s), the idle loop is then grown to 12.3 s and the acknowledgement rendered in
+the background (ready 19 s after start) and both are cached under the persona;
+later sessions answer in 0.4 to 0.5 s with everything ready. The idle loop plays
+forward and wraps through a 0.5 s dissolve.
 
 | From the endpoint | Bundled voice, turn 1 | Bundled voice, turn 2 (interrupted) | Cloned persona, turn 1 | Cloned persona, turn 2 (interrupted) |
 | --- | ---: | ---: | ---: | ---: |
