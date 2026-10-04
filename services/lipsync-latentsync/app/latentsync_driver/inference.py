@@ -274,8 +274,15 @@ def _run_impl(
     guidance_scale: float | None = None,
     seed: int | None = None,
     request_temp_dir: str | None = None,
+    face_track_source: Path | str | None = None,
+    face_track_offset_frames: int = 0,
 ) -> InferenceResult:
     """Run LatentSync inference. All tensor ops are CPU float32.
+
+    ``face_track_source`` names the full clip a windowed ``video_path`` was
+    cut from (25 fps grid, ``face_track_offset_frames`` = first frame of the
+    window). The landmark track for that source is built once, cached by
+    content, and sliced per window so detection runs once per clip.
 
     ``num_inference_steps`` / ``guidance_scale`` / ``seed`` are forwarded
     from the per-request HTTP payload. Missing values fall back to
@@ -648,6 +655,29 @@ def _run_impl(
         autocast_enabled,
     )
 
+    face_track = None
+    if face_track_source:
+        from . import face_track as _face_track
+
+        source = Path(face_track_source)
+        if not source.exists():
+            raise RuntimeError(f"face_track_source not found: {source}")
+        processor = pipeline.ensure_image_processor(int(config.data.resolution), str(mask_image_path))
+        model_cache_dir = Path(os.environ.get("MODEL_CACHE_DIR", "/models"))
+        track_started = time.perf_counter()
+        landmarks = _face_track.load_or_build(
+            source,
+            model_cache_dir=model_cache_dir,
+            fps=25,
+            extract=processor.try_extract_landmarks3,
+            smooth_window=int(os.environ.get("LATENTSYNC_LANDMARK_SMOOTH_WINDOW", "5")),
+            max_miss_ratio=float(os.environ.get("LATENTSYNC_MAX_MISSING_FACE_RATIO", "0.5")),
+            frame_budget_bytes=int(os.environ.get("LATENTSYNC_FRAME_BUDGET_MB", "8192")) * 1024 * 1024,
+        )
+        log.info("face track ready in %.1fs (%d frames); window offset %d",
+                 time.perf_counter() - track_started, len(landmarks), int(face_track_offset_frames or 0))
+        face_track = {"landmarks": landmarks, "offset": int(face_track_offset_frames or 0)}
+
     started = time.perf_counter()
     with torch.no_grad(), autocast_ctx:
         pipeline(
@@ -668,6 +698,7 @@ def _run_impl(
                 str(checkpoint_path) if checkpoint_path is not None else None
             ),
             progress_callback=_write_progress,
+            face_track=face_track,
         )
     elapsed = time.perf_counter() - started
     log.info("latentsync inference finished in %.1fs", elapsed)

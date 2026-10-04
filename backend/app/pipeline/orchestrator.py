@@ -949,13 +949,23 @@ async def _run_stage_lipsync(
             )
         elif force and backend != "none":
             plan = (settings.window_seconds, settings.window_overlap_seconds)
+        def overrides_for(window_offset_frames=None):
+            # LatentSync builds one landmark track per source clip and slices
+            # it per window; other backends ignore the extra keys.
+            merged = dict(state.lipsync_quality or {})
+            if backend == "latentsync":
+                merged["face_track_source"] = str(input_path)
+                merged["face_track_offset_frames"] = int(window_offset_frames or 0)
+            return merged or None
+
         if plan:
             windowed.render(
                 input_path,
                 audio_path,
                 out_path,
-                lambda video, audio, out: lipsync.run(
-                    backend, video, audio, out, quality_overrides=state.lipsync_quality
+                lambda video, audio, out, window_offset_frames=None: lipsync.run(
+                    backend, video, audio, out,
+                    quality_overrides=overrides_for(window_offset_frames),
                 ),
                 size=plan[0],
                 overlap=plan[1],
@@ -974,7 +984,7 @@ async def _run_stage_lipsync(
             audio_in=audio_path,
             output_path=out_path,
             progress=progress_cb,
-            quality_overrides=state.lipsync_quality,
+            quality_overrides=overrides_for(0),
         )
         return result.to_dict()
 

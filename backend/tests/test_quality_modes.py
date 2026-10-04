@@ -98,3 +98,17 @@ def test_independent_renderer_routing(tmp_path, monkeypatch, fast_url, tier, exp
     assert calls[0].full_url == expected
     assert json.loads(calls[0].data)["num_inference_steps"] == 10
     assert "service_tier" not in json.loads(calls[0].data)
+
+
+def test_face_track_keys_forwarded_to_latentsync(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "latentsync_service_url", "http://batch")
+    result = MagicMock()
+    result.__enter__.return_value.read.return_value = b'{"status":"ok"}'
+    calls = []
+    monkeypatch.setattr(latentsync_client.urllib.request, "urlopen", lambda request, **kw: calls.append(request) or result)
+    out = tmp_path / "out.mp4"
+    out.write_bytes(b"rendered")
+    latentsync_client.run(tmp_path / "video", tmp_path / "audio", out,
+                          quality_overrides={"face_track_source": "/jobs/x/input.mov", "face_track_offset_frames": 400})
+    payload = json.loads(calls[0].data)
+    assert payload["face_track_source"] == "/jobs/x/input.mov" and payload["face_track_offset_frames"] == 400

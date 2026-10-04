@@ -117,6 +117,18 @@ class LipsyncRequest(BaseModel):
         None,
         description="Diffusion seed for reproducibility. Omit for random.",
     )
+    # Shared face track across render windows (see latentsync_driver/face_track.py).
+    face_track_source: str | None = Field(
+        None,
+        description=(
+            "Full source clip this video_path was cut from (shared /jobs volume). "
+            "Its landmark track is built once per content hash and sliced per window."
+        ),
+    )
+    face_track_offset_frames: int | None = Field(
+        None, ge=0,
+        description="First frame of this window on the source's 25 fps grid.",
+    )
 
 
 class LipsyncResponse(BaseModel):
@@ -333,10 +345,14 @@ def _lipsync_locked(req: LipsyncRequest) -> LipsyncResponse:
     import time
 
     root = Path(os.environ.get("JOB_ARTIFACTS_DIR", "/jobs")).resolve()
-    for value in (req.video_path, req.audio_path, req.output_path):
+    for value in (req.video_path, req.audio_path, req.output_path, req.face_track_source):
+        if value is None:
+            continue
         candidate = Path(value).resolve()
         if not candidate.is_relative_to(root) or candidate == root:
             raise HTTPException(400, "media paths must be inside JOB_ARTIFACTS_DIR")
+    if req.face_track_source and not Path(req.face_track_source).exists():
+        raise HTTPException(400, f"face_track_source not visible: {req.face_track_source}")
     video = Path(req.video_path)
     audio = Path(req.audio_path)
 
@@ -383,6 +399,8 @@ def _lipsync_locked(req: LipsyncRequest) -> LipsyncResponse:
             num_inference_steps=req.num_inference_steps,
             guidance_scale=req.guidance_scale,
             seed=req.seed,
+            face_track_source=req.face_track_source,
+            face_track_offset_frames=req.face_track_offset_frames or 0,
         )
     except FileNotFoundError as e:
         # Raised by the driver when an expected weight/config isn't on

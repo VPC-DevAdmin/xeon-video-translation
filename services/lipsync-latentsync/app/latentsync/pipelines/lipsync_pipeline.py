@@ -525,7 +525,7 @@ class LipsyncPipeline(DiffusionPipeline):
         images = images.cpu().numpy()
         return images
 
-    def affine_transform_video(self, video_frames: np.ndarray):
+    def affine_transform_video(self, video_frames: np.ndarray, landmarks=None):
         # CPU patch — two-pass landmark-smoothed affine.
         #
         # Upstream did detection + affine in a single per-frame call,
@@ -571,16 +571,29 @@ class LipsyncPipeline(DiffusionPipeline):
             os.environ.get("LATENTSYNC_MAX_MISSING_FACE_RATIO", "0.5"),
         )
 
-        # Pass 1: extract landmarks per frame (this is what detection
-        # actually costs; tqdm shows the expected 1 s/frame wall clock).
-        # Use the non-raising try_extract so a single bad frame doesn't
-        # fail the whole run. Gaps are filled after the pass completes.
-        print(f"Extracting landmarks from {len(video_frames)} frames...")
-        per_frame_landmarks = []
-        for frame in tqdm.tqdm(video_frames, desc="detect"):
-            per_frame_landmarks.append(
-                self.image_processor.try_extract_landmarks3(frame),
-            )
+        detect_started = time.perf_counter()
+        if landmarks is not None:
+            # Shared face track (latentsync_driver.face_track): detection and
+            # whole-clip smoothing already happened once for the source, so
+            # this window only needs the warp pass below.
+            if len(landmarks) != len(video_frames):
+                raise RuntimeError(
+                    f"face track has {len(landmarks)} entries for {len(video_frames)} frames"
+                )
+            per_frame_landmarks = [np.asarray(l, dtype=np.float32) for l in landmarks]
+            landmark_window = 1
+            print(f"Using shared face track for {len(video_frames)} frames (detection skipped)")
+        else:
+            # Pass 1: extract landmarks per frame (this is what detection
+            # actually costs; tqdm shows the expected 1 s/frame wall clock).
+            # Use the non-raising try_extract so a single bad frame doesn't
+            # fail the whole run. Gaps are filled after the pass completes.
+            print(f"Extracting landmarks from {len(video_frames)} frames...")
+            per_frame_landmarks = []
+            for frame in tqdm.tqdm(video_frames, desc="detect"):
+                per_frame_landmarks.append(
+                    self.image_processor.try_extract_landmarks3(frame),
+                )
 
         total_frames = len(per_frame_landmarks)
         per_frame_landmarks, missing_indices = _fill_missing_landmarks(
@@ -631,6 +644,7 @@ class LipsyncPipeline(DiffusionPipeline):
         boxes = []
         affine_matrices = []
         print(f"Affine transforming {len(video_frames)} faces...")
+        warp_started = time.perf_counter()
         for frame, landmarks3 in tqdm.tqdm(
             zip(video_frames, per_frame_landmarks),
             total=len(video_frames),
@@ -644,6 +658,10 @@ class LipsyncPipeline(DiffusionPipeline):
             affine_matrices.append(affine_matrix)
 
         faces = torch.stack(faces)
+        print(json.dumps({"event": "latentsync_face_prep", "frames": len(video_frames),
+                          "detect_seconds": round(warp_started - detect_started, 2),
+                          "warp_seconds": round(time.perf_counter() - warp_started, 2),
+                          "shared_track": landmarks is not None}), flush=True)
         return faces, boxes, affine_matrices
 
     def restore_video(
@@ -677,10 +695,10 @@ class LipsyncPipeline(DiffusionPipeline):
                     pass
         return np.stack(out_frames, axis=0)
 
-    def loop_video(self, whisper_chunks: list, video_frames: np.ndarray):
+    def loop_video(self, whisper_chunks: list, video_frames: np.ndarray, landmarks=None):
         # If the audio is longer than the video, we need to loop the video
         if len(whisper_chunks) > len(video_frames):
-            faces, boxes, affine_matrices = self.affine_transform_video(video_frames)
+            faces, boxes, affine_matrices = self.affine_transform_video(video_frames, landmarks)
             num_loops = math.ceil(len(whisper_chunks) / len(video_frames))
             loop_video_frames = []
             loop_faces = []
@@ -704,9 +722,26 @@ class LipsyncPipeline(DiffusionPipeline):
             affine_matrices = loop_affine_matrices[: len(whisper_chunks)]
         else:
             video_frames = video_frames[: len(whisper_chunks)]
-            faces, boxes, affine_matrices = self.affine_transform_video(video_frames)
+            if landmarks is not None:
+                landmarks = landmarks[: len(video_frames)]
+            faces, boxes, affine_matrices = self.affine_transform_video(video_frames, landmarks)
 
         return video_frames, faces, boxes, affine_matrices
+
+    def ensure_image_processor(self, height: int, mask_image_path: str):
+        """Build (once) the ImageProcessor used for detection and warping.
+
+        Its FaceDetector holds two onnxruntime CUDA sessions that took ~43 s
+        to create on the XE7740, so it is cached across requests. The face
+        track builder needs it before __call__ runs.
+        """
+        device = self._execution_device
+        ip_key = (int(height), str(device), str(mask_image_path))
+        if getattr(self, "_image_processor_key", None) != ip_key:
+            mask_image = load_fixed_mask(height, mask_image_path)
+            self.image_processor = ImageProcessor(height, device=str(device), mask_image=mask_image)
+            self._image_processor_key = ip_key
+        return self.image_processor
 
     @torch.no_grad()
     def __call__(
@@ -737,18 +772,10 @@ class LipsyncPipeline(DiffusionPipeline):
 
         # 0. Define call parameters
         device = self._execution_device
-        mask_image = load_fixed_mask(height, mask_image_path)
-        # CPU patch: upstream hard-coded device="cuda" here even though
-        # `device` (self._execution_device) is already defined on the
-        # line above. Use it so CPU execution paths don't crash in
-        # ImageProcessor's internal .to("cuda") calls.
-        # GPU patch: reuse the ImageProcessor across requests. Its
-        # FaceDetector builds two onnxruntime CUDA sessions, which took
-        # ~43 s on the XE7740 and ran on every call.
-        ip_key = (int(height), str(device), str(mask_image_path))
-        if getattr(self, "_image_processor_key", None) != ip_key:
-            self.image_processor = ImageProcessor(height, device=str(device), mask_image=mask_image)
-            self._image_processor_key = ip_key
+        # GPU patch: reuse the ImageProcessor across requests (see
+        # ensure_image_processor). Device comes from self._execution_device
+        # so CPU paths do not hit ImageProcessor's internal .to("cuda").
+        self.ensure_image_processor(height, mask_image_path)
         self.set_progress_bar_config(desc=f"Sample frames: {num_frames}")
 
         # 1. Default height and width to unet
@@ -835,7 +862,21 @@ class LipsyncPipeline(DiffusionPipeline):
             audio_samples = read_audio(audio_path)
             video_frames = read_video(video_path, use_decord=False)
 
-            video_frames, faces, boxes, affine_matrices = self.loop_video(whisper_chunks, video_frames)
+            # Shared face track for this window: landmarks for the source
+            # frames this clip was cut from, padded if the window ran past
+            # the end of the source. None => detect on this clip as before.
+            window_landmarks = None
+            face_track = kwargs.get("face_track")
+            if face_track is not None:
+                from latentsync_driver.face_track import slice_for_window
+
+                window_landmarks = slice_for_window(
+                    face_track["landmarks"], int(face_track.get("offset", 0)), len(video_frames)
+                )
+
+            video_frames, faces, boxes, affine_matrices = self.loop_video(
+                whisper_chunks, video_frames, window_landmarks
+            )
             profile["decode_audio_face_seconds"] = time.perf_counter() - stage_started
             profile["conditioning_seconds"] = 0.0
             profile["wait_for_worker_seconds"] = 0.0

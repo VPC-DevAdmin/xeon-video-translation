@@ -65,3 +65,13 @@ def test_background_remix_real_ffmpeg(tmp_path):
     w.run_ffmpeg(["-f", "lavfi", "-i", "sine=frequency=220:duration=2", background])
     remix(voice, background, output, 0.35)
     assert abs(w.duration(output) - 2) < 0.05
+
+
+def test_window_offset_passed_only_to_renderers_that_accept_it():
+    from app.pipeline import windowed as w
+
+    seen = []
+    w._call_renderer(lambda s, a, r, window_offset_frames=None: seen.append(window_offset_frames), "s", "a", "r", 200)
+    w._call_renderer(lambda s, a, r, **kw: seen.append(kw["window_offset_frames"]), "s", "a", "r", 400)
+    w._call_renderer(lambda s, a, r: seen.append("plain"), "s", "a", "r", 600)
+    assert seen == [200, 400, "plain"]

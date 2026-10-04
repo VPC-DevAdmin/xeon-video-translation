@@ -45,6 +45,23 @@ def encode(args, output):
         return run_ffmpeg([*args, *_encoder_args(settings.video_encoder == "h264_nvenc"), output])
 
 
+def _call_renderer(renderer, source, sound, rendered, offset_frames):
+    """Pass the window's first source frame (25 fps grid) to renderers that
+    take it, so they can slice a shared face track instead of re-detecting."""
+    import inspect
+
+    try:
+        parameters = inspect.signature(renderer).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+    accepts = "window_offset_frames" in parameters or any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values()
+    )
+    if accepts:
+        return renderer(source, sound, rendered, window_offset_frames=offset_frames)
+    return renderer(source, sound, rendered)
+
+
 def run_ffmpeg(args):
     result = subprocess.run(
         ["ffmpeg", "-nostdin", "-v", "error", "-y", *map(str, args)],
@@ -196,7 +213,7 @@ def render(
                         sound,
                     ]
                 )
-            renderer(source, sound, rendered)
+            _call_renderer(renderer, source, sound, rendered, left)
             if cancel and cancel.is_set():
                 raise RenderCancelled("render cancelled after active window drained")
             encode(

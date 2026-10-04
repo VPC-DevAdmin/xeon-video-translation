@@ -94,6 +94,33 @@ def cuda_filter_input(path):
 def read_frames(
     path, budget_bytes, *, fps=None, pixel_format="rgb24", hardware=True, timeout=600
 ):
+    """Decode every frame into host RAM, bounded by `budget_bytes` in total."""
+    frames = []
+    source_fps = None
+    for frame in iter_frames(
+        path, fps=fps, pixel_format=pixel_format, hardware=hardware, timeout=timeout,
+        max_frame_bytes=budget_bytes, _report_fps=lambda value: None,
+    ):
+        if (len(frames) + 1) * frame.nbytes > budget_bytes:
+            raise RuntimeError(
+                "video exceeds decoded-frame budget; shorten the renderer window"
+            )
+        frames.append(frame)
+    if not frames:
+        raise RuntimeError("video decode produced no frames")
+    return frames, fps or float(Fraction(probe_stream(path).get("avg_frame_rate", "25/1")))
+
+
+def iter_frames(
+    path, *, fps=None, pixel_format="rgb24", hardware=True, timeout=600,
+    max_frame_bytes=None, _report_fps=None,
+):
+    """Yield decoded frames one at a time without retaining them.
+
+    Same NVDEC/ffmpeg pipeline as `read_frames`; only one frame is held at a
+    time, so a long source can be scanned (face tracking) within a budget
+    that is a single frame rather than the whole clip.
+    """
     import numpy as np
 
     if required() and not hardware:
@@ -108,7 +135,7 @@ def read_frames(
     if round(rotation) % 180:
         width, height = height, width
     frame_size = width * height * 3
-    if frame_size <= 0 or frame_size > budget_bytes:
+    if frame_size <= 0 or (max_frame_bytes is not None and frame_size > max_frame_bytes):
         raise RuntimeError("one decoded frame exceeds the frame budget")
     source_fps = float(Fraction(stream.get("avg_frame_rate", "25/1")))
     if source_fps <= 0:
@@ -139,7 +166,8 @@ def read_frames(
         "rawvideo",
         "pipe:1",
     ]
-    frames, pending = [], bytearray()
+    pending = bytearray()
+    produced = 0
     deadline = time.monotonic() + timeout
     with (
         tempfile.TemporaryFile() as errors,
@@ -161,17 +189,13 @@ def read_frames(
                     break
                 pending.extend(chunk)
                 if len(pending) == frame_size:
-                    if (len(frames) + 1) * frame_size > budget_bytes:
-                        raise RuntimeError(
-                            "video exceeds decoded-frame budget; shorten the renderer window"
-                        )
                     # Own each buffer; subsequent reads cannot overwrite it.
-                    frames.append(
-                        np.frombuffer(pending, dtype=np.uint8).reshape(height, width, 3)
-                    )
+                    frame = np.frombuffer(pending, dtype=np.uint8).reshape(height, width, 3)
                     pending = bytearray()
+                    produced += 1
+                    yield frame
             status = process.wait(timeout=max(0.01, deadline - time.monotonic()))
-            if status or pending or not frames:
+            if status or pending or not produced:
                 errors.seek(0)
                 raise RuntimeError(
                     "video decode failed: "
@@ -186,4 +210,3 @@ def read_frames(
                 except subprocess.TimeoutExpired:
                     process.kill()
                     process.wait(timeout=5)
-    return frames, fps or source_fps

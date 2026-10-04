@@ -64,7 +64,10 @@ def run(
         # ranges; we just forward the value when present. Missing keys
         # fall through to the service's env-driven defaults
         # (LATENTSYNC_STEPS / LATENTSYNC_GUIDANCE).
-        for key in ("num_inference_steps", "guidance_scale", "seed"):
+        for key in (
+            "num_inference_steps", "guidance_scale", "seed",
+            "face_track_source", "face_track_offset_frames",
+        ):
             val = quality_overrides.get(key)
             if val is not None:
                 payload[key] = val
