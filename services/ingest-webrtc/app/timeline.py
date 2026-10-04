@@ -22,6 +22,7 @@ class Timeline:
         self.audio_rate = int(audio_rate)
         self.still = still
         self.idle_frames = idle_frames if idle_frames is not None and len(idle_frames) else None
+        self.idle_crossfade = int(round(0.5 * self.fps))   # frames blended at the loop wrap
         self.generation = 0
         self.clips: list = []           # (start, end, audio48k, frames), sorted by start
         self.promises: list = []        # (start, end) windows a reply has committed to
@@ -82,14 +83,7 @@ class Timeline:
         if self.promised(seconds):
             self.stalls += 1
         if self.idle_frames is not None:
-            n = len(self.idle_frames)
-            if n == 1:
-                return self.idle_frames[0], "idle"
-            period = 2 * n - 2                      # ping-pong loop, no jump at the wrap
-            index = int(seconds * self.fps) % period
-            if index >= n:
-                index = period - index
-            return self.idle_frames[index], "idle"
+            return idle_frame(self.idle_frames, int(seconds * self.fps), self.idle_crossfade), "idle"
         return self.still, "still"
 
     def audio_packet(self, seconds: float, samples: int):
@@ -103,6 +97,26 @@ class Timeline:
                 portion = audio[offset: offset + hi - lo]
                 out[lo: lo + len(portion)] = portion
         return out
+
+
+def idle_frame(frames, index: int, crossfade: int):
+    """Frame `index` of a forward loop over `frames` whose wrap is hidden by a crossfade.
+
+    The loop plays frames[0 : n-K]. Its last frame is followed by frames[n-K], the
+    recording's natural continuation, which fades into frames[0 .. K) over K frames,
+    so the wrap is a half-second dissolve instead of a jump or a reversed motion."""
+    n = len(frames)
+    if n == 1:
+        return frames[0]
+    k = max(0, min(int(crossfade), n // 2 - 1))
+    length = n - k
+    j = index % length
+    if j >= k or k == 0:
+        return frames[j]
+    weight = 1.0 - (j + 1) / (k + 1)                     # 1 -> continuation, 0 -> head
+    tail = frames[length + j].astype(np.float32)
+    head = frames[j].astype(np.float32)
+    return (weight * tail + (1.0 - weight) * head).astype(frames.dtype)
 
 
 def head_start_required(reply_seconds: float, render_ratio: float, first_chunk_seconds: float,

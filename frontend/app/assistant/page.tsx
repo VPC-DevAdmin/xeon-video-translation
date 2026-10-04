@@ -3,91 +3,110 @@ import { useEffect, useRef, useState } from "react";
 import PersonaWizard from "../components/PersonaWizard";
 
 const BASE = process.env.NEXT_PUBLIC_INGEST_BASE_URL || "/ingest";
-
-type Schedule = { start_in: number; head_start: number; required: number; render_ratio: number; reply_seconds: number };
+type Persona = { id: string; name: string; language: string };
+type Phase = "idle" | "preparing" | "connecting" | "live";
 
 export default function AssistantPage() {
-  const [image, setImage] = useState<File | null>(null);
-  const [voice, setVoice] = useState("");
-  const [voices, setVoices] = useState<string[]>([]);
-  const [language, setLanguage] = useState("en");
-  const [status, setStatus] = useState("idle");
-  const [messages, setMessages] = useState<string[]>([]);
-  const [error, setError] = useState("");
-  const [prepare, setPrepare] = useState<Record<string, unknown> | null>(null);
-  const [schedule, setSchedule] = useState<Schedule | null>(null);
-  const [countdown, setCountdown] = useState<number | null>(null);
-  const [stats, setStats] = useState<{ stalls: number; frames_sent: number } | null>(null);
-  const [personas, setPersonas] = useState<{ id: string; name: string }[]>([]);
+  const [phase, setPhase] = useState<Phase>("idle");
+  const [state, setState] = useState("");                 // listening / thinking / speaking …
+  const [detail, setDetail] = useState("");
+  const [personas, setPersonas] = useState<Persona[]>([]);
   const [personaId, setPersonaId] = useState("");
+  const [language, setLanguage] = useState("en");
   const [wizard, setWizard] = useState(false);
-  const video = useRef<HTMLVideoElement>(null);
+  const [uploadMode, setUploadMode] = useState(false);
+  const [image, setImage] = useState<File | null>(null);
+  const [messages, setMessages] = useState<{ who: string; text: string }[]>([]);
+  const [error, setError] = useState("");
+  const [countdown, setCountdown] = useState<number | null>(null);
+  const [showSelf, setShowSelf] = useState(true);
+  const stage = useRef<HTMLVideoElement>(null);
+  const selfView = useRef<HTMLVideoElement>(null);
   const peer = useRef<RTCPeerConnection | null>(null);
-  const microphone = useRef<MediaStream | null>(null);
+  const media = useRef<MediaStream | null>(null);
   const session = useRef<string | null>(null);
   const channel = useRef<RTCDataChannel | null>(null);
-  const scheduledAt = useRef<number | null>(null);
+  const replyAt = useRef<number | null>(null);
 
-  function stop() {
-    if (session.current) void fetch(`${BASE}/assistant/sessions/${session.current}`, { method: "DELETE", keepalive: true });
-    session.current = null;
-    peer.current?.close(); peer.current = null;
-    microphone.current?.getTracks().forEach(t => t.stop()); microphone.current = null;
-    setStatus("idle"); setSchedule(null); setCountdown(null);
-  }
-  useEffect(() => () => stop(), []);
   async function loadPersonas() {
-    try { const r = await fetch("/api/personas"); if (r.ok) setPersonas((await r.json()).personas); } catch { /* list stays empty */ }
+    try {
+      const r = await fetch("/api/personas");
+      if (!r.ok) return;
+      const list: Persona[] = (await r.json()).personas;
+      setPersonas(list);
+      setPersonaId(current => current || list[0]?.id || "");
+      if (list[0]?.language) setLanguage(current => current || list[0].language);
+    } catch { /* keep the empty list */ }
   }
   useEffect(() => { void loadPersonas(); }, []);
+  useEffect(() => () => end(), []);
   useEffect(() => {
     const timer = setInterval(() => {
-      if (scheduledAt.current === null) return;
-      const left = (scheduledAt.current - Date.now()) / 1000;
-      setCountdown(left > 0 ? left : null);
-      if (left <= 0) scheduledAt.current = null;
+      if (replyAt.current === null) return;
+      const left = (replyAt.current - Date.now()) / 1000;
+      if (left <= 0) { replyAt.current = null; setCountdown(null); } else setCountdown(left);
     }, 100);
     return () => clearInterval(timer);
   }, []);
 
+  function end() {
+    if (session.current) void fetch(`${BASE}/assistant/sessions/${session.current}`, { method: "DELETE", keepalive: true });
+    session.current = null;
+    peer.current?.close(); peer.current = null;
+    media.current?.getTracks().forEach(t => t.stop()); media.current = null;
+    replyAt.current = null; setCountdown(null);
+    setPhase("idle"); setState(""); setDetail("");
+  }
+
   async function start() {
-    if (!image && !personaId) return;
-    setError(""); setStatus("preparing the assistant (portrait, idle motion, acknowledgement)"); setMessages([]); setStats(null);
+    setError(""); setMessages([]);
+    const persona = personas.find(p => p.id === personaId);
+    setPhase("preparing"); setState(`Preparing ${persona?.name ?? "the assistant"}…`);
     try {
+      // Microphone (and camera for your own preview; the camera is not sent anywhere).
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true }, video: { width: 320, height: 240, facingMode: "user" } });
+      } catch {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+      }
+      media.current = stream;
+      if (selfView.current && stream.getVideoTracks().length) { selfView.current.srcObject = new MediaStream(stream.getVideoTracks()); void selfView.current.play().catch(() => undefined); }
+
       const form = new FormData(); form.append("language", language);
-      if (personaId) form.append("persona_id", personaId); else { if (image) form.append("image", image); if (voice) form.append("voice", voice); }
+      if (personaId) form.append("persona_id", personaId); else if (image) form.append("image", image); else throw new Error("Set up a person first, or upload a portrait.");
       const created = await fetch(`${BASE}/assistant/sessions`, { method: "POST", body: form });
       if (!created.ok) throw new Error(await created.text());
-      const body = await created.json();
-      session.current = body.session_id; setPrepare(body.prepare);
-      setStatus("connecting");
+      session.current = (await created.json()).session_id;
+
+      setPhase("connecting"); setState("Connecting…");
       const configResponse = await fetch(`${BASE}/config`);
       if (!configResponse.ok) throw new Error("Unable to load WebRTC configuration");
       const config = await configResponse.json();
       const pc = peer.current = new RTCPeerConnection({ iceServers: config.iceServers });
       const incoming = new MediaStream();
-      pc.ontrack = event => { incoming.addTrack(event.track); if (video.current) video.current.srcObject = incoming; };
+      pc.ontrack = event => { incoming.addTrack(event.track); if (stage.current) stage.current.srcObject = incoming; };
       pc.onconnectionstatechange = () => {
-        if (pc.connectionState === "connected") setStatus("listening");
-        if (pc.connectionState === "failed") { setError("Connection failed; check TURN settings"); stop(); }
+        if (pc.connectionState === "connected") { setPhase("live"); setState("Listening"); setDetail("Say something."); }
+        if (pc.connectionState === "failed") { setError("Connection failed; check network or TURN settings."); end(); }
       };
       const events = channel.current = pc.createDataChannel("events");
       events.onmessage = e => {
         const data = JSON.parse(e.data);
         switch (data.type) {
-          case "transcript": setMessages(old => [...old.slice(-19), `You: ${data.text}`]); return;
-          case "reply": setMessages(old => [...old.slice(-19), `Assistant: ${data.text}`]); return;
-          case "reply_scheduled": setSchedule(data); scheduledAt.current = Date.now() + data.start_in * 1000; setStatus("reply rendering, acknowledgement and idle playing"); return;
-          case "acknowledging": setStatus("acknowledging"); return;
-          case "speaking": setStatus("speaking"); return;
-          case "listening": setStatus("listening"); if (data.frames_sent !== undefined) setStats({ stalls: data.stalls, frames_sent: data.frames_sent }); scheduledAt.current = null; setCountdown(null); return;
+          case "transcript": setMessages(old => [...old.slice(-19), { who: "You", text: data.text }]); return;
+          case "reply": setMessages(old => [...old.slice(-19), { who: persona?.name ?? "Assistant", text: data.text }]); return;
+          case "thinking": setState("Thinking…"); setDetail(""); return;
+          case "acknowledging": if (!data.pending) setDetail("acknowledging"); return;
+          case "reply_scheduled": replyAt.current = Date.now() + data.start_in * 1000; setState("Thinking…"); setDetail(`answer in ${Math.max(0, data.start_in).toFixed(0)} s`); return;
+          case "speaking": replyAt.current = null; setCountdown(null); setState("Speaking"); setDetail("Speak to interrupt."); return;
+          case "listening": setState("Listening"); setDetail(data.stalls !== undefined ? (data.stalls ? `${data.stalls} stalled frames` : "") : ""); replyAt.current = null; setCountdown(null); return;
+          case "ready": setDetail(`idle loop ${data.idle_seconds} s ready`); return;
           case "error": setError(data.message); return;
-          default: setStatus(data.type);
+          default: return;
         }
       };
-      const mic = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
-      microphone.current = mic;
-      mic.getTracks().forEach(track => pc.addTrack(track, mic));
+      stream.getAudioTracks().forEach(track => pc.addTrack(track, stream));
       pc.addTransceiver("video", { direction: "recvonly" });
       await pc.setLocalDescription(await pc.createOffer());
       await new Promise<void>((resolve, reject) => {
@@ -110,41 +129,53 @@ export default function AssistantPage() {
         };
         pc.addEventListener("connectionstatechange", check); check();
       });
-      await video.current?.play().catch(() => setError("Press play to enable assistant audio."));
-    } catch (e) { setError(String(e)); stop(); }
+      await stage.current?.play().catch(() => setError("Press play on the video to enable sound."));
+    } catch (e) { setError(String(e)); end(); }
   }
+
+  const live = phase !== "idle";
+  const persona = personas.find(p => p.id === personaId);
 
   return <main className="mx-auto max-w-3xl p-6 space-y-4">
     <h1 className="text-2xl font-semibold">Video assistant</h1>
-    <p>Choose a person, then speak. The assistant acknowledges at once, thinks, and its reply video starts after a short head start. Speak again or press Interrupt to cut it off.</p>
-    <div className="flex flex-wrap gap-3 items-center">
-      <select aria-label="Persona" value={personaId} disabled={status !== "idle"} onChange={e => setPersonaId(e.target.value)}>
-        <option value="">Portrait upload + bundled voice</option>
-        {personas.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-      </select>
-      <button disabled={status !== "idle"} onClick={() => setWizard(true)}>Use this person…</button>
+
+    <div className="relative mx-auto w-full max-w-[512px]">
+      <video ref={stage} autoPlay playsInline className="w-full aspect-square rounded bg-black" />
+      {!live && <div className="absolute inset-0 flex items-center justify-center text-ink-400">{persona ? `${persona.name} will appear here` : "Set up a person to begin"}</div>}
+      {live && <div className="absolute left-3 top-3 rounded bg-black/60 px-3 py-1 text-sm text-white" aria-live="polite">
+        {state}{countdown !== null ? ` · ${countdown.toFixed(0)} s` : ""}{detail && countdown === null ? ` · ${detail}` : ""}
+      </div>}
+      {live && showSelf && <video ref={selfView} autoPlay playsInline muted className="absolute bottom-3 right-3 w-28 rounded border border-white/40 bg-black" />}
     </div>
-    {wizard && <PersonaWizard language={language} onCancel={() => setWizard(false)} onDone={p => { setWizard(false); setPersonaId(p.id); void loadPersonas(); }} />}
-    {!personaId && <input type="file" accept="image/png,image/jpeg,image/webp" disabled={status !== "idle"} onChange={e => setImage(e.target.files?.[0] || null)} />}
-    <select value={language} disabled={status !== "idle"} onChange={e => setLanguage(e.target.value)}>
-      {[["en", "English"], ["es", "Spanish"], ["fr", "French"], ["de", "German"], ["it", "Italian"], ["pt", "Portuguese"], ["ja", "Japanese"], ["zh", "Chinese"]].map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-    </select>
-    <div>
-      <button disabled={status !== "idle"} onClick={async () => { try { const r = await fetch("/api/speech/voices"); if (!r.ok) throw new Error(await r.text()); setVoices((await r.json()).voices); } catch (e) { setError(String(e)); } }}>Load voices</button>
-      <select aria-label="Assistant voice" value={voice} onChange={e => setVoice(e.target.value)} disabled={status !== "idle"}><option value="">Default voice</option>{voices.map(v => <option key={v}>{v}</option>)}</select>
+
+    <div className="flex flex-wrap items-center gap-3">
+      {!live
+        ? <button className="rounded bg-ink-900 px-5 py-2 text-white disabled:opacity-40" disabled={!personaId && !image} onClick={start}>Start chat</button>
+        : <>
+          <button className="rounded px-5 py-2 border" onClick={() => channel.current?.readyState === "open" && channel.current.send("interrupt")}>Interrupt</button>
+          <button className="rounded px-5 py-2 border" onClick={end}>End chat</button>
+          <label className="text-sm flex items-center gap-1"><input type="checkbox" checked={showSelf} onChange={e => setShowSelf(e.target.checked)} /> show my camera</label>
+        </>}
     </div>
-    <video ref={video} autoPlay playsInline controls className="w-full rounded bg-black aspect-square max-h-[512px]" />
-    <p aria-live="polite">{status}{countdown !== null && ` · reply starts in ${countdown.toFixed(1)} s`}</p>
-    {schedule && <p className="text-sm text-ink-400">Head start {schedule.head_start.toFixed(1)} s (needed {schedule.required.toFixed(1)} s at render rate {schedule.render_ratio.toFixed(2)}× for a {schedule.reply_seconds.toFixed(1)} s reply)</p>}
-    {stats && <p className="text-sm text-ink-400">Last reply: {stats.stalls} stalled frames of {stats.frames_sent} sent</p>}
-    {prepare && <p className="text-sm text-ink-400">Prepared in {String((prepare as { total_seconds?: number }).total_seconds)} s</p>}
-    <div className="flex gap-4">
-      <button disabled={(!image && !personaId) || status !== "idle"} onClick={start}>Start conversation</button>
-      <button disabled={status === "idle"} onClick={() => channel.current?.readyState === "open" && channel.current.send("interrupt")}>Interrupt</button>
-      <button disabled={status === "idle"} onClick={stop}>End conversation</button>
-    </div>
+
+    {!live && <div className="flex flex-wrap items-center gap-3 text-sm">
+      {personas.length > 0 && <label>Who answers:
+        <select className="ml-2 border px-2 py-1" value={personaId} onChange={e => { setPersonaId(e.target.value); const p = personas.find(x => x.id === e.target.value); if (p) setLanguage(p.language); }}>
+          {personas.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+          {uploadMode && <option value="">(uploaded portrait)</option>}
+        </select></label>}
+      <button className="underline" onClick={() => setWizard(true)}>Use this person…</button>
+      <label>Language:
+        <select className="ml-2 border px-2 py-1" value={language} onChange={e => setLanguage(e.target.value)}>
+          {[["en", "English"], ["es", "Spanish"], ["fr", "French"], ["de", "German"], ["it", "Italian"], ["pt", "Portuguese"], ["ja", "Japanese"], ["zh", "Chinese"]].map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+        </select></label>
+      <button className="underline text-ink-400" onClick={() => { setUploadMode(v => !v); if (!uploadMode) setPersonaId(""); }}>{uploadMode ? "use a saved person" : "or upload a portrait"}</button>
+      {uploadMode && <input type="file" accept="image/png,image/jpeg,image/webp" onChange={e => setImage(e.target.files?.[0] || null)} />}
+    </div>}
+
+    {wizard && <PersonaWizard language={language} onCancel={() => setWizard(false)} onDone={p => { setWizard(false); setUploadMode(false); setPersonaId(p.id); void loadPersonas(); }} />}
     {error && <p role="alert" className="text-red-600">{error}</p>}
-    <div aria-live="polite">{messages.map((text, index) => <p key={index}>{text}</p>)}</div>
-    <a href="/avatar" className="underline">Older avatar page</a> · <a href="/live" className="underline">Video translation</a>
+    <div aria-live="polite" className="space-y-1">{messages.map((m, i) => <p key={i}><span className="font-semibold">{m.who}:</span> {m.text}</p>)}</div>
+    <p className="text-xs text-ink-400">Start chat turns on your microphone (and camera for your own preview only). The assistant answers after a short pause while its reply video renders.</p>
   </main>;
 }
