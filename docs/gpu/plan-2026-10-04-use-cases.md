@@ -111,6 +111,14 @@ Only one product is live on the box at a time, chosen from a UI. That removes th
 | Review and correction loop | Studio editing of transcript and translation exists; extend to script edits and re-render of only the affected segments | Builds on segment-level orchestration |
 | Consent, provenance and disclosure | Persona consent records, C2PA provenance, the watermark that is already on | Required before any external demo of Product 3 |
 
+## Status, 5 October
+
+Product 1 is live (docs/gpu/assistant-pipeline.md). Product 2 work items 1, 2
+and 5 landed as mode `stream` (docs/gpu/streaming-translation.md): per-span
+orchestration, speech-span passthrough, HLS output with a head-start player.
+Window pipelining (item 3) existed already; batched restore (4) and the webcam
+path (6) remain.
+
 ## Order of work
 
 1. Renderer window pipelining and batched restore. Both translation and generation speed up, and the result decides whether streaming translation can hold real time on 8 GPUs.
