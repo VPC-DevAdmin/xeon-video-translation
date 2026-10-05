@@ -304,7 +304,7 @@ async def test_assistant_handoff_cuts_a_talking_progress_phrase_by_default(tmp_p
     try:
         await session.fill_gap({"opener_end": 3.0, "mode": "think"}, {"reply_start": 7.5}, 0, 0.0)
         filler = next(c for c in session.timeline.clips if c[0] == 5.0)
-        assert filler[1] == pytest.approx(6.35) and len(filler[3]) == 34                 # cut at the hand-back, audio faded
+        assert filler[1] == pytest.approx(6.33) and len(filler[3]) == 33                 # cut at the return time, audio faded
         closer = next(c for c in session.timeline.clips if c[0] > 6.0)
         assert closer[0] == pytest.approx(6.35) and closer[1] == pytest.approx(7.35)
     finally:
