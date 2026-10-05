@@ -25,6 +25,13 @@ Date: 4 October 2026. Code: `gpu/track` from `333e869` (pipeline) and `79dfb41`
 > gaze motion. Recordings and event reports are on the XE7740 under
 > `/jobs/ab/home-depot-ack-33479e4.*` and `/jobs/ab/home-depot-ack-f03724d.*`.
 
+> Final two-turn check on `c5c8512`: the thinking opener and closer led to a
+> reply at 9.0 s. The lookup turn played an opener, short middle phrase and
+> closer, then began the reply at 11.2 s. Both replies received 25 fps; the
+> server skipped 3 of 1,104 scheduled video frames, and the neutral listening
+> segment before the first turn had no large snaps. The recorded A/V and event
+> report are `/jobs/ab/home-depot-c5c8512.*` on the XE7740.
+
 ## Try it live
 
 On your machine, tunnel the frontend (the box binds it to localhost only, and the
