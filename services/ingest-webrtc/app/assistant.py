@@ -75,6 +75,7 @@ CACHE_VERSION = 6                                                    # bump when
 SETTLE_FRAMES = int(os.getenv("ASSISTANT_SETTLE_FRAMES", "10"))      # frames a clip takes to settle back into the rest pose
 MIN_IDLE_SECONDS = float(os.getenv("ASSISTANT_MIN_IDLE_SECONDS", "6"))   # shortest take kept as a loop when growth is interrupted
 READING_FRAMES = int(os.getenv("ASSISTANT_READING_FRAMES", "150"))   # reading loop at the tablet (LivePortrait), 25 fps
+THINKING_FRAMES = int(os.getenv("ASSISTANT_THINKING_FRAMES", "100"))  # thinking loop: away and back within 4 s
 TURN_FRAMES = int(os.getenv("ASSISTANT_TURN_FRAMES", "12"))          # head turn to/from the tablet, at 25 fps
 RENDER_TIMEOUT = float(os.getenv("ASSISTANT_RENDER_TIMEOUT", "30"))
 FPS = 25
@@ -460,7 +461,8 @@ class Assistant:
             return None
         seconds = IDLE_SECONDS if pose == "front" else WORKING_IDLE_SECONDS
         posed = {"working": WORKING_POSE, "thinking": THINKING_POSE}.get(pose)
-        return directory / f"idle-{pose}-{self._fingerprint(kind='idle', pose=pose, seconds=seconds, posed=posed, loop=READING_FRAMES if posed else None)}.npz"
+        loop_frames = {"working": READING_FRAMES, "thinking": THINKING_FRAMES}.get(pose)
+        return directory / f"idle-{pose}-{self._fingerprint(kind='idle', pose=pose, seconds=seconds, posed=posed, loop=loop_frames)}.npz"
 
     def _clip_prefix(self) -> str:
         return self._fingerprint(kind="clip", language=self.language, voice=self.voice or "", voice_digest=self.voice_digest,
@@ -552,7 +554,7 @@ class Assistant:
         try:
             response = await self.client.post(f"{RENDERER}/portrait/pose", json={
                 "image_b64": base64.b64encode((self.directory / "image.png").read_bytes()).decode(), **THINKING_POSE,
-                "motion": "thinking", "frames": READING_FRAMES, "size": int(self.renderer.spec.get("height") or 512)}, timeout=300)
+                "motion": "thinking", "frames": THINKING_FRAMES, "size": int(self.renderer.spec.get("height") or 512)}, timeout=300)
             if response.status_code != 200:
                 self.metrics["prepare"]["thinking_error"] = response.status_code
                 return False
@@ -889,10 +891,12 @@ class Assistant:
                         tl.set_mode(plan["opener_end"] + 0.05, "thinking", generation)
                         away = True
                         self.notify("working", mode="think")
-                if lookup or not away:
+                if not away:
+                    pass                                 # nothing is said between the opener and leaving the camera
+                elif lookup:
                     if cursor - now < 1.5 and cursor < t0 + MAX_HEAD_START - 1.0:
-                        kind = next(pattern) if away else "beat_front"
-                        clip = self.pick(kind) or self.pick("beat_front" if not away else "beat") or (self.pick("bridge") if away else None)
+                        kind = next(pattern)
+                        clip = self.pick(kind) or self.pick("beat") or self.pick("bridge")
                         if clip is not None:
                             at = max(cursor + random.uniform(0.7, 1.5), now + 0.3)
                             placed = tl.schedule(at, clip.audio48, clip.frames, generation, tag="filler")
