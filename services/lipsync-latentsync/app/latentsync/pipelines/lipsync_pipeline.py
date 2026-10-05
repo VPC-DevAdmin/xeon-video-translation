@@ -921,7 +921,8 @@ class LipsyncPipeline(DiffusionPipeline):
             hidden = covered.numpy() > face_parse.MOUTH_COVERED
             covered_frames = int(hidden.sum())
             gate[hidden] = 0.0  # an occluder over the mouth: treat like a lost face
-        alpha = face_parse.occlusion_alpha(gate, margin=2, ramp=3)
+        # ramp=1: binary. A partial paste dissolves two different mouths.
+        alpha = face_parse.occlusion_alpha(gate, margin=2, ramp=1)
         # Silence in the translated audio: render a closed mouth there instead of
         # copying the source mouth (latentsync_driver.face_parse).
         silent = face_parse.silent_frames(audio_samples.cpu().numpy() if hasattr(audio_samples, "cpu") else audio_samples,

@@ -56,10 +56,10 @@ def test_alpha_fades_on_low_detection_confidence():
     conf = np.array([0.95, 0.95, 0.95, 0.6, 0.95, 0.95, 0.95], np.float32)
     alpha = fp.occlusion_alpha(conf)
     assert alpha[0] == 1.0 and alpha[6] == 1.0
-    expected = (0.6 - fp.CONF_LOW) / (fp.CONF_HIGH - fp.CONF_LOW)
-    assert alpha[3] == pytest.approx(expected, abs=1e-5)
-    assert alpha[2] == pytest.approx(expected, abs=1e-5) and alpha[4] == pytest.approx(expected, abs=1e-5)  # neighbours too
+    # binary: the low frame and its neighbours are not pasted at all
+    assert alpha[3] == 0.0 and alpha[2] == 0.0 and alpha[4] == 0.0
     assert alpha[1] == 1.0
+    assert set(np.unique(alpha).tolist()) <= {0.0, 1.0}
 
 
 def test_alpha_confidence_gap_still_zero_with_ramp():
@@ -159,3 +159,17 @@ def test_pick_closed_mouth_prefers_clear_frames():
     covered = np.array([0.0, 0.0, 0.4, 0.0], np.float32)     # frame 2 has a hand
     assert fp.pick_closed_mouth(mouth_open, alpha, covered) == 1
     assert fp.pick_closed_mouth(mouth_open, np.zeros(4)) is None
+
+
+def test_binary_gate_has_no_partial_weights():
+    visible = [True] * 6 + [False] * 3 + [True] * 6
+    alpha = fp.occlusion_alpha(visible, margin=2, ramp=1)
+    assert set(np.unique(alpha).tolist()) <= {0.0, 1.0}
+    assert alpha[4:11].tolist() == [0.0] * 7 and alpha[3] == 1.0 and alpha[11] == 1.0
+
+
+def test_feather_softens_a_hard_edge():
+    torch = pytest.importorskip("torch")
+    m = torch.zeros((1, 1, 64, 64)); m[..., :, 32:] = 1.0
+    f = fp.feather(m, 15)
+    assert 0.1 < float(f[0, 0, 32, 30]) < 0.5 and float(f[0, 0, 32, 10]) == 0.0 and float(f[0, 0, 32, 60]) == 1.0

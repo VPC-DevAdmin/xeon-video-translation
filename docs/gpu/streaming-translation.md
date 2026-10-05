@@ -191,3 +191,14 @@ uses the real frame. The log line lists `silent` ranges and the
 Internal pauses longer than 0.4 s get the same treatment. Ending the video at
 the end of the audio was rejected: the source keeps moving, so a cut would be
 visible and the tail would be lost.
+
+### No dissolves at the gates (5 Oct 2026, night)
+
+At the exit of a gate (frame 200, the Lindt box leaving) the paste weight
+ramped 0.33 / 0.67 / 1.0 and the confidence fade produced partial weights
+too, so a generated mouth was dissolved over a different source mouth: a
+smudge, with a hard seam where the unfeathered hand mask crossed the lip.
+Same lesson as the assistant's idle joins: no dissolves. The gate and the
+confidence decision are binary now (a frame is pasted or not; margin 2 frames
+around a gap), and the occluder and hand masks are feathered by 15 px before
+they cut the paste mask. Frames 200-207 of the clip are clean.

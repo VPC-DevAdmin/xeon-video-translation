@@ -122,14 +122,33 @@ def occlusion_alpha(visible, margin: int = 1, ramp: int = 3) -> np.ndarray:
 
 
 def _confidence_fade(alpha: np.ndarray, confidence) -> np.ndarray:
+    """Binary: a partial weight would dissolve two different mouths into a
+    smudge (seen at a gate exit on 5 Oct 2026), so a frame is either pasted
+    or not. Below the midpoint of CONF_LOW..CONF_HIGH it is not."""
     if confidence is None:
         return alpha
-    fade = np.clip((confidence - CONF_LOW) / (CONF_HIGH - CONF_LOW), 0.0, 1.0).astype(np.float32)
+    fade = (confidence >= (CONF_LOW + CONF_HIGH) / 2).astype(np.float32)
     fade = np.where(confidence > 0, fade, 1.0).astype(np.float32)  # gaps are already 0 in alpha
     if len(fade) > 1:  # minimum over the frame and its neighbours
         padded = np.concatenate([fade[:1], fade, fade[-1:]])
         fade = np.minimum(np.minimum(padded[:-2], padded[1:-1]), padded[2:])
     return np.minimum(alpha, fade).astype(np.float32)
+
+
+def feather(mask, size: int = 15):
+    """(N,1,H,W) float mask -> Gaussian-blurred copy (separable, replicate pad)."""
+    import torch
+    import torch.nn.functional as F
+
+    k = size if size % 2 else size + 1
+    if k <= 1:
+        return mask
+    sigma = 0.3 * ((k - 1) * 0.5 - 1) + 0.8
+    x = torch.arange(k, device=mask.device, dtype=torch.float32) - (k - 1) / 2
+    g = torch.exp(-(x**2) / (2 * sigma**2))
+    g = (g / g.sum()).view(1, 1, 1, k)
+    out = F.conv2d(F.pad(mask, (k // 2, k // 2, 0, 0), mode="replicate"), g)
+    return F.conv2d(F.pad(out, (0, 0, k // 2, k // 2), mode="replicate"), g.transpose(2, 3)).clamp(0.0, 1.0)
 
 
 def face_mask_from_parsing(parsing, dilate: int = 9, feather: int = 15):
@@ -458,6 +477,8 @@ class FaceParser:
                 band_face = (mask > 0.5).float()[..., MOUTH_BAND[0], MOUTH_BAND[1]]
                 band_occ = (occluders > 0.5).float()[..., MOUTH_BAND[0], MOUTH_BAND[1]]
                 covered = ((band_face * band_occ).sum((1, 2, 3)) / band_face.sum((1, 2, 3)).clamp(min=1.0)).cpu()
-                mask = mask * (1.0 - occluders)
+                # Soft edge: a hard occluder boundary through the mouth leaves a
+                # visible seam between generated and source pixels.
+                mask = mask * (1.0 - feather(occluders, 15))
             mask = F.interpolate(mask, size=out_size, mode="bilinear", align_corners=False)
         return mask, covered, mouth_open
