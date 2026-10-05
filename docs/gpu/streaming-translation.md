@@ -132,3 +132,27 @@ outputs differ only where the occluder overlaps the mouth. Parsing costs
 0.24 s per 8 s window. `LATENTSYNC_OCCLUSION_MASK=0` disables the pixel mask
 (the frame gate always applies). Residual: a bare hand fully over the mouth is
 skin to the parser, so it is caught only when detection drops too.
+
+### Partial covers (5 Oct 2026, later)
+
+The user then found two partial covers: a finger and box edge beside the
+mouth, and a blurred pale box crossing it. BiSeNet calls both "skin". Added in
+`face_parse.py`, all measured on the same clip:
+
+* **Temporal occluder mask.** In the aligned crop each frame is compared with
+  the median of up to 30 visible frames before it and after it (128 px,
+  brightness-matched on agreeing pixels); only what differs from both counts,
+  so a pose change (persists into the future) and a moving mouth (compact blob,
+  never reaches the crop border) are not flagged. Blobs of at least 2 percent
+  of the crop touching the border are kept. Catches hands and dark objects.
+* **Covered-mouth gate.** The pale translucent box is only 40 percent caught at
+  pixel level, and a half-painted mouth looks worse than either extreme, so a
+  frame whose lower-face band is more than 30 percent occluded is treated like
+  a lost face (clean frames peak near 10 percent). Gate margin is now 2 frames.
+* **Confidence fade.** The track stores the detector score (v3); paste fades
+  between 0.55 and 0.72, where half-covered faces sit on this footage.
+
+Result: frames 77-96 and 182-199 (both boxes and the hand pass) now equal the
+source; 51 of 212 frames carry a reduced paste. Cost: while a hand covers half
+the mouth the original mouth shows for those frames instead of a translated
+one under the fingers. Knobs: `LATENTSYNC_OCCLUDER_MASK=0`, `MOUTH_COVERED`.

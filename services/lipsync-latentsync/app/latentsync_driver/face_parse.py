@@ -18,8 +18,20 @@ Two layers fix this:
   are not pasted at all, with a short alpha ramp in and out, since the carried
   landmarks say nothing about where the face is.
 
-Known residual: a bare hand over the mouth is skin to the parser and may still
-get a mouth; the frame gate catches it only if detection drops as well.
+* **Temporal occluder mask.** A hand, or a pale box, is skin to the parser.
+  In the aligned crop the face itself barely moves, so each frame is compared
+  with the median of nearby frames *before* it and *after* it: a pixel that
+  differs from both is something passing in front of the face (a pose change
+  persists into the future, a moving mouth is a compact blob that never
+  reaches the crop border). Detected at 128 px, kept only for large blobs
+  that touch the border, dilated, and spread over neighbouring frames.
+* **Confidence fade.** A face half covered is still detected, but with a much
+  lower score; the paste fades between `CONF_LOW` and `CONF_HIGH`.
+* **Covered-mouth gate.** A pale, blurred object over the mouth is only partly
+  caught by the temporal mask (a half-painted mouth would look worse than
+  either extreme), so when the occluder mask covers more than `MOUTH_COVERED`
+  of the lower-face band the whole frame is treated as covered and the source
+  mouth is shown for those few frames.
 """
 
 from __future__ import annotations
@@ -43,16 +55,35 @@ def enabled() -> bool:
     return os.environ.get("LATENTSYNC_OCCLUSION_MASK", "1") == "1"
 
 
-def occlusion_alpha(visible, margin: int = 1, ramp: int = 3) -> np.ndarray:
-    """Per-frame paste weight from per-frame detection success.
+# Below CONF_LOW the face is treated as covered; clean handheld frames sit at
+# 0.75-0.9 on buffalo_l, half-covered ones at 0.5-0.72.
+CONF_LOW, CONF_HIGH = 0.55, 0.72
+# Lower-face band of the canonical 512 crop (where LatentSync changes pixels)
+# and the fraction of it an occluder may cover before the frame is skipped.
+MOUTH_BAND = (slice(300, 430), slice(130, 390))
+MOUTH_COVERED = 0.30  # clean frames on handheld footage reach ~0.1, boxes/hands over the mouth 0.4+
 
-    Frames without a detected face, and `margin` frames either side of them,
-    get 0; the weight then rises linearly to 1 over `ramp` frames so the mouth
-    neither pops in nor out."""
-    visible = np.asarray(visible, dtype=bool)
-    n = len(visible)
+
+def occlusion_alpha(visible, margin: int = 1, ramp: int = 3) -> np.ndarray:
+    """Per-frame paste weight from per-frame detection.
+
+    `visible` is a bool array (face detected) or the detector's confidence per
+    frame (0.0 = no face). Frames without a detected face, and `margin` frames
+    either side of them, get 0; the weight then rises linearly to 1 over
+    `ramp` frames so the mouth neither pops in nor out. With confidences, the
+    weight is also faded between CONF_LOW and CONF_HIGH (minimum over the
+    frame and its neighbours), since a half-covered face still detects, but
+    poorly."""
+    values = np.asarray(visible)
+    n = len(values)
     if n == 0:
         return np.zeros(0, dtype=np.float32)
+    if values.dtype == bool:
+        visible = values
+        confidence = None
+    else:
+        confidence = values.astype(np.float32)
+        visible = confidence > 0
     blocked = ~visible
     if margin > 0 and blocked.any():
         grown = blocked.copy()
@@ -61,7 +92,7 @@ def occlusion_alpha(visible, margin: int = 1, ramp: int = 3) -> np.ndarray:
             grown[:-shift] |= blocked[shift:]
         blocked = grown
     if not blocked.any():
-        return np.ones(n, dtype=np.float32)
+        return _confidence_fade(np.ones(n, dtype=np.float32), confidence)
     # Distance (in frames) from each frame to the nearest blocked frame.
     distance = np.full(n, n, dtype=np.int64)
     last = None
@@ -76,8 +107,19 @@ def occlusion_alpha(visible, margin: int = 1, ramp: int = 3) -> np.ndarray:
             last = i
         if last is not None:
             distance[i] = min(distance[i], last - i)
-    alpha = np.clip(distance / float(max(ramp, 1)), 0.0, 1.0)
-    return alpha.astype(np.float32)
+    alpha = np.clip(distance / float(max(ramp, 1)), 0.0, 1.0).astype(np.float32)
+    return _confidence_fade(alpha, confidence)
+
+
+def _confidence_fade(alpha: np.ndarray, confidence) -> np.ndarray:
+    if confidence is None:
+        return alpha
+    fade = np.clip((confidence - CONF_LOW) / (CONF_HIGH - CONF_LOW), 0.0, 1.0).astype(np.float32)
+    fade = np.where(confidence > 0, fade, 1.0).astype(np.float32)  # gaps are already 0 in alpha
+    if len(fade) > 1:  # minimum over the frame and its neighbours
+        padded = np.concatenate([fade[:1], fade, fade[-1:]])
+        fade = np.minimum(np.minimum(padded[:-2], padded[1:-1]), padded[2:])
+    return np.minimum(alpha, fade).astype(np.float32)
 
 
 def face_mask_from_parsing(parsing, dilate: int = 9, feather: int = 15):
@@ -104,6 +146,78 @@ def face_mask_from_parsing(parsing, dilate: int = 9, feather: int = 15):
         padded = torch.cat([mask[:1], mask, mask[-1:]], dim=0)
         mask = (padded[:-2] + padded[1:-1] + padded[2:]) / 3.0
     return mask.clamp_(0.0, 1.0)
+
+
+def occluder_masks(crops, visible, size: int = 128, window: int = 30, threshold: float = 22.0,
+                   min_area: float = 0.02, dilate: int = 5, min_reference: int = 5):
+    """(N,3,H,W) uint8 aligned crops + per-frame visibility -> (N,1,size,size)
+    float occluder mask (1 = something in front of the face).
+
+    Each frame is compared with the median of up to `window` visible frames
+    before it and after it (brightness-matched); the deviation is the smaller
+    of the two, so only what differs from both past and future counts. Blobs
+    that cover at least `min_area` of the crop and touch its border are kept,
+    dilated by `dilate` px, and spread to the neighbouring frames."""
+    import cv2
+    import torch
+    import torch.nn.functional as F
+
+    n = len(crops)
+    visible = np.asarray(visible)
+    visible = visible if visible.dtype == bool else visible > 0
+    out = torch.zeros((n, 1, size, size), dtype=torch.float32)
+    if n < min_reference + 1 or int(visible.sum()) < min_reference:
+        return out
+    device = crops.device
+    small = F.interpolate(crops.float(), size=(size, size), mode="area")
+    small = F.avg_pool2d(small, 3, stride=1, padding=1)
+    lum = small.mean(1)  # (N,size,size)
+    centre = (slice(size // 4, size * 3 // 4), slice(size // 4, size * 3 // 4))
+    visible_idx = np.flatnonzero(visible)
+
+    def reference(lo, hi):
+        idx = visible_idx[(visible_idx >= lo) & (visible_idx < hi)]
+        if len(idx) < min_reference:
+            return None
+        ref = small[torch.as_tensor(idx, device=device)].median(dim=0).values
+        return ref, ref.mean(0)[centre[0], centre[1]]
+
+    def deviation(i, ref):
+        if ref is None:
+            return None
+        pixels, ref_lum = ref
+        # Brightness match on the median pixel ratio over the centre of the
+        # crop, using only pixels that roughly agree with the reference so a
+        # large occluder cannot drag the gain and flag the whole face.
+        current = lum[i][centre[0], centre[1]].clamp(min=1.0)
+        agree = (current - ref_lum).abs() < 2.0 * threshold
+        ratio = (ref_lum / current)[agree] if int(agree.sum()) >= 16 else (ref_lum / current)
+        gain = ratio.flatten().median().clamp(0.7, 1.4)
+        return (small[i] * gain - pixels).abs().max(0).values
+
+    kernel = np.ones((dilate, dilate), np.uint8) if dilate > 1 else None
+    masks = np.zeros((n, size, size), np.uint8)
+    for i in range(n):
+        past = deviation(i, reference(i - window, i))
+        future = deviation(i, reference(i + 1, i + 1 + window))
+        if past is None and future is None:
+            continue
+        dev = past if future is None else future if past is None else torch.minimum(past, future)
+        m = (dev > threshold).to(torch.uint8).cpu().numpy()
+        m = cv2.morphologyEx(m, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+        count, labels, stats, _ = cv2.connectedComponentsWithStats(m, 8)
+        keep = np.zeros_like(m)
+        for j in range(1, count):
+            x, y, w, h, area = stats[j]
+            # the 3x3 blur pulls a blob one pixel off the border
+            touches = x <= 1 or y <= 1 or x + w >= size - 1 or y + h >= size - 1
+            if area >= min_area * size * size and touches:
+                keep[labels == j] = 1
+        masks[i] = cv2.dilate(keep, kernel) if kernel is not None else keep
+    spread = masks.copy()
+    spread[1:] |= masks[:-1]
+    spread[:-1] |= masks[1:]
+    return torch.from_numpy(spread.astype(np.float32)).unsqueeze(1)
 
 
 class FaceParser:
@@ -146,10 +260,14 @@ class FaceParser:
                         log.warning("face parsing unavailable, occluders will not be masked: %s", exc)
         return self._net is not None
 
-    def masks(self, crops, out_size: tuple[int, int], batch_size: int = 32):
-        """`out_size` is (height, width) of the warp crop the mask is applied to."""
+    def masks(self, crops, out_size: tuple[int, int], batch_size: int = 32, visible=None):
+        """Returns `(masks, covered)`: (N,1,h,w) paste masks for `out_size` =
+        (height, width) of the warp crop, and the per-frame fraction of the
+        lower-face band hidden by an occluder (zeros without `visible`). With
+        `visible` (per-frame detection / confidence) the temporal occluder
+        mask is subtracted as well. `(None, None)` when parsing is unavailable."""
         if not self.available():
-            return None
+            return None, None
         import torch
         import torch.nn.functional as F
 
@@ -165,5 +283,13 @@ class FaceParser:
                 parsed.append(self._net(x)[0].argmax(1).to(torch.uint8))
             parsing = torch.cat(parsed, dim=0)
             mask = face_mask_from_parsing(parsing)
+            covered = torch.zeros(len(mask), dtype=torch.float32)
+            if visible is not None and os.environ.get("LATENTSYNC_OCCLUDER_MASK", "1") == "1":
+                occluders = occluder_masks(crops.to(self.device, non_blocking=True), visible).to(mask.device)
+                occluders = F.interpolate(occluders, size=mask.shape[-2:], mode="bilinear", align_corners=False)
+                band_face = (mask > 0.5).float()[..., MOUTH_BAND[0], MOUTH_BAND[1]]
+                band_occ = (occluders > 0.5).float()[..., MOUTH_BAND[0], MOUTH_BAND[1]]
+                covered = ((band_face * band_occ).sum((1, 2, 3)) / band_face.sum((1, 2, 3)).clamp(min=1.0)).cpu()
+                mask = mask * (1.0 - occluders)
             mask = F.interpolate(mask, size=out_size, mode="bilinear", align_corners=False)
-        return mask
+        return mask, covered

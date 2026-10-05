@@ -622,21 +622,25 @@ class LipsyncPipeline(DiffusionPipeline):
             # fail the whole run. Gaps are filled after the pass completes.
             print(f"Extracting landmarks from {len(video_frames)} frames...")
             per_frame_landmarks = []
+            confidences = []
             for frame in tqdm.tqdm(video_frames, desc="detect"):
-                per_frame_landmarks.append(
-                    self.image_processor.try_extract_landmarks3(frame),
-                )
+                landmarks3, score = self.image_processor.try_extract_with_score(frame)
+                per_frame_landmarks.append(landmarks3)
+                confidences.append(score)
+            if visible is None:
+                visible = np.asarray(confidences, dtype=np.float32)
 
         total_frames = len(per_frame_landmarks)
         per_frame_landmarks, missing_indices = _fill_missing_landmarks(
             per_frame_landmarks,
         )
         if visible is None:
-            # Frames whose landmarks are carried over from a neighbour: the
-            # paste-back must not trust them (latentsync_driver.face_parse).
-            visible = np.ones(total_frames, dtype=bool)
-            visible[missing_indices] = False
-        visible = np.asarray(visible, dtype=bool)
+            visible = np.ones(total_frames, dtype=np.float32)
+        # Detection confidence per frame, 0.0 where the landmarks are carried
+        # over from a neighbour: the paste-back must not trust those frames
+        # (latentsync_driver.face_parse).
+        visible = np.asarray(visible, dtype=np.float32).copy()
+        visible[missing_indices] = 0.0
         if missing_indices:
             miss_ratio = len(missing_indices) / total_frames
             # Log the first few indices so the user can pinpoint bad
@@ -700,7 +704,7 @@ class LipsyncPipeline(DiffusionPipeline):
                           "detect_seconds": round(warp_started - detect_started, 2),
                           "warp_seconds": round(time.perf_counter() - warp_started, 2),
                           "shared_track": landmarks is not None,
-                          "occluded_frames": int((~visible).sum())}), flush=True)
+                          "occluded_frames": int((visible <= 0).sum())}), flush=True)
         return faces, boxes, affine_matrices, visible
 
     def restore_video(
@@ -893,7 +897,7 @@ class LipsyncPipeline(DiffusionPipeline):
             offset = int(window_landmarks.get("offset", 0))
             if window_landmarks.get("visible") is not None:
                 window_visible = slice_for_window(
-                    np.asarray(window_landmarks["visible"], dtype=bool), offset, len(video_frames)
+                    np.asarray(window_landmarks["visible"], dtype=np.float32), offset, len(video_frames)
                 )
             window_landmarks = slice_for_window(window_landmarks["landmarks"], offset, len(video_frames))
         video_frames, faces, boxes, affine_matrices, visible = self.loop_video(
@@ -905,12 +909,20 @@ class LipsyncPipeline(DiffusionPipeline):
         from latentsync_driver import face_parse
 
         parse_started = time.perf_counter()
-        face_masks = self.face_parser().masks(faces, out_size=self.image_processor.restorer.face_size[::-1])
+        face_masks, covered = self.face_parser().masks(
+            faces, out_size=self.image_processor.restorer.face_size[::-1], visible=visible
+        )
+        gate = np.asarray(visible, dtype=np.float32).copy()
+        covered_frames = 0
         if face_masks is not None:
             face_masks = face_masks.to(torch.float16).cpu()
-        alpha = face_parse.occlusion_alpha(visible)
+            hidden = covered.numpy() > face_parse.MOUTH_COVERED
+            covered_frames = int(hidden.sum())
+            gate[hidden] = 0.0  # an occluder over the mouth: treat like a lost face
+        alpha = face_parse.occlusion_alpha(gate, margin=2, ramp=3)
         print(json.dumps({"event": "latentsync_occlusion", "frames": len(faces),
                           "parsed": face_masks is not None, "gated_frames": int((alpha < 1).sum()),
+                          "no_face_frames": int((np.asarray(visible) <= 0).sum()), "covered_mouth_frames": covered_frames,
                           "seconds": round(time.perf_counter() - parse_started, 2)}), flush=True)
         return {
             "whisper_chunks": whisper_chunks, "audio_samples": audio_samples, "video_frames": video_frames,

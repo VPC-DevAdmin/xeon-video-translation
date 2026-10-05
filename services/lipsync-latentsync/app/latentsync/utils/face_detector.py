@@ -78,6 +78,9 @@ class FaceDetector:
 
         get_face_store = None
         max_size = 0
+        # Confidence of the face returned by this call (0.0 when none); the
+        # occlusion gate (latentsync_driver.face_parse) reads it.
+        self.last_score = 0.0
 
         if len(faces) == 0:
             return None, None
@@ -101,6 +104,7 @@ class FaceDetector:
             return None, None
         else:
             face = get_face_store
+            self.last_score = float(face.det_score)
             lmk = np.round(face.landmark_2d_106).astype(np.int_)
 
             halk_face_coord = np.mean([lmk[74], lmk[73]], axis=0)  # lmk[73]

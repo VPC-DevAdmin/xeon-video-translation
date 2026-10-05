@@ -32,7 +32,7 @@ import numpy as np
 
 log = logging.getLogger(__name__)
 
-TRACK_VERSION = "insightface-buffalo_l-3pt-v2"  # v2: per-frame visibility
+TRACK_VERSION = "insightface-buffalo_l-3pt-v3"  # v3: per-frame detection confidence
 _SUBDIR = Path("cache") / "latentsync_tracks"
 _locks: dict[str, threading.Lock] = {}
 _locks_guard = threading.Lock()
@@ -117,13 +117,21 @@ def slice_for_window(track: np.ndarray, offset: int, frames: int) -> np.ndarray:
 
 def build(source: Path, fps: int, extract, *, smooth_window: int, max_miss_ratio: float,
           frame_budget_bytes: int, progress=None) -> dict:
-    """Stream the source at `fps` and run `extract(frame) -> (3,2) | None`."""
+    """Stream the source at `fps` and run `extract(frame)`, which returns the
+    (3,2) landmarks or None, or a `(landmarks, confidence)` pair."""
     from gpu_runtime.media import iter_frames
 
     started = time.perf_counter()
     per_frame = []
+    confidence = []
     for frame in iter_frames(source, fps=fps, max_frame_bytes=frame_budget_bytes):
-        per_frame.append(extract(frame))
+        result = extract(frame)
+        if isinstance(result, tuple):
+            landmarks3, score = result
+        else:
+            landmarks3, score = result, (1.0 if result is not None else 0.0)
+        per_frame.append(landmarks3)
+        confidence.append(float(score) if landmarks3 is not None else 0.0)
         if progress and len(per_frame) % 100 == 0:
             progress(len(per_frame))
     total = len(per_frame)
@@ -139,8 +147,8 @@ def build(source: Path, fps: int, extract, *, smooth_window: int, max_miss_ratio
             f"LATENTSYNC_MAX_MISSING_FACE_RATIO={max_miss_ratio}"
         )
     landmarks = smooth(np.stack(filled).astype(np.float32), smooth_window)
-    visible = np.ones(total, dtype=bool)
-    visible[missing] = False
+    visible = np.asarray(confidence, dtype=np.float32)  # 0.0 on frames without a face
+    visible[missing] = 0.0
     return {
         "landmarks": landmarks,
         "visible": visible,
@@ -153,8 +161,9 @@ def build(source: Path, fps: int, extract, *, smooth_window: int, max_miss_ratio
 
 def load_or_build(source: Path, *, model_cache_dir: Path, fps: int, extract,
                   smooth_window: int, max_miss_ratio: float, frame_budget_bytes: int) -> dict:
-    """Return {"landmarks": (N,3,2), "visible": (N,) bool} for `source`, building it once.
-    `visible` is False on frames with no detected face (landmarks carried over)."""
+    """Return {"landmarks": (N,3,2), "visible": (N,) float32} for `source`, building it
+    once. `visible` is the detector's confidence, 0.0 on frames with no detected face
+    (their landmarks are carried over from a neighbour)."""
     source = Path(source)
     key = track_key(source, fps, smooth_window)
     path = cache_path(model_cache_dir, key)
@@ -166,7 +175,8 @@ def load_or_build(source: Path, *, model_cache_dir: Path, fps: int, extract,
                 with np.load(path) as data:
                     if str(data["version"]) == TRACK_VERSION and "visible" in data.files:
                         log.info("face track cache hit: %s (%d frames)", path.name, len(data["landmarks"]))
-                        return {"landmarks": data["landmarks"], "visible": data["visible"]}
+                        return {"landmarks": data["landmarks"],
+                                "visible": np.asarray(data["visible"], dtype=np.float32)}
             except Exception as exc:  # corrupt cache: rebuild
                 log.warning("face track cache unreadable (%s); rebuilding", exc)
         result = build(source, fps, extract, smooth_window=smooth_window,

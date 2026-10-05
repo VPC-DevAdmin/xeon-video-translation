@@ -731,14 +731,14 @@ def _load_face_track(pipeline, config, mask_image_path, face_track_source, face_
         source,
         model_cache_dir=model_cache_dir,
         fps=25,
-        extract=processor.try_extract_landmarks3,
+        extract=processor.try_extract_with_score,
         smooth_window=int(os.environ.get("LATENTSYNC_LANDMARK_SMOOTH_WINDOW", "5")),
         max_miss_ratio=float(os.environ.get("LATENTSYNC_MAX_MISSING_FACE_RATIO", "0.5")),
         frame_budget_bytes=int(os.environ.get("LATENTSYNC_FRAME_BUDGET_MB", "8192")) * 1024 * 1024,
     )
     log.info("face track ready in %.1fs (%d frames, %d without a face); window offset %d",
              time.perf_counter() - track_started, len(track["landmarks"]),
-             int((~track["visible"]).sum()), int(face_track_offset_frames or 0))
+             int((track["visible"] <= 0).sum()), int(face_track_offset_frames or 0))
     return {"landmarks": track["landmarks"], "visible": track["visible"],
             "offset": int(face_track_offset_frames or 0)}
 

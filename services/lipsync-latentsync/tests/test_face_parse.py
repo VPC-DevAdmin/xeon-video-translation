@@ -50,3 +50,62 @@ def test_face_mask_is_temporally_averaged():
     mask = fp.face_mask_from_parsing(parsing, dilate=1, feather=1)
     assert float(mask[1, 0, 16, 16]) == pytest.approx(1 / 3)
     assert float(mask[0, 0, 16, 16]) == pytest.approx(1 / 3)
+
+
+def test_alpha_fades_on_low_detection_confidence():
+    conf = np.array([0.95, 0.95, 0.95, 0.6, 0.95, 0.95, 0.95], np.float32)
+    alpha = fp.occlusion_alpha(conf)
+    assert alpha[0] == 1.0 and alpha[6] == 1.0
+    expected = (0.6 - fp.CONF_LOW) / (fp.CONF_HIGH - fp.CONF_LOW)
+    assert alpha[3] == pytest.approx(expected, abs=1e-5)
+    assert alpha[2] == pytest.approx(expected, abs=1e-5) and alpha[4] == pytest.approx(expected, abs=1e-5)  # neighbours too
+    assert alpha[1] == 1.0
+
+
+def test_alpha_confidence_gap_still_zero_with_ramp():
+    conf = np.array([0.9] * 5 + [0.0] * 2 + [0.9] * 5, np.float32)
+    alpha = fp.occlusion_alpha(conf, margin=1, ramp=3)
+    assert alpha[4:8].tolist() == [0.0] * 4
+    assert alpha[0] == 1.0 and alpha[11] == 1.0
+
+
+def _face_sequence(torch, n=40, size=64):
+    crops = torch.full((n, 3, size, size), 150, dtype=torch.uint8)
+    crops[:, :, 20:44, 20:44] = 90  # darker face centre
+    return crops
+
+
+def test_occluder_entering_from_the_border_is_masked_and_mouth_motion_is_not():
+    torch = pytest.importorskip("torch")
+    crops = _face_sequence(torch)
+    # a bright object slides in from the right over frames 18..23
+    for k, i in enumerate(range(18, 24)):
+        crops[i, :, 10:54, 64 - 8 * (k + 1):] = 250
+    # the "mouth" opens on frames 30..33: a compact dark blob in the middle
+    crops[30:34, :, 36:42, 28:36] = 20
+    visible = np.ones(len(crops), bool)
+    occ = fp.occluder_masks(crops, visible, size=64, window=12, threshold=32, min_area=0.02, dilate=3)
+    assert occ.shape == (40, 1, 64, 64)
+    assert float(occ[21, 0, 30, 60]) == 1.0           # object pixels flagged
+    assert float(occ[21, 0, 30, 10]) == 0.0           # face left of it untouched
+    assert float(occ[31, 0, 39, 32]) == 0.0           # mouth motion is not an occluder
+    assert float(occ[5].sum()) == 0.0                 # clean frames stay clean
+
+
+def test_pose_change_that_persists_is_not_an_occluder():
+    torch = pytest.importorskip("torch")
+    crops = _face_sequence(torch)
+    crops[20:, :, :, 40:] = 200  # from frame 20 on the right side is lit differently and stays so
+    occ = fp.occluder_masks(crops, np.ones(40, bool), size=64, window=12, threshold=32)
+    assert float(occ[25:35].sum()) == 0.0
+
+
+def test_default_threshold_catches_a_pale_object_crossing_the_mouth():
+    torch = pytest.importorskip("torch")
+    crops = _face_sequence(torch)
+    # a pale object only 25 levels brighter than the face slides over the lower half
+    for k, i in enumerate(range(18, 24)):
+        crops[i, :, 32:, 64 - 10 * (k + 1):] = 175
+    occ = fp.occluder_masks(crops, np.ones(40, bool), size=64, window=12)
+    assert float(occ[21, 0, 50, 50]) == 1.0
+    assert float(occ[5].sum()) == 0.0

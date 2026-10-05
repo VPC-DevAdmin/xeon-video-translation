@@ -103,6 +103,16 @@ class ImageProcessor:
             return None
         return self._landmarks3_from_detection(landmark_2d_106)
 
+    def try_extract_with_score(self, image) -> tuple[np.ndarray | None, float]:
+        """`try_extract_landmarks3` plus the detector's confidence for that
+        face (0.0 when no face). A face half covered by a hand or an object
+        is usually still detected, but with a markedly lower score; the
+        paste-back fades on it (latentsync_driver.face_parse)."""
+        landmarks = self.try_extract_landmarks3(image)
+        if landmarks is None:
+            return None, 0.0
+        return landmarks, float(getattr(self.face_detector, "last_score", 1.0) or 1.0)
+
     def affine_transform(
         self,
         image: torch.Tensor,
