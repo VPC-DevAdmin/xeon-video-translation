@@ -184,6 +184,25 @@ async def test_assistant_keeps_thinking_pose_until_the_final_acknowledgement(tmp
 
 
 @pytest.mark.asyncio
+async def test_assistant_handoff_preserves_a_scheduled_progress_phrase(tmp_path):
+    from app.assistant import Assistant, Clip
+
+    session = Assistant("a", tmp_path, np.zeros((1, 1, 3), np.uint8), "en", "test")
+    session.timeline.add_idle(np.zeros((25, 1, 1, 3), np.uint8))
+    session.clips["closer"].append(Clip("closer", "Okay, got it.", np.zeros(48000, np.int16),
+                                        np.zeros((25, 1, 1, 3), np.uint8), "front"))
+    session.timeline.schedule(5.0, np.ones(96000, np.int16), np.full((50, 1, 1, 3), 70, np.uint8), 0, tag="filler")
+    try:
+        await session.fill_gap({"opener_end": 3.0, "mode": "think"}, {"reply_start": 10.0}, 0, 0.0)
+        filler = next(c for c in session.timeline.clips if c[0] == 5.0)
+        assert filler[1] == 7.0 and len(filler[3]) == 50
+        closer = next(c for c in session.timeline.clips if c[0] > 7.0)
+        assert closer[0] == pytest.approx(8.85) and closer[1] == pytest.approx(9.85)
+    finally:
+        await session.client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_avatar_storage_limit_stops_before_backend(tmp_path, monkeypatch):
     (tmp_path / "existing.npy").write_bytes(b"x" * 1025)
     monkeypatch.setenv("AVATAR_MAX_STORAGE_MB", "0")

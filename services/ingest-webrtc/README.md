@@ -38,7 +38,8 @@ the end of a reply, then selects a real frame near the portrait's rest pose.
 Face transitions and idle wraps do not blend whole images. Background idle
 replacement keeps the existing generated take on screen until its replacement
 has rendered. The thinking or tablet pose remains active until the final spoken
-acknowledgement, which is scheduled just before the reply.
+acknowledgement, which is scheduled just before the reply. A scheduled progress
+phrase finishes before the reply starts; the service does not cut it mid-word.
 
 Set `ASSISTANT_PROGRESS_FILLERS=0` to disable the progress phrases and look-away
 sequence. `ASSISTANT_CLIP_TAIL_SECONDS` controls the silent render tail (minimum

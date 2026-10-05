@@ -70,7 +70,6 @@ THINK_RETURN_AT = 0.70                                               # fraction 
 WORKING_POSE_ENABLED = os.getenv("ASSISTANT_WORKING_POSE_ENABLED", "1") == "1"
 CACHE_DIR = Path(os.getenv("JOB_ARTIFACTS_DIR", "./jobs")).resolve() / "personas"
 CACHE_VERSION = 7                                                    # invalidate old clips with blended faces
-SETTLE_FRAMES = int(os.getenv("ASSISTANT_SETTLE_FRAMES", "10"))      # legacy multi-phrase filler cutoff
 CLIP_TAIL_SECONDS = max(0.35, float(os.getenv("ASSISTANT_CLIP_TAIL_SECONDS", "0.8")))
 PROGRESS_FILLERS = os.getenv("ASSISTANT_PROGRESS_FILLERS", "1") == "1"
 MIN_IDLE_SECONDS = float(os.getenv("ASSISTANT_MIN_IDLE_SECONDS", "6"))   # shortest take kept as a loop when growth is interrupted
@@ -891,6 +890,9 @@ class Assistant:
         pattern = itertools.cycle(["beat", "bridge", "beat", "beat", "bridge"])
         away = False                                 # the persona has left the camera (card or thought)
         think = tl.loop("thinking")
+        turn_budget = len(self.turn_up) / FPS if (lookup and self.turn_up is not None) else 0.0
+        closer_budget = max((clip.seconds for clip in self.clips["closer"]), default=0.0)
+        return_budget = turn_budget + closer_budget + 0.25
         try:
             while generation == tl.generation and not self.closed:
                 start = state["reply_start"]
@@ -898,26 +900,23 @@ class Assistant:
                     closer = self.pick("closer")
                     closer_len = closer.seconds if closer else 0.0
                     turn_len = len(self.turn_up) / FPS if (away and lookup and self.turn_up is not None) else 0.0
-                    settle_len = SETTLE_FRAMES / FPS
+                    last_filler_end = max([plan["opener_end"]] + [clip[1] for clip in tl.clips_tagged("filler")])
                     # Keep the thinking/reading pose on screen until the return
                     # gesture is needed. Returning as soon as the reply is planned
                     # leaves the person staring at the camera for several seconds.
                     closer_at = start - closer_len - 0.15 if closer else start
                     return_at = closer_at - turn_len - 0.02
-                    cut_at = max(plan["opener_end"], return_at - settle_len)
-                    cut, cut_end = tl.truncate(cut_at, "filler", settle_to=self.anchor("working" if (away and lookup) else "front"), settle_count=SETTLE_FRAMES)
-                    tl.truncate(cut_at, "turn")
                     if away and lookup:
-                        back = self.turn_head(max(cut_end + 0.02, return_at), "up", generation)
+                        back = self.turn_head(max(last_filler_end + 0.02, return_at), "up", generation)
                     else:
-                        back = max(cut_end, closer_at if closer else start - 0.2)
+                        back = max(last_filler_end, closer_at if closer else start - 0.2)
                         tl.set_mode(back, "front", generation)
                     if closer and max(back, closer_at) + closer_len + 0.15 <= start:
                         at = max(back, closer_at)
                         tl.schedule(at, closer.audio48, closer.frames, generation, tag="filler")
                         self.notify("filler", kind="closer", text=closer.text)
                         self.metrics["fillers"].append({"kind": "closer", "text": closer.text, "at": round(at - t0, 2)})
-                    self.metrics["fillers"].append({"kind": "cut", "at": round(cut_at - t0, 2), "clips_cut": cut, "mode": plan["mode"], "away": away})
+                    self.metrics["fillers"].append({"kind": "handoff", "at": round(back - t0, 2), "mode": plan["mode"], "away": away})
                     return
                 now = tl.now()
                 if not away and now >= plan["opener_end"] - 0.5:
@@ -937,7 +936,8 @@ class Assistant:
                         clip = self.pick(kind) or self.pick("beat") or self.pick("bridge")
                         if clip is not None:
                             at = max(cursor + random.uniform(1.0, 3.0), now + 0.3)      # a person pauses between remarks
-                            placed = tl.schedule(at, clip.audio48, clip.frames, generation, tag="filler")
+                            placed = (tl.schedule(at, clip.audio48, clip.frames, generation, tag="filler")
+                                      if at + clip.seconds + return_budget <= t0 + MAX_HEAD_START else None)
                             if placed:
                                 cursor = placed[1]
                                 self.notify("filler", kind=clip.kind, text=clip.text)
@@ -951,7 +951,9 @@ class Assistant:
                     if at_camera and now >= cursor + random.uniform(1.0, 2.0) and tl.active(now) is None and now < t0 + MAX_HEAD_START - 1.0:
                         clip = self.pick("beat_front")
                         if clip is not None:
-                            placed = tl.schedule(now + 0.15, clip.audio48, clip.frames, generation, tag="filler")
+                            at = now + 0.15
+                            placed = (tl.schedule(at, clip.audio48, clip.frames, generation, tag="filler")
+                                      if at + clip.seconds + return_budget <= t0 + MAX_HEAD_START else None)
                             if placed:
                                 cursor = placed[1]
                                 self.notify("filler", kind=clip.kind, text=clip.text)
@@ -1061,6 +1063,14 @@ class Assistant:
             # A late decision (slow transcript or first chunk) must not schedule into the
             # past, or the opening of the reply would be skipped.
             start = max(start, tl.now() + 0.15)
+            if PROGRESS_FILLERS:
+                # A progress phrase already committed to the timeline must finish
+                # before the head turns back and the answer begins. Cutting it
+                # mid-word creates both an audio stutter and a facial dissolve.
+                filler_end = max((clip[1] for clip in tl.clips_tagged("filler")), default=plan["opener_end"])
+                turn_len = len(self.turn_up) / FPS if (mode == "lookup" and self.turn_up is not None) else 0.0
+                closer_len = max((clip.seconds for clip in self.clips["closer"]), default=0.0)
+                start = max(start, filler_end + turn_len + closer_len + 0.25)
             state["reply_start"] = start
             tl.promise(start, start + reply_seconds, generation)
             self.metrics["reply_start_seconds"].append(round(start - t0, 2))
