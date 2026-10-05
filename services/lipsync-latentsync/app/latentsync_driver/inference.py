@@ -727,7 +727,7 @@ def _load_face_track(pipeline, config, mask_image_path, face_track_source, face_
     processor = pipeline.ensure_image_processor(int(config.data.resolution), str(mask_image_path))
     model_cache_dir = Path(os.environ.get("MODEL_CACHE_DIR", "/models"))
     track_started = time.perf_counter()
-    landmarks = _face_track.load_or_build(
+    track = _face_track.load_or_build(
         source,
         model_cache_dir=model_cache_dir,
         fps=25,
@@ -736,9 +736,11 @@ def _load_face_track(pipeline, config, mask_image_path, face_track_source, face_
         max_miss_ratio=float(os.environ.get("LATENTSYNC_MAX_MISSING_FACE_RATIO", "0.5")),
         frame_budget_bytes=int(os.environ.get("LATENTSYNC_FRAME_BUDGET_MB", "8192")) * 1024 * 1024,
     )
-    log.info("face track ready in %.1fs (%d frames); window offset %d",
-             time.perf_counter() - track_started, len(landmarks), int(face_track_offset_frames or 0))
-    return {"landmarks": landmarks, "offset": int(face_track_offset_frames or 0)}
+    log.info("face track ready in %.1fs (%d frames, %d without a face); window offset %d",
+             time.perf_counter() - track_started, len(track["landmarks"]),
+             int((~track["visible"]).sum()), int(face_track_offset_frames or 0))
+    return {"landmarks": track["landmarks"], "visible": track["visible"],
+            "offset": int(face_track_offset_frames or 0)}
 
 
 def prepare(video_path, audio_path, weight_paths, face_track_source=None, face_track_offset_frames=0) -> dict:

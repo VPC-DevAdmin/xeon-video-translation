@@ -91,7 +91,7 @@ class AlignRestore(object):
 
         return img_back
 
-    def restore_on_device(self, input_img, face, affine_matrix, debug=False):
+    def restore_on_device(self, input_img, face, affine_matrix, debug=False, face_mask=None, alpha=1.0):
         """Same math as the historical restore_img, but the frame arrives as a
         device tensor (C,H,W) and the composite stays on the device. restore_video
         uploads and downloads frames in batches instead of once per frame, which
@@ -156,6 +156,17 @@ class AlignRestore(object):
         # scripts/latentsync_debug/DEBUG_PLAN.md Step 2c.
         if os.environ.get("LATENTSYNC_BYPASS_MASK", "0") == "1":
             inv_soft_mask_3d = inv_mask_erosion_t
+
+        # Occlusion handling (latentsync_driver.face_parse): only source pixels
+        # that are face receive the generated face, and frames whose face was
+        # not located fade the paste out entirely.
+        if face_mask is not None:
+            inv_face_mask = kornia.geometry.transform.warp_affine(
+                face_mask, inv_affine_matrix, (h, w), mode="bilinear", padding_mode="zeros"
+            ).squeeze(0)
+            inv_soft_mask_3d = inv_soft_mask_3d * inv_face_mask.expand_as(inv_face)
+        if alpha < 1.0:
+            inv_soft_mask_3d = inv_soft_mask_3d * max(0.0, float(alpha))
 
         img_back = inv_soft_mask_3d * pasted_face + (1 - inv_soft_mask_3d) * input_img
 

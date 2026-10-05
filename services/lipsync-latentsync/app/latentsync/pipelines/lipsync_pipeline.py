@@ -553,7 +553,7 @@ class LipsyncPipeline(DiffusionPipeline):
         images = images.cpu().numpy()
         return images
 
-    def affine_transform_video(self, video_frames: np.ndarray, landmarks=None):
+    def affine_transform_video(self, video_frames: np.ndarray, landmarks=None, visible=None):
         # CPU patch — two-pass landmark-smoothed affine.
         #
         # Upstream did detection + affine in a single per-frame call,
@@ -610,6 +610,10 @@ class LipsyncPipeline(DiffusionPipeline):
                 )
             per_frame_landmarks = [np.asarray(l, dtype=np.float32) for l in landmarks]
             landmark_window = 1
+            if visible is not None and len(visible) != len(video_frames):
+                raise RuntimeError(
+                    f"face visibility has {len(visible)} entries for {len(video_frames)} frames"
+                )
             print(f"Using shared face track for {len(video_frames)} frames (detection skipped)")
         else:
             # Pass 1: extract landmarks per frame (this is what detection
@@ -627,6 +631,12 @@ class LipsyncPipeline(DiffusionPipeline):
         per_frame_landmarks, missing_indices = _fill_missing_landmarks(
             per_frame_landmarks,
         )
+        if visible is None:
+            # Frames whose landmarks are carried over from a neighbour: the
+            # paste-back must not trust them (latentsync_driver.face_parse).
+            visible = np.ones(total_frames, dtype=bool)
+            visible[missing_indices] = False
+        visible = np.asarray(visible, dtype=bool)
         if missing_indices:
             miss_ratio = len(missing_indices) / total_frames
             # Log the first few indices so the user can pinpoint bad
@@ -689,8 +699,9 @@ class LipsyncPipeline(DiffusionPipeline):
         print(json.dumps({"event": "latentsync_face_prep", "frames": len(video_frames),
                           "detect_seconds": round(warp_started - detect_started, 2),
                           "warp_seconds": round(time.perf_counter() - warp_started, 2),
-                          "shared_track": landmarks is not None}), flush=True)
-        return faces, boxes, affine_matrices
+                          "shared_track": landmarks is not None,
+                          "occluded_frames": int((~visible).sum())}), flush=True)
+        return faces, boxes, affine_matrices, visible
 
     def restore_video(
         self,
@@ -699,6 +710,8 @@ class LipsyncPipeline(DiffusionPipeline):
         boxes: list,
         affine_matrices: list,
         progress_callback=None,  # CPU patch: per-frame progress reporting
+        face_masks=None,  # (N,1,fh,fw) source-face masks, see latentsync_driver.face_parse
+        alpha=None,  # (N,) per-frame paste weight; 0 keeps the source frame
     ):
         video_frames = video_frames[: len(faces)]
         out_frames = []
@@ -724,8 +737,18 @@ class LipsyncPipeline(DiffusionPipeline):
                     faces[index].to(device), size=(height, width),
                     interpolation=transforms.InterpolationMode.BICUBIC, antialias=True,
                 )
+                weight = 1.0 if alpha is None else float(alpha[index])
+                if weight <= 0.0:
+                    composited.append(frames_t[index - start])  # face not located: source frame as is
+                    continue
+                mask = None
+                if face_masks is not None:
+                    mask = face_masks[index].to(device=restorer.device, dtype=restorer.dtype, non_blocking=True).unsqueeze(0)
                 composited.append(
-                    restorer.restore_on_device(frames_t[index - start], face, affine_matrices[index], debug=debug)
+                    restorer.restore_on_device(
+                        frames_t[index - start], face, affine_matrices[index], debug=debug,
+                        face_mask=mask, alpha=weight,
+                    )
                 )
             out = torch.stack(composited).clamp(0, 255).to(torch.uint8).permute(0, 2, 3, 1).contiguous()
             out_frames.append(out.cpu().numpy())
@@ -815,38 +838,44 @@ class LipsyncPipeline(DiffusionPipeline):
                 print(f"affine dump (post-smooth) failed: {_e}")
         return affine_matrices, boxes
 
-    def loop_video(self, whisper_chunks: list, video_frames: np.ndarray, landmarks=None):
+    def loop_video(self, whisper_chunks: list, video_frames: np.ndarray, landmarks=None, visible=None):
         # If the audio is longer than the video, we need to loop the video
         if len(whisper_chunks) > len(video_frames):
-            faces, boxes, affine_matrices = self.affine_transform_video(video_frames, landmarks)
+            faces, boxes, affine_matrices, visible = self.affine_transform_video(video_frames, landmarks, visible)
             num_loops = math.ceil(len(whisper_chunks) / len(video_frames))
             loop_video_frames = []
             loop_faces = []
             loop_boxes = []
             loop_affine_matrices = []
+            loop_visible = []
             for i in range(num_loops):
                 if i % 2 == 0:
                     loop_video_frames.append(video_frames)
                     loop_faces.append(faces)
                     loop_boxes += boxes
                     loop_affine_matrices += affine_matrices
+                    loop_visible.append(visible)
                 else:
                     loop_video_frames.append(video_frames[::-1])
                     loop_faces.append(faces.flip(0))
                     loop_boxes += boxes[::-1]
                     loop_affine_matrices += affine_matrices[::-1]
+                    loop_visible.append(visible[::-1])
 
             video_frames = np.concatenate(loop_video_frames, axis=0)[: len(whisper_chunks)]
             faces = torch.cat(loop_faces, dim=0)[: len(whisper_chunks)]
             boxes = loop_boxes[: len(whisper_chunks)]
             affine_matrices = loop_affine_matrices[: len(whisper_chunks)]
+            visible = np.concatenate(loop_visible, axis=0)[: len(whisper_chunks)]
         else:
             video_frames = video_frames[: len(whisper_chunks)]
             if landmarks is not None:
                 landmarks = landmarks[: len(video_frames)]
-            faces, boxes, affine_matrices = self.affine_transform_video(video_frames, landmarks)
+            if visible is not None:
+                visible = visible[: len(video_frames)]
+            faces, boxes, affine_matrices, visible = self.affine_transform_video(video_frames, landmarks, visible)
 
-        return video_frames, faces, boxes, affine_matrices
+        return video_frames, faces, boxes, affine_matrices, visible
 
     def prepare_inputs(self, video_path: str, audio_path: str, video_fps: int, window_landmarks=None) -> dict:
         """Everything a window needs before denoising: audio features, decoded
@@ -857,19 +886,46 @@ class LipsyncPipeline(DiffusionPipeline):
         whisper_chunks = self.audio_encoder.feature2chunks(feature_array=whisper_feature, fps=video_fps)
         audio_samples = read_audio(audio_path)
         video_frames = read_video(video_path, use_decord=False)
+        window_visible = None
         if window_landmarks is not None:
             from latentsync_driver.face_track import slice_for_window
 
-            window_landmarks = slice_for_window(
-                window_landmarks["landmarks"], int(window_landmarks.get("offset", 0)), len(video_frames)
-            )
-        video_frames, faces, boxes, affine_matrices = self.loop_video(whisper_chunks, video_frames, window_landmarks)
+            offset = int(window_landmarks.get("offset", 0))
+            if window_landmarks.get("visible") is not None:
+                window_visible = slice_for_window(
+                    np.asarray(window_landmarks["visible"], dtype=bool), offset, len(video_frames)
+                )
+            window_landmarks = slice_for_window(window_landmarks["landmarks"], offset, len(video_frames))
+        video_frames, faces, boxes, affine_matrices, visible = self.loop_video(
+            whisper_chunks, video_frames, window_landmarks, window_visible
+        )
         affine_matrices, boxes = self._smooth_affines(affine_matrices, boxes)
+        # Occlusion handling (latentsync_driver.face_parse): a per-pixel face
+        # mask from the source crops and a per-frame weight from detection.
+        from latentsync_driver import face_parse
+
+        parse_started = time.perf_counter()
+        face_masks = self.face_parser().masks(faces, out_size=self.image_processor.restorer.face_size[::-1])
+        if face_masks is not None:
+            face_masks = face_masks.to(torch.float16).cpu()
+        alpha = face_parse.occlusion_alpha(visible)
+        print(json.dumps({"event": "latentsync_occlusion", "frames": len(faces),
+                          "parsed": face_masks is not None, "gated_frames": int((alpha < 1).sum()),
+                          "seconds": round(time.perf_counter() - parse_started, 2)}), flush=True)
         return {
             "whisper_chunks": whisper_chunks, "audio_samples": audio_samples, "video_frames": video_frames,
             "faces": faces, "boxes": boxes, "affine_matrices": affine_matrices,
+            "face_masks": face_masks, "alpha": alpha,
             "seconds": time.perf_counter() - started,
         }
+
+    def face_parser(self):
+        parser = getattr(self, "_face_parser", None)
+        if parser is None:
+            from latentsync_driver.face_parse import FaceParser
+
+            parser = self._face_parser = FaceParser(self._execution_device)
+        return parser
 
     def prepare_ahead(self, video_path: str, audio_path: str, video_fps: int, face_track=None) -> dict:
         """Compute and cache the inputs for a window that will be requested
@@ -1024,6 +1080,7 @@ class LipsyncPipeline(DiffusionPipeline):
                 synced_video_frames_tensor = None
 
         restored_frames = None
+        face_masks, alpha = None, None
         if synced_video_frames_tensor is not None:
             affine_matrices, boxes = self._smooth_affines(affine_matrices, boxes)
 
@@ -1051,6 +1108,7 @@ class LipsyncPipeline(DiffusionPipeline):
             audio_samples = inputs["audio_samples"]
             video_frames = inputs["video_frames"]
             faces, boxes, affine_matrices = inputs["faces"], inputs["boxes"], inputs["affine_matrices"]
+            face_masks, alpha = inputs.get("face_masks"), inputs.get("alpha")
             profile["decode_audio_face_seconds"] = time.perf_counter() - stage_started
             profile["conditioning_seconds"] = 0.0
             profile["wait_for_worker_seconds"] = 0.0
@@ -1204,7 +1262,11 @@ class LipsyncPipeline(DiffusionPipeline):
                 a = index * num_frames
                 b = min(len(video_frames), a + len(decoded))
                 started_at = time.perf_counter()
-                out = self.restore_video(decoded[: b - a], video_frames[a:b], boxes[a:b], affine_matrices[a:b])
+                out = self.restore_video(
+                    decoded[: b - a], video_frames[a:b], boxes[a:b], affine_matrices[a:b],
+                    face_masks=None if face_masks is None else face_masks[a:b],
+                    alpha=None if alpha is None else alpha[a:b],
+                )
                 restore_seconds[0] += time.perf_counter() - started_at
                 chunk_times.setdefault(index, {})["restored"] = round(time.perf_counter() - call_t0, 3)
                 return out
@@ -1420,6 +1482,7 @@ class LipsyncPipeline(DiffusionPipeline):
         else:
             synced_video_frames = self.restore_video(
                 synced_video_frames_tensor, video_frames, boxes, affine_matrices,
+                face_masks=face_masks, alpha=alpha,
                 progress_callback=(
                     lambda frame_pct: _emit_progress(
                         "restore", 0.90 + 0.08 * frame_pct,

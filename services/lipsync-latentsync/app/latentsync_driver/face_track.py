@@ -32,7 +32,7 @@ import numpy as np
 
 log = logging.getLogger(__name__)
 
-TRACK_VERSION = "insightface-buffalo_l-3pt-v1"
+TRACK_VERSION = "insightface-buffalo_l-3pt-v2"  # v2: per-frame visibility
 _SUBDIR = Path("cache") / "latentsync_tracks"
 _locks: dict[str, threading.Lock] = {}
 _locks_guard = threading.Lock()
@@ -139,8 +139,11 @@ def build(source: Path, fps: int, extract, *, smooth_window: int, max_miss_ratio
             f"LATENTSYNC_MAX_MISSING_FACE_RATIO={max_miss_ratio}"
         )
     landmarks = smooth(np.stack(filled).astype(np.float32), smooth_window)
+    visible = np.ones(total, dtype=bool)
+    visible[missing] = False
     return {
         "landmarks": landmarks,
+        "visible": visible,
         "fps": fps,
         "frames": total,
         "missing": len(missing),
@@ -149,8 +152,9 @@ def build(source: Path, fps: int, extract, *, smooth_window: int, max_miss_ratio
 
 
 def load_or_build(source: Path, *, model_cache_dir: Path, fps: int, extract,
-                  smooth_window: int, max_miss_ratio: float, frame_budget_bytes: int) -> np.ndarray:
-    """Return the (N,3,2) landmark track for `source`, building it once."""
+                  smooth_window: int, max_miss_ratio: float, frame_budget_bytes: int) -> dict:
+    """Return {"landmarks": (N,3,2), "visible": (N,) bool} for `source`, building it once.
+    `visible` is False on frames with no detected face (landmarks carried over)."""
     source = Path(source)
     key = track_key(source, fps, smooth_window)
     path = cache_path(model_cache_dir, key)
@@ -160,20 +164,20 @@ def load_or_build(source: Path, *, model_cache_dir: Path, fps: int, extract,
         if path.exists():
             try:
                 with np.load(path) as data:
-                    if str(data["version"]) == TRACK_VERSION:
+                    if str(data["version"]) == TRACK_VERSION and "visible" in data.files:
                         log.info("face track cache hit: %s (%d frames)", path.name, len(data["landmarks"]))
-                        return data["landmarks"]
+                        return {"landmarks": data["landmarks"], "visible": data["visible"]}
             except Exception as exc:  # corrupt cache: rebuild
                 log.warning("face track cache unreadable (%s); rebuilding", exc)
         result = build(source, fps, extract, smooth_window=smooth_window,
                        max_miss_ratio=max_miss_ratio, frame_budget_bytes=frame_budget_bytes)
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".tmp.npz")
-        np.savez(tmp, landmarks=result["landmarks"], version=np.array(TRACK_VERSION),
+        np.savez(tmp, landmarks=result["landmarks"], visible=result["visible"], version=np.array(TRACK_VERSION),
                  fps=np.array(fps), frames=np.array(result["frames"]),
                  meta=np.array(json.dumps({"missing": result["missing"], "seconds": result["seconds"],
                                            "source_name": source.name})))
         os.replace(tmp, path)
         log.info("face track built: %d frames at %d fps in %.1fs (%d without a face) -> %s",
                  result["frames"], fps, result["seconds"], result["missing"], path.name)
-        return result["landmarks"]
+        return {"landmarks": result["landmarks"], "visible": result["visible"]}

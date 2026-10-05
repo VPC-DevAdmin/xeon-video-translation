@@ -62,11 +62,14 @@ def test_load_or_build_detects_once_then_hits_cache(tmp_path, monkeypatch):
 
     kwargs = dict(model_cache_dir=tmp_path / "models", fps=25, extract=extract,
                   smooth_window=1, max_miss_ratio=0.5, frame_budget_bytes=10**9)
-    first = ft.load_or_build(source, **kwargs)
+    track = ft.load_or_build(source, **kwargs)
+    first = track["landmarks"]
     assert first.shape == (6, 3, 2) and len(calls) == 6
     assert first[2, 0, 0] == 2.0  # gap carried forward from frame 2
+    assert track["visible"].tolist() == [True, True, False, True, True, True]
     second = ft.load_or_build(source, **kwargs)
-    assert len(calls) == 6 and np.array_equal(first, second)
+    assert len(calls) == 6 and np.array_equal(first, second["landmarks"])
+    assert np.array_equal(track["visible"], second["visible"])
     assert list((tmp_path / "models" / "cache" / "latentsync_tracks").glob("*.npz"))
 
 

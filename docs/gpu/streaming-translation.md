@@ -108,3 +108,27 @@ shortest verified take is always kept, a failed rewrite is a warning rather
 than an error, and a take is stretched up to `TTS_MAX_SPEED_HARD` (1.3x,
 formant-preserving) when nothing shorter exists. Beyond that the job still
 fails without discarding speech. This applies to every mode, not only stream.
+
+## Occluders in front of the face (5 Oct 2026)
+
+On the user's clip two chocolate boxes are held up in front of the speaker and
+the old output painted a mouth on the packaging. LatentSync pastes the whole
+generated crop back wherever the landmark track places the face, and the
+track carries the last good landmarks through frames with no detection.
+Fix in the LatentSync service (`latentsync_driver/face_parse.py`):
+
+* **Pixel mask.** BiSeNet face parsing (the MuseTalk weights already in the
+  model volume) labels the *source* crop; only face pixels receive the
+  generated face, dilated 9 px, feathered 15 px and averaged over 3 frames.
+  Objects and hands drawn over the mouth stay on top.
+* **Frame gate.** The shared face track now stores per-frame visibility
+  (`TRACK_VERSION` v2, old caches rebuild); frames without a detected face,
+  one frame either side, are not pasted at all and the paste ramps over 3
+  frames. The pipeline logs `latentsync_occlusion` with the counts.
+
+Verified on the clip: frames 85-93 and 184-190 (both boxes) changed
+1,400-2,400 pixels in the old output and 0 in the new one; elsewhere the two
+outputs differ only where the occluder overlaps the mouth. Parsing costs
+0.24 s per 8 s window. `LATENTSYNC_OCCLUSION_MASK=0` disables the pixel mask
+(the frame gate always applies). Residual: a bare hand fully over the mouth is
+skin to the parser, so it is caught only when detection drops too.
