@@ -40,6 +40,9 @@ replacement keeps the existing generated take on screen until its replacement
 has rendered. The thinking or tablet pose remains active until the final spoken
 acknowledgement, which is scheduled just before the reply. A scheduled progress
 phrase finishes before the reply starts; the service does not cut it mid-word.
+New progress phrases are queued only within the first 12 seconds of a turn
+(`ASSISTANT_PROGRESS_HORIZON_SECONDS`), so a long preplanned bridge does not
+needlessly delay an answer that is already ready.
 The front listening loop is limited to subtle motion close to the speech pose;
 the separate thinking and tablet loops still move the head and gaze. Tune the
 front-loop limit with `ASSISTANT_FRONT_IDLE_MAX_DELTA` (sampled RGB difference,

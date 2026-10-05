@@ -14,6 +14,7 @@ ASSISTANT_MAX_HEAD_START (20), ASSISTANT_IDLE_CHUNKS (2), ASSISTANT_IDLE_SECONDS
 ASSISTANT_WORKING_IDLE_SECONDS (6), ASSISTANT_WORKING_POSE ("pitch,yaw,roll,eyes_x,eyes_y"),
 ASSISTANT_<KIND>_TEXT_<LANG> ("|"-separated phrases; kinds OPENER, BEAT, BRIDGE, CLOSER),
 ASSISTANT_PROGRESS_FILLERS (1 by default; set 0 to disable progress acknowledgements),
+ASSISTANT_PROGRESS_HORIZON_SECONDS (12; latest scheduled phrase plus return gesture),
 ASSISTANT_RENDER_TIMEOUT (30).
 
 Every renderer call of a session goes through one lock (`Renderer.lock`): idle growth,
@@ -72,6 +73,7 @@ CACHE_DIR = Path(os.getenv("JOB_ARTIFACTS_DIR", "./jobs")).resolve() / "personas
 CACHE_VERSION = 7                                                    # invalidate old clips with blended faces
 CLIP_TAIL_SECONDS = max(0.35, float(os.getenv("ASSISTANT_CLIP_TAIL_SECONDS", "0.8")))
 PROGRESS_FILLERS = os.getenv("ASSISTANT_PROGRESS_FILLERS", "1") == "1"
+PROGRESS_HORIZON_SECONDS = min(MAX_HEAD_START, float(os.getenv("ASSISTANT_PROGRESS_HORIZON_SECONDS", "12")))
 FRONT_IDLE_MAX_DELTA = float(os.getenv("ASSISTANT_FRONT_IDLE_MAX_DELTA", "6.0"))
 MIN_IDLE_SECONDS = float(os.getenv("ASSISTANT_MIN_IDLE_SECONDS", "6"))   # shortest take kept as a loop when growth is interrupted
 READING_FRAMES = int(os.getenv("ASSISTANT_READING_FRAMES", "150"))   # reading loop at the tablet (LivePortrait), 25 fps
@@ -908,6 +910,7 @@ class Assistant:
         turn_budget = len(self.turn_up) / FPS if (lookup and self.turn_up is not None) else 0.0
         closer_budget = max((clip.seconds for clip in self.clips["closer"]), default=0.0)
         return_budget = turn_budget + closer_budget + 0.25
+        progress_deadline = t0 + PROGRESS_HORIZON_SECONDS
         try:
             while generation == tl.generation and not self.closed:
                 start = state["reply_start"]
@@ -946,13 +949,13 @@ class Assistant:
                 if not away:
                     pass                                 # nothing is said between the opener and leaving the camera
                 elif lookup:
-                    if cursor - now < 3.2 and cursor < t0 + MAX_HEAD_START - 1.0:
+                    if cursor - now < 3.2 and cursor < progress_deadline - 1.0:
                         kind = next(pattern)
                         clip = self.pick(kind) or self.pick("beat") or self.pick("bridge")
                         if clip is not None:
                             at = max(cursor + random.uniform(1.0, 3.0), now + 0.3)      # a person pauses between remarks
                             placed = (tl.schedule(at, clip.audio48, clip.frames, generation, tag="filler")
-                                      if at + clip.seconds + return_budget <= t0 + MAX_HEAD_START else None)
+                                      if at + clip.seconds + return_budget <= progress_deadline else None)
                             if placed:
                                 cursor = placed[1]
                                 self.notify("filler", kind=clip.kind, text=clip.text)
@@ -963,12 +966,12 @@ class Assistant:
                     # Thinking: a short beat to camera when the loop has brought the face back
                     # (after THINK_RETURN_AT of its cycle); the loop then restarts with a glance away.
                     at_camera = think.cursor >= int(THINK_RETURN_AT * len(think.frames))
-                    if at_camera and now >= cursor + random.uniform(1.0, 2.0) and tl.active(now) is None and now < t0 + MAX_HEAD_START - 1.0:
+                    if at_camera and now >= cursor + random.uniform(1.0, 2.0) and tl.active(now) is None and now < progress_deadline - 1.0:
                         clip = self.pick("beat_front")
                         if clip is not None:
                             at = now + 0.15
                             placed = (tl.schedule(at, clip.audio48, clip.frames, generation, tag="filler")
-                                      if at + clip.seconds + return_budget <= t0 + MAX_HEAD_START else None)
+                                      if at + clip.seconds + return_budget <= progress_deadline else None)
                             if placed:
                                 cursor = placed[1]
                                 self.notify("filler", kind=clip.kind, text=clip.text)
