@@ -3,12 +3,11 @@
 Date: 4 October 2026. Code: `gpu/track` from `333e869` (pipeline) and `79dfb41`
 (personas). Measurements: `artifacts/bench/assistant-ab-2026-10-04/assistant-e2e-*.json`.
 
-> Update, 5 October: the multi-phrase tablet sequence below is now an optional
-> comparison mode (`ASSISTANT_PROGRESS_FILLERS=1`). The default plays one
-> acknowledgement followed by the front idle loop until the reply. Cached
-> acknowledgements and replies render a silent tail; face joins and loop wraps
-> use actual frames without whole-face dissolves. The measurements below describe
-> the earlier build. A later XE7740 WebRTC run on `cb062b0` received the reply at
+> Update, 5 October: cached acknowledgements and replies render a silent tail;
+> face joins and loop wraps use actual frames without whole-face dissolves. The
+> rotating acknowledgements and look-away/tablet sequence are enabled by default.
+> The measurements below describe the earlier build. An interim single-acknowledgement
+> XE7740 WebRTC run on `cb062b0` received the reply at
 > 25.0 fps, skipped 9 of 971 transmitted frames (0.9%), and found no large idle
 > snaps (maximum full-frame change 1.82 before the turn and 1.59 after it). The
 > acknowledgement audio began 0.198 s after the speech endpoint. This is one

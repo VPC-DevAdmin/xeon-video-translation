@@ -148,6 +148,23 @@ async def test_assistant_idle_replacement_keeps_old_video_visible_while_renderin
 
 
 @pytest.mark.asyncio
+async def test_assistant_rotates_thinking_and_lookup_openers(tmp_path, monkeypatch):
+    from app import assistant as module
+
+    monkeypatch.setattr(module, "PROGRESS_FILLERS", True)
+    session = module.Assistant("a", tmp_path, np.zeros((1, 1, 3), np.uint8), "en", "test")
+    for kind in ("opener_think", "opener_lookup"):
+        session.clips[kind].append(module.Clip(kind, kind, np.zeros(1920, np.int16),
+                                                np.zeros((1, 1, 1, 3), np.uint8), "front"))
+    try:
+        modes = [session.pick_opener()[1] for _ in range(4)]
+        assert set(modes) == {"think", "lookup"}
+        assert all(a != b for a, b in zip(modes, modes[1:]))
+    finally:
+        await session.client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_avatar_storage_limit_stops_before_backend(tmp_path, monkeypatch):
     (tmp_path / "existing.npy").write_bytes(b"x" * 1025)
     monkeypatch.setenv("AVATAR_MAX_STORAGE_MB", "0")

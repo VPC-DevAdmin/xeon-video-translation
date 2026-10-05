@@ -1,9 +1,9 @@
 """Video assistant sessions over WebRTC.
 
-Turn: Silero endpoint -> one prepared opener plays at once -> continuous idle
-motion fills the wait -> the backend plans the reply and streams TTS audio ->
-FlashHead renders it chunk by chunk -> the reply starts after a measured head
-start and plays at 25 fps. The older tablet and multi-phrase sequence is opt-in.
+Turn: Silero endpoint -> a rotating prepared opener plays at once -> the persona
+looks away or turns to its tablet while short progress acknowledgements fill the
+wait -> the backend plans the reply and streams TTS audio -> FlashHead renders it
+chunk by chunk -> the reply starts after a measured head start and plays at 25 fps.
 Speaking again or pressing Interrupt clears everything.
 
 Services (ingest runs with host networking):
@@ -13,7 +13,7 @@ Tuning: ASSISTANT_HEAD_START (minimum reply start after the endpoint, s, default
 ASSISTANT_MAX_HEAD_START (20), ASSISTANT_IDLE_CHUNKS (2), ASSISTANT_IDLE_SECONDS (12),
 ASSISTANT_WORKING_IDLE_SECONDS (6), ASSISTANT_WORKING_POSE ("pitch,yaw,roll,eyes_x,eyes_y"),
 ASSISTANT_<KIND>_TEXT_<LANG> ("|"-separated phrases; kinds OPENER, BEAT, BRIDGE, CLOSER),
-ASSISTANT_PROGRESS_FILLERS (0 by default; opt in to the multi-phrase tablet sequence),
+ASSISTANT_PROGRESS_FILLERS (1 by default; set 0 to disable progress acknowledgements),
 ASSISTANT_RENDER_TIMEOUT (30).
 
 Every renderer call of a session goes through one lock (`Renderer.lock`): idle growth,
@@ -72,7 +72,7 @@ CACHE_DIR = Path(os.getenv("JOB_ARTIFACTS_DIR", "./jobs")).resolve() / "personas
 CACHE_VERSION = 7                                                    # invalidate old clips with blended faces
 SETTLE_FRAMES = int(os.getenv("ASSISTANT_SETTLE_FRAMES", "10"))      # legacy multi-phrase filler cutoff
 CLIP_TAIL_SECONDS = max(0.35, float(os.getenv("ASSISTANT_CLIP_TAIL_SECONDS", "0.8")))
-PROGRESS_FILLERS = os.getenv("ASSISTANT_PROGRESS_FILLERS", "0") == "1"
+PROGRESS_FILLERS = os.getenv("ASSISTANT_PROGRESS_FILLERS", "1") == "1"
 MIN_IDLE_SECONDS = float(os.getenv("ASSISTANT_MIN_IDLE_SECONDS", "6"))   # shortest take kept as a loop when growth is interrupted
 READING_FRAMES = int(os.getenv("ASSISTANT_READING_FRAMES", "150"))   # reading loop at the tablet (LivePortrait), 25 fps
 THINKING_FRAMES = int(os.getenv("ASSISTANT_THINKING_FRAMES", "100"))  # thinking loop: away and back within 4 s

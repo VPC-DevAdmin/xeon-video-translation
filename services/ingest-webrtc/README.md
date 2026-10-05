@@ -31,19 +31,19 @@ Then open the frontend's `/live` page.
 
 ## Video assistant acknowledgement quality
 
-The `/assistant` path plays one prepared acknowledgement, then a continuous idle
-loop until the reply is ready. This is the default because independently rendered
-progress phrases add visible face joins. The service renders 0.8 seconds of
-silence after each acknowledgement and at the end of a reply, then selects a
-real frame near the portrait's rest pose. Face transitions and idle wraps do not
-blend whole images. Background idle replacement keeps the existing generated
-take on screen until its replacement has rendered.
+The `/assistant` path rotates prepared opening acknowledgements, then shows the
+persona looking away or down at a tablet while progress phrases fill the wait.
+The service renders 0.8 seconds of silence after each acknowledgement and at
+the end of a reply, then selects a real frame near the portrait's rest pose.
+Face transitions and idle wraps do not blend whole images. Background idle
+replacement keeps the existing generated take on screen until its replacement
+has rendered.
 
-Set `ASSISTANT_PROGRESS_FILLERS=1` to compare the older multi-phrase tablet
+Set `ASSISTANT_PROGRESS_FILLERS=0` to disable the progress phrases and look-away
 sequence. `ASSISTANT_CLIP_TAIL_SECONDS` controls the silent render tail (minimum
 0.35 seconds). Changing the tail duration creates a new clip cache key. GPU-side
 review should compare join discontinuity, ghosting, reply latency, and dropped
-frames before enabling the multi-phrase path by default.
+frames for the multi-phrase path.
 
 ## Networking
 
