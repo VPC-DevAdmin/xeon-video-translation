@@ -14,6 +14,17 @@ Date: 4 October 2026. Code: `gpu/track` from `333e869` (pipeline) and `79dfb41`
 > fixture turn, so subjective review across several personas is still needed.
 > Its recording is `/jobs/ab/ack-join-cb062b0.mp4` on the XE7740.
 
+> Home Depot persona validation, 5 October (`f03724d`): the restored default
+> alternated lookup/tablet and look-away thinking turns. One lookup turn played
+> an opener, a middle progress phrase, and a closer before the answer; the
+> answer started after 12.0 s so the phrase could finish. A thinking turn kept
+> the gaze away until the closer, then began the answer after 9.0 s. Both runs
+> delivered reply video at 25 fps. Restricting only the neutral listening loop
+> to motion near the speech pose reduced its maximum pre-turn frame change to
+> 2.51 with no detected snaps. The thinking and tablet loops retain their wider
+> gaze motion. Recordings and event reports are on the XE7740 under
+> `/jobs/ab/home-depot-ack-33479e4.*` and `/jobs/ab/home-depot-ack-f03724d.*`.
+
 ## Try it live
 
 On your machine, tunnel the frontend (the box binds it to localhost only, and the

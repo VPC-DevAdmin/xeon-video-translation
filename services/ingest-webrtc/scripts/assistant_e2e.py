@@ -125,9 +125,20 @@ async def run(args):
                         frame_change.append((now, float(np.abs(pixels - last_pixels[0]).mean())))
                     last_pixels[0] = pixels
                 else:
-                    pcm = frame.to_ndarray().reshape(-1)
+                    values = frame.to_ndarray()
+                    channels = len(frame.layout.channels)
+                    if channels > 1:
+                        # aiortc often decodes received mono Opus as packed stereo.
+                        # Flattening it wrote a mono WAV at twice the real duration.
+                        if frame.format.is_planar:
+                            pcm = values.astype(np.float32).mean(axis=0)
+                        else:
+                            pcm = values.reshape(-1, channels).astype(np.float32).mean(axis=1)
+                    else:
+                        pcm = values.reshape(-1)
+                    pcm = pcm.astype(np.int16)
                     if args.record:
-                        recorded.append((now, pcm.astype(np.int16)))
+                        recorded.append((now, pcm))
                     rms = float(np.sqrt(np.mean(pcm.astype(np.float32) ** 2)))
                     if rms > 100:
                         audio_active.append(now)
