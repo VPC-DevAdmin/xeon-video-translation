@@ -1,0 +1,11 @@
+.lookup-card { position: absolute; z-index: 3; left: 22px; bottom: 92px; width: min(44%, 250px); padding: 12px 14px; border: 1px solid rgba(176, 222, 249, .28); border-radius: 12px; background: rgba(8, 26, 43, .78); backdrop-filter: blur(14px); color: #f1f9ff; font-size: 12px; line-height: 1.45; box-shadow: 0 12px 30px rgba(0, 8, 24, .4); animation: lookup-card-in .25s ease-out; }
+.lookup-card-head { display: flex; align-items: center; gap: 7px; font-size: 10px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; color: #58d8e9; }
+.lookup-card-dot { width: 7px; height: 7px; border-radius: 50%; background: #58d8e9; box-shadow: 0 0 10px #58d8e9; animation: lookup-card-pulse 1.2s ease-in-out infinite; }
+.lookup-card-question { margin: 8px 0 6px; color: #d4e4ed; font-style: italic; }
+.lookup-card-notes { margin: 0; padding-left: 16px; }
+.lookup-card-notes li { margin: 3px 0; animation: lookup-card-in .3s ease-out; }
+.lookup-card-pending { color: #adc5d6; list-style: none; margin-left: -16px; }
+@keyframes lookup-card-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@keyframes lookup-card-pulse { 50% { opacity: .35; } }
+@media (max-width: 760px) { .lookup-card { left: 13px; bottom: 70px; width: 52%; font-size: 11px; } }
+@media (prefers-reduced-motion: reduce) { .lookup-card, .lookup-card-notes li, .lookup-card-dot { animation: none !important; } }

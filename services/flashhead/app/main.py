@@ -79,7 +79,7 @@ class PoseRequest(BaseModel):
     eyes_y: float = Field(-15.0, ge=-20, le=20, description="negative lowers the gaze")
     steps: int = Field(1, ge=1, le=60, description="1: the posed portrait as PNG; more: that many frames turning the head, raw RGB")
     size: int = Field(0, ge=0, le=2048, description="side of the square frames returned for sequences (0 keeps the portrait size)")
-    motion: str = Field("turn", pattern="^(turn|reading)$", description="turn: frames from rest to the pose; reading: a periodic loop at the pose")
+    motion: str = Field("turn", pattern="^(turn|reading|thinking)$", description="turn: frames from rest to the pose; reading: a periodic loop at the pose; thinking: glance away to the pose and back, periodic")
     frames: int = Field(150, ge=25, le=750, description="frames of the reading loop (25 fps)")
 
 
@@ -300,6 +300,8 @@ def pose(body: PoseRequest) -> Response:
         with _LOCK:
             if body.motion == "reading":
                 frames = pose_module.reading_loop(image, body.pitch, body.yaw, body.roll, body.eyes_x, body.eyes_y, frames=body.frames)
+            elif body.motion == "thinking":
+                frames = pose_module.thinking_loop(image, body.pitch, body.yaw, body.roll, body.eyes_x, body.eyes_y, frames=body.frames)
             else:
                 frames = pose_module.pose_sequence(image, body.pitch, body.yaw, body.roll, body.eyes_x, body.eyes_y, steps=body.steps)
     except Exception as exc:

@@ -64,11 +64,14 @@ MAX_HEAD_START = float(os.getenv("ASSISTANT_MAX_HEAD_START", "20"))
 IDLE_CHUNKS = int(os.getenv("ASSISTANT_IDLE_CHUNKS", "2"))          # rendered before the session answers
 IDLE_SECONDS = float(os.getenv("ASSISTANT_IDLE_SECONDS", "12"))      # grown to this in the background, then looped
 WORKING_IDLE_SECONDS = float(os.getenv("ASSISTANT_WORKING_IDLE_SECONDS", "6"))
-_POSE_VALUES = [float(v) for v in os.getenv("ASSISTANT_WORKING_POSE", "20,-16,0,-6,-15").split(",")]
-WORKING_POSE = dict(zip(("pitch", "yaw", "roll", "eyes_x", "eyes_y"), _POSE_VALUES + [0.0] * 5))
+_POSE_VALUES = [float(v) for v in os.getenv("ASSISTANT_WORKING_POSE", "20,-16,0,-10,-15").split(",")]
+WORKING_POSE = dict(zip(("pitch", "yaw", "roll", "eyes_x", "eyes_y"), _POSE_VALUES + [0.0] * 5))   # toward the notes card, lower left
+_THINK_VALUES = [float(v) for v in os.getenv("ASSISTANT_THINKING_POSE", "-6,8,3,8,10").split(",")]
+THINKING_POSE = dict(zip(("pitch", "yaw", "roll", "eyes_x", "eyes_y"), _THINK_VALUES + [0.0] * 5))  # glance up and to the side
+THINK_RETURN_AT = 0.70                                               # fraction of the thinking loop with the face back at the camera
 WORKING_POSE_ENABLED = os.getenv("ASSISTANT_WORKING_POSE_ENABLED", "1") == "1"
 CACHE_DIR = Path(os.getenv("JOB_ARTIFACTS_DIR", "./jobs")).resolve() / "personas"
-CACHE_VERSION = 5                                                    # bump when cached footage changes meaning
+CACHE_VERSION = 6                                                    # bump when cached footage changes meaning
 SETTLE_FRAMES = int(os.getenv("ASSISTANT_SETTLE_FRAMES", "10"))      # frames a clip takes to settle back into the rest pose
 MIN_IDLE_SECONDS = float(os.getenv("ASSISTANT_MIN_IDLE_SECONDS", "6"))   # shortest take kept as a loop when growth is interrupted
 READING_FRAMES = int(os.getenv("ASSISTANT_READING_FRAMES", "150"))   # reading loop at the tablet (LivePortrait), 25 fps
@@ -82,64 +85,73 @@ FPS = 25
 # the speech verifier can recognize it (XTTS babbles on one-word prompts).
 FILLERS = {
     "en": {
-        "opener": ["Let me think about that for a second.", "Good question, give me a moment.",
-                   "I am going to look that up, please give me a second.", "Sure, let me check on that for you.",
-                   "Hold on, let me find that for you."],
+        "opener_think": ["Let me think about that for a second.", "Good question, give me a moment.",
+                         "Hmm, let me think that through."],
+        "opener_lookup": ["I am going to look that up, please give me a second.", "Sure, let me check on that for you.",
+                          "Hold on, let me find that for you."],
         "beat": ["Hmm, let me see.", "Okay, almost there.", "Right, one second.", "Mm-hmm, getting closer.",
                  "Okay, nearly there.", "Let's see here."],
+        "beat_front": ["Hmm, almost there.", "Okay, one second.", "Right, nearly there."],
         "bridge": ["I'm pulling that up now, it should only take a moment.", "Bear with me, I want to make sure I get this right.",
                    "I'm checking a couple of things so I give you a proper answer.", "Still looking, this one deserves a careful answer.",
                    "Just making sure I have the details straight."],
         "closer": ["Okay, got it.", "Alright, here we go.", "Right, here's what I have.", "Okay, so."],
     },
     "es": {
-        "opener": ["Déjame pensarlo un momento.", "Buena pregunta, dame un segundo.", "Voy a buscarlo, dame un segundo por favor.",
-                   "Claro, déjame comprobarlo."],
+        "opener_think": ["Déjame pensarlo un momento.", "Buena pregunta, dame un segundo."],
+        "opener_lookup": ["Voy a buscarlo, dame un segundo por favor.", "Claro, déjame comprobarlo."],
         "beat": ["A ver, un momento.", "Vale, casi está.", "Mm, ya casi.", "Un segundo más."],
+        "beat_front": ["Vale, casi está.", "Un segundo más."],
         "bridge": ["Lo estoy buscando ahora, solo tardará un momento.", "Ten paciencia, quiero asegurarme de que sea correcto.",
                    "Estoy comprobando un par de cosas para darte una buena respuesta."],
         "closer": ["Vale, ya lo tengo.", "Bien, aquí está.", "Listo, esto es lo que tengo."],
     },
     "fr": {
-        "opener": ["Laissez-moi réfléchir un instant.", "Bonne question, donnez-moi un moment.", "Je vais chercher ça, une seconde s'il vous plaît.",
-                   "Bien sûr, laissez-moi vérifier."],
+        "opener_think": ["Laissez-moi réfléchir un instant.", "Bonne question, donnez-moi un moment."],
+        "opener_lookup": ["Je vais chercher ça, une seconde s'il vous plaît.", "Bien sûr, laissez-moi vérifier."],
         "beat": ["Voyons voir, un instant.", "D'accord, presque fini.", "Hmm, j'y suis presque.", "Encore une seconde."],
+        "beat_front": ["D'accord, presque fini.", "Encore une seconde."],
         "bridge": ["Je cherche ça maintenant, ça ne prendra qu'un instant.", "Un peu de patience, je veux être sûr de bien répondre.",
                    "Je vérifie deux ou trois choses pour vous répondre correctement."],
         "closer": ["Voilà, je l'ai.", "Bon, c'est parti.", "D'accord, voici ce que j'ai."],
     },
     "de": {
-        "opener": ["Lass mich kurz nachdenken.", "Gute Frage, einen Moment bitte.", "Das schaue ich kurz nach, einen Moment bitte.",
-                   "Klar, lass mich das prüfen."],
+        "opener_think": ["Lass mich kurz nachdenken.", "Gute Frage, einen Moment bitte."],
+        "opener_lookup": ["Das schaue ich kurz nach, einen Moment bitte.", "Klar, lass mich das prüfen."],
         "beat": ["Mal sehen, einen Moment.", "Okay, fast fertig.", "Hm, gleich hab ich es.", "Noch eine Sekunde."],
+        "beat_front": ["Okay, fast fertig.", "Noch eine Sekunde."],
         "bridge": ["Ich rufe das gerade auf, es dauert nur einen Moment.", "Einen Augenblick, ich will sichergehen, dass es stimmt.",
                    "Ich prüfe noch zwei Dinge, damit die Antwort passt."],
         "closer": ["Okay, hab es.", "Gut, hier ist es.", "Also, das habe ich gefunden."],
     },
-    "it": {"opener": ["Fammi pensare un attimo.", "Bella domanda, dammi un momento.", "Certo, un attimo che controllo."]},
-    "pt": {"opener": ["Deixe-me pensar um instante.", "Boa pergunta, me dê um momento.", "Claro, um momento enquanto verifico."]},
-    "zh": {"opener": ["让我想一想。", "好问题，请稍等一下。"]},
-    "ja": {"opener": ["少し考えさせてください。", "いい質問ですね、少々お待ちください。"]},
+    "it": {"opener_think": ["Fammi pensare un attimo.", "Bella domanda, dammi un momento."], "opener_lookup": ["Certo, un attimo che controllo."]},
+    "pt": {"opener_think": ["Deixe-me pensar um instante.", "Boa pergunta, me dê um momento."], "opener_lookup": ["Claro, um momento enquanto verifico."]},
+    "zh": {"opener_think": ["让我想一想。"], "opener_lookup": ["好问题，请稍等一下。"]},
+    "ja": {"opener_think": ["少し考えさせてください。"], "opener_lookup": ["いい質問ですね、少々お待ちください。"]},
 }
-KIND_POSE = {"opener": "front", "beat": "working", "bridge": "working", "closer": "front"}
+# Pose each kind is rendered in: "working" is the posed portrait looking at the notes
+# card; openers, closers and the to-camera beats of the thinking mode face the user.
+KIND_POSE = {"opener_think": "front", "opener_lookup": "front", "beat": "working", "beat_front": "front",
+             "bridge": "working", "closer": "front"}
+OPENER_MODE = {"opener_think": "think", "opener_lookup": "lookup"}
 
 
 def filler_texts(language: str, kind: str) -> list[str]:
     """Phrases of one kind for a language; env overrides win, English openers are the
     last resort so every language has at least an acknowledgement."""
     override = os.getenv(f"ASSISTANT_{kind.upper()}_TEXT_{language.upper()}") or (
-        os.getenv(f"ASSISTANT_ACK_TEXT_{language.upper()}") if kind == "opener" else None)
+        os.getenv(f"ASSISTANT_ACK_TEXT_{language.upper()}") if kind == "opener_think" else None)
     if override:
         return [t.strip() for t in override.split("|") if t.strip()]
     table = FILLERS.get(language) or {}
     texts = list(table.get(kind, []))
-    if not texts and kind == "opener":
-        texts = list(FILLERS["en"]["opener"])
+    if not texts and kind == "opener_think" and not table:
+        texts = list(FILLERS["en"]["opener_think"])
     return texts
 
 
 def ack_texts(language: str) -> list[str]:
-    return filler_texts(language, "opener")
+    return filler_texts(language, "opener_think") + filler_texts(language, "opener_lookup")
 
 
 def ack_text(language: str) -> str:
@@ -447,7 +459,8 @@ class Assistant:
         if directory is None:
             return None
         seconds = IDLE_SECONDS if pose == "front" else WORKING_IDLE_SECONDS
-        return directory / f"idle-{pose}-{self._fingerprint(kind='idle', pose=pose, seconds=seconds, posed=WORKING_POSE if pose != 'front' else None, reading=READING_FRAMES if pose != 'front' else None)}.npz"
+        posed = {"working": WORKING_POSE, "thinking": THINKING_POSE}.get(pose)
+        return directory / f"idle-{pose}-{self._fingerprint(kind='idle', pose=pose, seconds=seconds, posed=posed, loop=READING_FRAMES if posed else None)}.npz"
 
     def _clip_prefix(self) -> str:
         return self._fingerprint(kind="clip", language=self.language, voice=self.voice or "", voice_digest=self.voice_digest,
@@ -530,6 +543,28 @@ class Assistant:
             return True
         except (httpx.HTTPError, ValueError, OSError) as exc:
             self.metrics["prepare"]["reading_error"] = f"{type(exc).__name__}: {exc}"
+            return False
+
+    async def make_thinking_loop(self) -> bool:
+        """The thinking idle: LivePortrait animates the front portrait glancing up and to
+        the side, wandering there, and coming back to the camera with a small nod. It
+        starts and ends at rest, so it joins the front footage with a cut."""
+        try:
+            response = await self.client.post(f"{RENDERER}/portrait/pose", json={
+                "image_b64": base64.b64encode((self.directory / "image.png").read_bytes()).decode(), **THINKING_POSE,
+                "motion": "thinking", "frames": READING_FRAMES, "size": int(self.renderer.spec.get("height") or 512)}, timeout=300)
+            if response.status_code != 200:
+                self.metrics["prepare"]["thinking_error"] = response.status_code
+                return False
+            count, height, width = (int(response.headers[k]) for k in ("X-Frames", "X-Height", "X-Width"))
+            loop = self.timeline.loop("thinking")
+            loop.frames = np.frombuffer(response.content, dtype=np.uint8).reshape(count, height, width, 3).copy()
+            loop.finalized, loop.wrap_blend, loop.cursor = True, 0, 0
+            self.metrics["prepare"]["thinking_seconds"] = float(response.headers.get("X-Seconds", 0))
+            await self._save_idle("thinking")
+            return True
+        except (httpx.HTTPError, ValueError, OSError) as exc:
+            self.metrics["prepare"]["thinking_error"] = f"{type(exc).__name__}: {exc}"
             return False
 
     def turn_head(self, at: float, direction: str, generation: int) -> float:
@@ -634,13 +669,14 @@ class Assistant:
             except httpx.HTTPError:
                 self.working_pose = False
         cached = {"idle": await self._load_idle("front"), "working_idle": self.working_pose and await self._load_idle("working"),
-                  "clips": await self._load_clips()}
+                  "thinking_idle": await self._load_idle("thinking"), "clips": await self._load_clips()}
         if not cached["idle"]:
             self.timeline.add_idle(await self.render_all(np.zeros(self.renderer.samples * IDLE_CHUNKS, np.int16), "idle:front"), False)
         self.metrics["prepare"] = {
             "cached": cached, "renderer_open_seconds": round(t_open - started, 2),
             "idle_seconds_ready": round(self.timeline.idle_seconds(), 2), "idle_finalized": self.timeline.loop("front").finalized,
-            "ack_ready": bool(self.clips["opener"]), "clips": self.clip_count(), "working_pose": self.working_pose,
+            "ack_ready": bool(self.clips["opener_think"] or self.clips["opener_lookup"]), "clips": self.clip_count(),
+            "working_pose": self.working_pose,
             "chunk": {k: info[k] for k in ("frames_per_chunk", "samples_per_chunk", "seconds_per_chunk")},
             "total_seconds": round(time.monotonic() - started, 2)}
         self.background = asyncio.create_task(self.finish_prepare())
@@ -650,9 +686,11 @@ class Assistant:
         """Clips in the order the user needs them: first opener, a few beats and closers so
         a working phase can happen, bridges, then the rest of the repertoire."""
         texts = {kind: filler_texts(self.language, kind) for kind in KIND_POSE}
-        order = [("opener", 0)]
-        order += [("beat", i) for i in range(3)] + [("closer", i) for i in range(2)] + [("bridge", i) for i in range(2)]
-        order += [("opener", i) for i in range(1, 8)] + [("beat", i) for i in range(3, 8)]
+        order = [("opener_lookup", 0), ("opener_think", 0)]
+        order += [("closer", i) for i in range(2)] + [("beat", i) for i in range(3)] + [("beat_front", i) for i in range(2)]
+        order += [("bridge", i) for i in range(2)]
+        order += [("opener_lookup", i) for i in range(1, 8)] + [("opener_think", i) for i in range(1, 8)]
+        order += [("beat", i) for i in range(3, 8)] + [("beat_front", i) for i in range(2, 8)]
         order += [("bridge", i) for i in range(2, 8)] + [("closer", i) for i in range(2, 8)]
         plan, seen = [], set()
         for kind, index in order:
@@ -749,10 +787,12 @@ class Assistant:
         loop, then the filler repertoire. Yields to turns; everything is cached."""
         try:
             plan = self._plan_texts()
-            if plan and not self.clips["opener"]:
-                kind, text = plan[0]
-                await self.make_clip(kind, text)
+            for kind, text in plan[:2]:                      # one opener of each mode before anything else
+                if not self.has_clip(kind, text):
+                    await self.make_clip(kind, text)
             await self.grow_idle("front", IDLE_SECONDS)
+            if not self.timeline.loop("thinking").ready:
+                await self.make_thinking_loop()
             self.metrics["prepare"].update(idle_seconds_final=round(self.timeline.idle_seconds(), 2),
                                            idle_finalized=self.timeline.loop("front").finalized)
             if await self.open_working_pose():
@@ -767,7 +807,7 @@ class Assistant:
                 if not self.has_clip(kind, text):
                     await self.make_clip(kind, text)
             self.notify("ready", idle_seconds=round(self.timeline.idle_seconds(), 1), clips=self.clip_count(),
-                        working_pose=self.working_pose)
+                        working_pose=self.working_pose, thinking=self.timeline.loop("thinking").ready)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -794,6 +834,17 @@ class Assistant:
         self.last_used[kind] = clip.text
         return clip
 
+    def pick_opener(self):
+        """An opener and the mode it announces: "think" (glance away, beats to camera) or
+        "lookup" (turn to the notes card). Modes alternate when both are prepared."""
+        modes = [kind for kind in ("opener_think", "opener_lookup") if self.clips.get(kind)]
+        if not modes:
+            return None, "think"
+        last = self.last_used.get("opener_mode")
+        kind = random.choice([m for m in modes if m != last] or modes)
+        self.last_used["opener_mode"] = kind
+        return self.pick(kind), OPENER_MODE[kind]
+
     async def fill_gap(self, plan: dict, state: dict, generation: int, t0: float) -> None:
         """Fill the wait between the opener and the reply the way a person looking
         something up would: turn to the tablet, say short progress utterances with
@@ -802,43 +853,67 @@ class Assistant:
         user, and hand over. Clips are scheduled just in time so the plan can adapt."""
         tl = self.timeline
         cursor = plan["opener_end"]
+        lookup = plan["mode"] == "lookup"
         pattern = itertools.cycle(["beat", "bridge", "beat", "beat", "bridge"])
-        working = False
+        away = False                                 # the persona has left the camera (card or thought)
+        think = tl.loop("thinking")
         try:
             while generation == tl.generation and not self.closed:
                 start = state["reply_start"]
                 if start is not None:
                     closer = self.pick("closer")
                     closer_len = closer.seconds if closer else 0.0
-                    turn_len = len(self.turn_up) / FPS if (working and self.turn_up is not None) else 0.0
+                    turn_len = len(self.turn_up) / FPS if (away and lookup and self.turn_up is not None) else 0.0
                     settle_len = SETTLE_FRAMES / FPS
                     cut_at = max(plan["opener_end"], start - 0.25 - turn_len - settle_len - (closer_len + 0.15 if closer else 0.0))
-                    cut, cut_end = tl.truncate(cut_at, "filler", settle_to=self.anchor("working" if working else "front"), settle_count=SETTLE_FRAMES)
+                    cut, cut_end = tl.truncate(cut_at, "filler", settle_to=self.anchor("working" if (away and lookup) else "front"), settle_count=SETTLE_FRAMES)
                     tl.truncate(cut_at, "turn")
-                    back = self.turn_head(cut_end + 0.02, "up", generation) if working else cut_end
+                    if away and lookup:
+                        back = self.turn_head(cut_end + 0.02, "up", generation)
+                    else:
+                        tl.set_mode(cut_end, "front", generation)
+                        back = cut_end
                     if closer and back + 0.1 + closer_len + 0.15 <= start:
                         tl.schedule(back + 0.1, closer.audio48, closer.frames, generation, tag="filler")
                         self.notify("filler", kind="closer", text=closer.text)
                         self.metrics["fillers"].append({"kind": "closer", "text": closer.text, "at": round(back + 0.1 - t0, 2)})
-                    self.metrics["fillers"].append({"kind": "cut", "at": round(cut_at - t0, 2), "clips_cut": cut, "turn_back": working})
+                    self.metrics["fillers"].append({"kind": "cut", "at": round(cut_at - t0, 2), "clips_cut": cut, "mode": plan["mode"], "away": away})
                     return
                 now = tl.now()
-                if not working and tl.loop("working").ready and now >= plan["opener_end"] - 0.5:
-                    cursor = max(cursor, self.turn_head(plan["opener_end"] + 0.1, "down", generation))
-                    working = True
-                    self.notify("working")
-                if cursor - now < 1.5 and cursor < t0 + MAX_HEAD_START - 1.0:
-                    kind = next(pattern)
-                    clip = self.pick(kind) or self.pick("beat") or self.pick("bridge")
-                    if clip is not None:
-                        at = max(cursor + random.uniform(0.7, 1.5), now + 0.3)
-                        placed = tl.schedule(at, clip.audio48, clip.frames, generation, tag="filler")
-                        if placed:
-                            cursor = placed[1]
-                            self.notify("filler", kind=clip.kind, text=clip.text)
-                            self.metrics["fillers"].append({"kind": clip.kind, "text": clip.text, "at": round(at - t0, 2)})
-                    else:
-                        cursor = now + 1.0
+                if not away and now >= plan["opener_end"] - 0.5:
+                    if lookup and tl.loop("working").ready:
+                        cursor = max(cursor, self.turn_head(plan["opener_end"] + 0.1, "down", generation))
+                        away = True
+                        self.notify("working", mode="lookup")
+                    elif not lookup and think.ready:
+                        tl.set_mode(plan["opener_end"] + 0.05, "thinking", generation)
+                        away = True
+                        self.notify("working", mode="think")
+                if lookup or not away:
+                    if cursor - now < 1.5 and cursor < t0 + MAX_HEAD_START - 1.0:
+                        kind = next(pattern) if away else "beat_front"
+                        clip = self.pick(kind) or self.pick("beat_front" if not away else "beat") or (self.pick("bridge") if away else None)
+                        if clip is not None:
+                            at = max(cursor + random.uniform(0.7, 1.5), now + 0.3)
+                            placed = tl.schedule(at, clip.audio48, clip.frames, generation, tag="filler")
+                            if placed:
+                                cursor = placed[1]
+                                self.notify("filler", kind=clip.kind, text=clip.text)
+                                self.metrics["fillers"].append({"kind": clip.kind, "text": clip.text, "at": round(at - t0, 2)})
+                        else:
+                            cursor = now + 1.0
+                else:
+                    # Thinking: a short beat to camera when the loop has brought the face back
+                    # (after THINK_RETURN_AT of its cycle); the loop then restarts with a glance away.
+                    at_camera = think.cursor >= int(THINK_RETURN_AT * len(think.frames))
+                    if at_camera and now >= cursor + 1.0 and tl.active(now) is None and now < t0 + MAX_HEAD_START - 1.0:
+                        clip = self.pick("beat_front")
+                        if clip is not None:
+                            placed = tl.schedule(now + 0.15, clip.audio48, clip.frames, generation, tag="filler")
+                            if placed:
+                                cursor = placed[1]
+                                self.notify("filler", kind=clip.kind, text=clip.text)
+                                self.metrics["fillers"].append({"kind": clip.kind, "text": clip.text, "at": round(now + 0.15 - t0, 2)})
                 await asyncio.sleep(0.1)
         except asyncio.CancelledError:
             raise
@@ -861,21 +936,21 @@ class Assistant:
             wav.writeframes(samples.astype(np.int16).tobytes())
         self.notify("thinking")
         state = {"reply_start": None, "offset": 0.0, "total": 0, "tts_done": False, "chunks": 0}
-        plan = {"opener_end": tl.now() + 0.2}
+        opener, mode = self.pick_opener()
+        plan = {"opener_end": tl.now() + 0.2, "mode": mode}
 
         # 1. The prepared opener lands immediately (when this persona's is ready), then the
-        #    filler plan takes over the gap.
-        opener = self.pick("opener")
+        #    filler plan takes over the gap in the mode the opener announced.
         if opener is None:
-            self.notify("acknowledging", seconds=0, pending=True)
+            self.notify("acknowledging", seconds=0, pending=True, mode=mode)
         else:
             placed = tl.schedule(tl.now() + 0.1, opener.audio48, opener.frames, generation, tag="filler")
             if placed:
                 plan["opener_end"] = placed[1]
                 self.last_playout_start = placed[0]
                 self.metrics["ack_start_seconds"].append(round(placed[0] - t0, 2))
-                self.metrics["fillers"].append({"kind": "opener", "text": opener.text, "at": round(placed[0] - t0, 2)})
-                self.notify("acknowledging", seconds=round(placed[1] - placed[0], 2), text=opener.text)
+                self.metrics["fillers"].append({"kind": opener.kind, "text": opener.text, "at": round(placed[0] - t0, 2), "mode": mode})
+                self.notify("acknowledging", seconds=round(placed[1] - placed[0], 2), text=opener.text, mode=mode)
         filler = asyncio.create_task(self.fill_gap(plan, state, generation, t0))
 
         # 2. Plan then speak on the backend; audio arrives as PCM events.
@@ -1141,7 +1216,8 @@ class Assistant:
                              "idle_frames_sent": tl.idle_frames_sent, "scheduled_seconds": round(tl.scheduled_seconds, 2),
                              "now": round(tl.now(), 2)},
                 "idle": {"seconds": round(tl.idle_seconds(), 2), "finalized": tl.loop("front").finalized,
-                         "working_seconds": round(tl.idle_seconds("working"), 2), "working_finalized": tl.loop("working").finalized},
+                         "working_seconds": round(tl.idle_seconds("working"), 2), "working_finalized": tl.loop("working").finalized,
+                         "thinking_seconds": round(tl.idle_seconds("thinking"), 2)},
                 "clips": {kind: [c.text for c in clips] for kind, clips in self.clips.items()}, "working_pose": self.working_pose,
                 "renderer": {"sessions": self.renderer.sessions, "ratio": round(self.renderer.ratio, 3), "motion": self.renderer.motion,
                              "first_chunk_seconds": self.renderer.first_chunk_seconds,
@@ -1288,7 +1364,7 @@ async def offer(identifier: str, body: Offer):
     @pc.on("datachannel")
     def on_channel(channel):
         session.channel = channel
-        if session.clips["opener"] and (session.background is None or session.background.done()):
+        if (session.clips["opener_think"] or session.clips["opener_lookup"]) and (session.background is None or session.background.done()):
             # Everything was cached: tell the client now that the channel exists.
             session.notify("ready", idle_seconds=round(session.timeline.idle_seconds(), 1), clips=session.clip_count(),
                            working_pose=session.working_pose, cached=True)

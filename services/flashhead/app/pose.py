@@ -124,3 +124,61 @@ def reading_loop(image_bgr: np.ndarray, pitch: float, yaw: float, roll: float = 
                 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, float(ex), float(ey), path, scale, True, True)
             out.append(cv2.cvtColor(np.asarray(blended), cv2.COLOR_RGB2BGR))
     return out
+
+
+THINK_RETURN_AT = 0.70      # fraction of the thinking loop after which the face is back at the camera
+
+
+def thinking_loop(image_bgr: np.ndarray, pitch: float, yaw: float, roll: float = 0.0, eyes_x: float = 0.0,
+                  eyes_y: float = 0.0, frames: int = 150, fps: int = 25, scale: float = 2.3) -> list[np.ndarray]:
+    """A periodic loop of the portrait thinking: the gaze and head ease away to the
+    (pitch, yaw, roll, eyes) offset, wander there, come back to the camera with a small
+    nod, and rest at the camera until the loop restarts. Frame 0 and the last frame are
+    the portrait at rest, so the loop joins the rest pose with a cut. The face is back
+    at the camera from THINK_RETURN_AT of the loop on (where a spoken beat fits)."""
+    import math
+    import cv2
+
+    pipeline = _load()
+    T = frames / fps
+    leave_end, hold_end, back_end = 0.1 * T, 0.6 * T, THINK_RETURN_AT * T
+    nod_start, nod_end = back_end + 0.05 * T, back_end + 0.17 * T
+
+    def smooth(x):
+        x = min(1.0, max(0.0, x))
+        return x * x * (3 - 2 * x)
+
+    out = []
+    with tempfile.TemporaryDirectory(prefix="think-") as directory:
+        path = str(Path(directory) / "portrait.png")
+        cv2.imwrite(path, image_bgr)
+        eye_ratio, lip_ratio = pipeline.init_retargeting_image(scale, 0, 0, path)
+        for i in range(frames):
+            t = i / fps
+            if t < leave_end:
+                a = smooth(t / leave_end)
+            elif t < hold_end:
+                a = 1.0
+            elif t < back_end:
+                a = 1.0 - smooth((t - hold_end) / (back_end - hold_end))
+            else:
+                a = 0.0
+            wander = 1.0 if leave_end <= t < hold_end else 0.0
+            p = pitch * a + wander * 0.8 * math.sin(2 * math.pi * (t - leave_end) / 2.3)
+            y = yaw * a + wander * 1.5 * math.sin(2 * math.pi * (t - leave_end) / 3.1)
+            r = roll * a
+            ex = eyes_x * a + wander * 2.5 * math.sin(2 * math.pi * t / 1.4)
+            ey = eyes_y * a + wander * 1.0 * math.sin(2 * math.pi * t / 1.9 + 0.7)
+            if nod_start <= t < nod_end:
+                p += 2.5 * math.sin(math.pi * (t - nod_start) / (nod_end - nod_start))   # a small nod, down and back
+            blink = 0.0
+            for at in (0.33 * T, 0.9 * T):
+                phase = (t - at) * fps
+                if 0 <= phase < 4:
+                    blink = 1.0 if 1 <= phase < 3 else 0.6
+            ratio = eye_ratio * (1.0 - 0.9 * blink)
+            _, blended = pipeline.execute_image_retargeting(
+                ratio, lip_ratio, float(p), float(y), float(r), 0.0, 0.0, 1.0,
+                0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, float(ex), float(ey), path, scale, True, True)
+            out.append(cv2.cvtColor(np.asarray(blended), cv2.COLOR_RGB2BGR))
+    return out

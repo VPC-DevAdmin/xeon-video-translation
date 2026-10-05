@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import PersonaWizard from "../components/PersonaWizard";
 import AssistantIcon from "./AssistantIcon";
+import LookupCard, { notesFrom, type LookupState } from "./LookupCard";
 import "./assistant.css";
 
 const BASE = process.env.NEXT_PUBLIC_INGEST_BASE_URL || "/ingest";
@@ -26,6 +27,8 @@ export default function AssistantPage() {
   const [imagePreview, setImagePreview] = useState("");
   const [messages, setMessages] = useState<{ who: string; text: string }[]>([]);
   const [notes, setNotes] = useState<string[]>([]);
+  const [lookup, setLookup] = useState<LookupState | null>(null);   // the notes card while the persona looks something up
+  const lastQuestion = useRef("");
   const [error, setError] = useState("");
   const [cameraError, setCameraError] = useState("");
   const [countdown, setCountdown] = useState<number | null>(null);
@@ -181,17 +184,17 @@ export default function AssistantPage() {
         let data: Record<string, any>;
         try { data = JSON.parse(event.data); } catch { return; }
         switch (data.type) {
-          case "transcript": setMessages(old => [...old.slice(-19), { who: "You", text: String(data.text) }]); return;
-          case "reply": setMessages(old => [...old.slice(-19), { who: persona?.name ?? "Assistant", text: String(data.text) }]); return;
-          case "thinking": setState("Thinking…"); setDetail(""); setNotes([]); return;
+          case "transcript": lastQuestion.current = String(data.text); setLookup(current => current ? { ...current, question: String(data.text) } : current); setMessages(old => [...old.slice(-19), { who: "You", text: String(data.text) }]); return;
+          case "reply": setLookup(current => current ? { ...current, notes: notesFrom(String(data.text)) } : current); setMessages(old => [...old.slice(-19), { who: persona?.name ?? "Assistant", text: String(data.text) }]); return;
+          case "thinking": setState("Thinking…"); setDetail(""); setNotes([]); setLookup(null); lastQuestion.current = ""; return;
           case "acknowledging": setDetail(data.pending ? "Acknowledgement rendering" : "Acknowledging"); return;
           case "filler_ready": if (data.kind === "opener" && data.count === 1) setDetail("Acknowledgement ready"); return;
-          case "working": setState("Looking it up…"); return;
+          case "working": setState(data.mode === "lookup" ? "Looking it up…" : "Thinking…"); if (data.mode === "lookup") setLookup({ question: lastQuestion.current, notes: [], startedAt: Date.now() }); return;
           case "filler": if (data.kind !== "opener") setDetail(`“${data.text}”`); return;
           case "speech_check": setNotes(old => [...old.slice(-2), `“${data.text}”: ${data.fallback ? "stock voice used after cloned takes failed" : `take ${data.takes}, ${Math.round(data.match * 100)}% words matched`}`]); return;
           case "reply_scheduled": replyAt.current = Date.now() + data.start_in * 1000; setState("Thinking…"); setDetail("Preparing a reply"); return;
-          case "speaking": replyAt.current = null; setCountdown(null); setState("Speaking"); setDetail("Speak to interrupt."); return;
-          case "listening": setState("Listening"); setDetail(""); replyAt.current = null; setCountdown(null); return;
+          case "speaking": replyAt.current = null; setCountdown(null); setState("Speaking"); setDetail("Speak to interrupt."); setLookup(null); return;
+          case "listening": setState("Listening"); setDetail(""); replyAt.current = null; setCountdown(null); setLookup(null); return;
           case "ready": setDetail("Ready"); return;
           case "error": setError(String(data.message)); return;
           default: return;
@@ -251,6 +254,7 @@ export default function AssistantPage() {
           {portrait && <img className="aurora-portrait" src={portrait} alt={displayName} />}
           <video ref={stage} autoPlay playsInline className={`aurora-video ${connected ? "is-active" : ""}`} aria-label="Assistant video" />
           <div className="aurora-stage-sheen" />
+          {connected && <LookupCard state={lookup} />}
           <div className="aurora-stage-top"><span className="aurora-persona-pill"><i /><span><strong>{displayName}</strong><small>{phase === "live" ? "In conversation" : active ? "Connecting" : "Ready to talk"}</small></span></span>{active && <span className="aurora-hd">LIVE</span>}</div>
           <div className="aurora-stage-bottom"><div className="aurora-status"><span className="aurora-orb">⌁</span><span><strong aria-live="polite">{status}</strong><small>{subtitle}</small></span></div>{active && showSelf && <video ref={selfView} autoPlay playsInline muted className="aurora-self-view" aria-label="Your camera preview" />}</div>
         </div>
