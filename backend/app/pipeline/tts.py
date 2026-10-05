@@ -1303,9 +1303,9 @@ def _synthesize_per_segment(
                 raise TTSError(f"segment {i + 1} has invalid or overlapping timestamps")
             # A full expected-text match can distinguish clicks/repeated tails
             # from short words. Never discard content based on span duration alone.
-            # XTTS takes vary a lot in length (10.5 to 13.5 s for the same
-            # sentence on 5 Oct 2026); a take beyond the hard ceiling earns extra
-            # attempts, and the shortest verified take is the one kept.
+            # XTTS takes vary a lot in length for the same sentence; a take that
+            # overruns the preferred speed earns extra attempts, and the shortest
+            # verified take is the one kept.
             import shutil
 
             best_take = work / f"segment-{i}.take.wav"
@@ -1324,14 +1324,18 @@ def _synthesize_per_segment(
                     # its slot would stretch that silence too, so the speech
                     # ended early and the source mouth showed through at the end.
                     _trim_to_speech(path)
+                    _compress_pauses(path)
                 duration = _probe_duration(path)
                 if verified is not False and (best_take_duration is None or duration < best_take_duration):
                     shutil.copyfile(path, best_take)
                     best_take_duration = duration
                 if verified is not False and duration <= available * settings.tts_max_speed:
                     break
-                if verified is not False and duration > available * settings.tts_max_speed_hard:
-                    # Extra attempts for an outlier take, granted once.
+                if verified is not False and duration > available * settings.tts_max_speed:
+                    # Best of N: XTTS take lengths for one sentence ranged from
+                    # 8.6 to 22 s on 5 Oct 2026 at every temperature, but the
+                    # shortest of five always fitted. Extra attempts, granted
+                    # once; the loop stops as soon as a take fits.
                     attempts = max(attempts, settings.tts_segment_retries + 1 + settings.tts_overrun_retries)
                 cleanup_attempt += 1
                 if cleanup_attempt >= attempts:
@@ -1390,6 +1394,7 @@ def _synthesize_per_segment(
                         if verified is False:
                             continue
                         _trim_to_speech(path)
+                        _compress_pauses(path)
                         duration = _probe_duration(path)
                         speed = duration / available
                         if duration < best_duration:
@@ -1555,6 +1560,44 @@ def _trim_to_speech(audio_path: Path) -> None:
         start,
         end,
     )
+
+
+def _compress_pauses(audio_path: Path, max_gap: float | None = None) -> float:
+    """Cap every pause inside `audio_path` at `max_gap` seconds, in place.
+
+    XTTS copies the reference speaker's rhythm and on 5 Oct 2026 produced
+    takes with 8-9 s of silence inside 17-26 s of audio (single gaps of 3-5 s)
+    for a sentence that takes 10 s to say. Fitting such a take to its slot
+    would have to speed the words up to pay for the silence, so the pauses are
+    shortened instead; the words are untouched. Returns the seconds removed."""
+    import numpy as np
+    import soundfile as sf
+
+    max_gap = settings.tts_max_pause_seconds if max_gap is None else max_gap
+    if max_gap <= 0:
+        return 0.0
+    spans = _non_silent_spans(audio_path)
+    if len(spans) < 2:
+        return 0.0
+    data, rate = sf.read(str(audio_path), dtype="float32", always_2d=False)
+    if data.ndim > 1:
+        data = data.mean(axis=1)
+    keep = np.ones(len(data), dtype=bool)
+    removed = 0.0
+    for (_, end), (start, _) in zip(spans, spans[1:]):
+        gap = start - end
+        if gap <= max_gap:
+            continue
+        cut0 = int((end + max_gap / 2) * rate)
+        cut1 = int((start - max_gap / 2) * rate)
+        if cut1 > cut0:
+            keep[cut0:cut1] = False
+            removed += (cut1 - cut0) / rate
+    if removed <= 0.0:
+        return 0.0
+    sf.write(str(audio_path), data[keep], rate)
+    log.info("compressed pauses in %s: removed %.2fs (gaps capped at %.2fs)", audio_path.name, removed, max_gap)
+    return removed
 
 
 def _ffmpeg_atrim(src: Path, dst: Path, start: float, end: float) -> None:

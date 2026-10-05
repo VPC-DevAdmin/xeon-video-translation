@@ -214,3 +214,22 @@ blocky 128 px temporal mask keeps a 7 px feather. XTTS also returned a 13.5 s
 take for the 9.1 s slot once and failed the job: a take beyond the hard
 ceiling now earns `TTS_OVERRUN_RETRIES` (2) extra same-text attempts and the
 shortest verified take is kept.
+
+### XTTS take length (5 Oct 2026, late night)
+
+The same Spanish sentence came back from XTTS at anywhere between 8.6 and
+26 s across takes, at every sampling temperature. Two causes, two fixes:
+
+* **Pauses.** Takes carried 1 to 10 s of silence inside the speech (single
+  gaps of 3 to 5 s between phrases). Pauses inside a take are now capped at
+  `TTS_MAX_PAUSE_SECONDS` (0.35 s) before fitting; the words are untouched.
+* **Rambling.** Some takes are simply long (repeats, slow phrases). A take
+  that overruns the preferred 1.15x earns up to `TTS_OVERRUN_RETRIES` (4)
+  extra same-text takes, ~3 s each; sampling stops at the first take that
+  fits and otherwise the shortest verified take is kept. In five-take
+  samples the shortest always fitted the 9.1 s slot. XTTS's native `speed`
+  argument was tried and does not change the length reliably.
+
+Note: code changes to the backend need `docker restart polyglot-backend`;
+the verification script only restarted the LatentSync pool for a while and
+two runs were judged on stale code.

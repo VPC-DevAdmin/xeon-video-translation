@@ -8,6 +8,7 @@ def fitting(tmp_path, monkeypatch):
     monkeypatch.setattr(tts.settings, "tts_segment_retries", 0)
     monkeypatch.setattr(tts.settings, "tts_fit_retries", 1)
     monkeypatch.setattr(tts.settings, "tts_max_speed", 1.15)
+    monkeypatch.setattr(tts.settings, "tts_overrun_retries", 2)
     monkeypatch.setattr(tts, "_select_reference", lambda *a: None)
     monkeypatch.setattr(
         tts, "_xtts_to_file", lambda text, ref, lang, path, **k: path.write_bytes(b"audio")
@@ -59,6 +60,7 @@ def _fitting_at(monkeypatch, tmp_path, durations):
     monkeypatch.setattr(tts.settings, "tts_fit_retries", 2)
     monkeypatch.setattr(tts.settings, "tts_max_speed", 1.15)
     monkeypatch.setattr(tts.settings, "tts_max_speed_hard", 1.3)
+    monkeypatch.setattr(tts.settings, "tts_overrun_retries", 2)
     monkeypatch.setattr(tts, "_select_reference", lambda *a: None)
     takes = iter(durations)
     current = {}
@@ -104,7 +106,7 @@ def test_small_overrun_is_stretched_when_no_rewrite_exists(tmp_path, monkeypatch
         raise ValueError("no shorter faithful translation produced")
 
     monkeypatch.setattr(quality, "rewrite", cannot_shorten)
-    segments, reference, out, stretched = _fitting_at(monkeypatch, tmp_path, [1.18])
+    segments, reference, out, stretched = _fitting_at(monkeypatch, tmp_path, [1.18, 1.19, 1.18])
     tts._synthesize_per_segment(
         segments, segments, reference, "es", out, options={"rewrite_overruns": True}
     )
@@ -116,7 +118,7 @@ def test_slower_rewrite_take_never_replaces_the_best_one(tmp_path, monkeypatch):
     """The LLM shortened the text but XTTS rendered it slower: keep the first take."""
     rewrites = iter(["Buen día.", "Buen día."])
     monkeypatch.setattr(quality, "rewrite", lambda *a: next(rewrites))
-    segments, reference, out, stretched = _fitting_at(monkeypatch, tmp_path, [1.2, 1.9, 1.7])
+    segments, reference, out, stretched = _fitting_at(monkeypatch, tmp_path, [1.2, 1.3, 1.25, 1.9, 1.7])
     import json
 
     tts._synthesize_per_segment(
@@ -162,9 +164,16 @@ def test_verified_takes_still_lose_their_trailing_silence(tmp_path, monkeypatch)
 def test_outlier_take_earns_extra_attempts_and_the_shortest_wins(tmp_path, monkeypatch):
     """XTTS gave 13.5 s for a 9.1 s slot once and the job failed. A take beyond
     the hard ceiling now earns extra attempts and the shortest verified take is kept."""
-    monkeypatch.setattr(tts.settings, "tts_overrun_retries", 2)
     segments, reference, out, stretched = _fitting_at(monkeypatch, tmp_path, [1.5, 1.4, 1.2])
     tts._synthesize_per_segment(
         segments, segments, reference, "es", out, options={"rewrite_overruns": False}
     )
     assert stretched == [(1.0, 1.3)]  # the 1.2 s take fitted within the hard ceiling
+
+
+def test_best_of_n_stops_at_the_first_take_that_fits(tmp_path, monkeypatch):
+    segments, reference, out, stretched = _fitting_at(monkeypatch, tmp_path, [1.5, 1.1, 9.9])
+    tts._synthesize_per_segment(
+        segments, segments, reference, "es", out, options={"rewrite_overruns": False}
+    )
+    assert stretched == [(1.0, 1.3)]  # the 1.1 s take was fitted; the third take was never generated
