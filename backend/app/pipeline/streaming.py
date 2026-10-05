@@ -367,19 +367,30 @@ class StreamJob:
         index = 0
         cursor = 0.0
         tts_seconds = 0.0
-        for span in spans:
-            self._check_cancel()
-            if span.start > cursor:
-                self._gap(index, cursor, span.start, original_audio)
-                index += 1
+        from concurrent.futures import ThreadPoolExecutor
+
+        def synthesize(span: Span) -> tuple[Path, float]:
             started = time.perf_counter()
-            span_audio = synthesize_span(span, self.translation, self.transcript, reference_audio,
-                                         self.root / f"span-{span.index:03d}.wav", self.tts_backend, self.options)
-            tts_seconds += time.perf_counter() - started
-            self.emit("stream_span_audio", {"span": span.index, "seconds": round(span.seconds, 2),
-                                            "tts_seconds": round(time.perf_counter() - started, 2)})
-            index = self._render_span(span, span_audio, index)
-            cursor = span.end
+            path = synthesize_span(span, self.translation, self.transcript, reference_audio,
+                                   self.root / f"span-{span.index:03d}.wav", self.tts_backend, self.options)
+            return path, time.perf_counter() - started
+
+        # Speech for span N+1 is synthesized (speech GPU) while span N renders (pool GPUs),
+        # so the renderer never waits for TTS after the first span.
+        with ThreadPoolExecutor(max_workers=1, thread_name_prefix="stream-tts") as pool:
+            futures = {spans[0].index: pool.submit(synthesize, spans[0])} if spans else {}
+            for position, span in enumerate(spans):
+                self._check_cancel()
+                if position + 1 < len(spans):
+                    futures[spans[position + 1].index] = pool.submit(synthesize, spans[position + 1])
+                if span.start > cursor:
+                    self._gap(index, cursor, span.start, original_audio)
+                    index += 1
+                span_audio, took = futures.pop(span.index).result()
+                tts_seconds += took
+                self.emit("stream_span_audio", {"span": span.index, "seconds": round(span.seconds, 2), "tts_seconds": round(took, 2)})
+                index = self._render_span(span, span_audio, index)
+                cursor = span.end
         if cursor < self.total:
             self._gap(index, cursor, self.total, original_audio)
             index += 1
