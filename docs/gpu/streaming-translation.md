@@ -156,3 +156,22 @@ Result: frames 77-96 and 182-199 (both boxes and the hand pass) now equal the
 source; 51 of 212 frames carry a reduced paste. Cost: while a hand covers half
 the mouth the original mouth shows for those frames instead of a translated
 one under the fingers. Knobs: `LATENTSYNC_OCCLUDER_MASK=0`, `MOUTH_COVERED`.
+
+### Fingers on the lips and the English mouth at the end (5 Oct 2026, night)
+
+* **Hand mask.** A finger resting on the lips for half a second is in the
+  temporal median and is skin to the parser. MediaPipe Hands (already in the
+  LatentSync image) runs on the source frames at 540 px wide (3 s per 200
+  frames on CPU); each hand is drawn into the crop through the paste affine as
+  the palm polygon plus finger bones at about a third of the palm width,
+  capped at 36 px because a hand near the camera is larger than the face. The
+  first version used a hull and uncapped width and swallowed half the face.
+  `LATENTSYNC_HAND_MASK=0` disables it. The occlusion log line now lists the
+  gated frame ranges.
+* **Trailing silence.** XTTS leaves up to a second of silence after the last
+  word. Whisper-verified takes skipped the silence trim, so the fit stretched
+  the silence along with the speech: the Spanish ended at 8.5 s of a 9.1 s clip
+  and LatentSync, which reproduces the source mouth under silence, showed the
+  English "it" for the last 0.6 s. Verified takes are now trimmed too
+  (headroom 0.1 s); the stretch dropped from 1.20x to 1.15x and speech runs to
+  8.95 s. The last three frames of silence still show the source mouth.

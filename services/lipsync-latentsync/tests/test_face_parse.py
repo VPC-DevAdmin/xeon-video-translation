@@ -109,3 +109,25 @@ def test_default_threshold_catches_a_pale_object_crossing_the_mouth():
     occ = fp.occluder_masks(crops, np.ones(40, bool), size=64, window=12)
     assert float(occ[21, 0, 50, 50]) == 1.0
     assert float(occ[5].sum()) == 0.0
+
+
+def test_ranges_compacts_runs():
+    assert fp.ranges([]) == ""
+    assert fp.ranges([3, 4, 5, 9, 12, 13]) == "3-5, 9, 12-13"
+
+
+def test_hand_mask_is_hand_shaped_not_a_hull():
+    pytest.importorskip("cv2")
+    # an open hand: wrist at the bottom, five fingers fanning up, in a 512 crop
+    pts = np.zeros((21, 2), np.float32)
+    pts[0] = (256, 480)
+    bases = {1: (200, 420), 5: (220, 380), 9: (256, 370), 13: (292, 380), 17: (312, 400)}
+    for b, (x, y) in bases.items():
+        for k in range(4):
+            pts[b + k] = (x + (x - 256) * 0.25 * k, y - 50 * k)
+    mask = fp.hand_mask_from_landmarks(pts, size=512)
+    assert mask.shape == (512, 512)
+    assert mask[int(pts[8, 1]), int(pts[8, 0])] == 1          # fingertip covered
+    assert mask[int(pts[9, 1]) - 30, int(pts[9, 0])] == 1      # along the middle finger
+    gap = (pts[8] + pts[12]) / 2 - np.array([0, 60])          # between index and middle tips
+    assert mask[int(gap[1]), int(gap[0])] == 0                 # the hull would have covered this

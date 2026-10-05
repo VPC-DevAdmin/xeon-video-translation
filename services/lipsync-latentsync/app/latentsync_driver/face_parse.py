@@ -27,6 +27,10 @@ Two layers fix this:
   that touch the border, dilated, and spread over neighbouring frames.
 * **Confidence fade.** A face half covered is still detected, but with a much
   lower score; the paste fades between `CONF_LOW` and `CONF_HIGH`.
+* **Hand mask.** A finger resting on the lips for half a second is skin to the
+  parser and part of the temporal median, so hands are found directly with
+  MediaPipe Hands on the source frame and drawn into the crop through the same
+  affine as the paste (palm polygon plus finger bones at finger width).
 * **Covered-mouth gate.** A pale, blurred object over the mouth is only partly
   caught by the temporal mask (a half-painted mouth would look worse than
   either extreme), so when the occluder mask covers more than `MOUTH_COVERED`
@@ -220,6 +224,109 @@ def occluder_masks(crops, visible, size: int = 128, window: int = 30, threshold:
     return torch.from_numpy(spread.astype(np.float32)).unsqueeze(1)
 
 
+def ranges(indices) -> str:
+    """Compact "3-7, 12, 20-22" form of a sorted index list, for log lines."""
+    indices = [int(i) for i in indices]
+    if not indices:
+        return ""
+    out, start, prev = [], indices[0], indices[0]
+    for i in indices[1:] + [None]:
+        if i is not None and i == prev + 1:
+            prev = i
+            continue
+        out.append(f"{start}-{prev}" if prev != start else f"{start}")
+        if i is not None:
+            start = prev = i
+    return ", ".join(out)
+
+
+# MediaPipe hand landmark topology (21 points): palm corners and finger bones.
+HAND_PALM = (0, 1, 2, 5, 9, 13, 17)
+HAND_BONES = ((1, 2), (2, 3), (3, 4), (5, 6), (6, 7), (7, 8), (9, 10), (10, 11), (11, 12),
+              (13, 14), (14, 15), (15, 16), (17, 18), (18, 19), (19, 20), (0, 1), (0, 5), (0, 17))
+
+
+def hand_mask_from_landmarks(points, size: int = 512, grow: float = 0.30, min_width: int = 8, max_width: int = 36):
+    """(21,2) landmark pixels in crop space -> (size,size) uint8 mask: the palm
+    polygon plus every finger bone drawn `grow` x palm width thick (a finger is
+    about a third of the palm width; capped, since a hand near the camera is
+    larger than the face). Hand-shaped, unlike a convex hull, so the mouth
+    beside a finger is still pasted."""
+    import cv2
+
+    pts = np.asarray(points, dtype=np.float32)
+    mask = np.zeros((size, size), np.uint8)
+    palm_width = float(np.linalg.norm(pts[5] - pts[17]))
+    width = int(min(max_width, max(min_width, round(palm_width * grow))))
+    palm = cv2.convexHull(pts[list(HAND_PALM)].astype(np.int32))
+    cv2.fillConvexPoly(mask, palm, 1)
+    for a, b in HAND_BONES:
+        cv2.line(mask, tuple(int(v) for v in pts[a]), tuple(int(v) for v in pts[b]), 1, width)
+    pad = width // 3 * 2 + 1
+    if pad > 1:
+        mask = cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (pad, pad)))
+    return mask
+
+
+def _affine_2x3(matrix) -> np.ndarray:
+    try:
+        import torch
+
+        if isinstance(matrix, torch.Tensor):
+            matrix = matrix.detach().cpu().numpy()
+    except ImportError:
+        pass
+    return np.asarray(matrix, dtype=np.float64).reshape(2, 3)
+
+
+def hand_masks(frames, affines, face_size: tuple[int, int], size: int = 512, detect_width: int = 540,
+               min_confidence: float = 0.4):
+    """(N,H,W,3) uint8 RGB source frames + per-frame paste affines (source px ->
+    face_size crop) -> (N,1,size,size) float masks of hands in crop space, or
+    None when MediaPipe is unavailable. Detections are spread to the neighbour
+    frames to bridge single-frame misses."""
+    try:
+        import cv2
+        import mediapipe as mp
+        import torch
+    except ImportError as exc:
+        log.warning("hand masks unavailable: %s", exc)
+        return None
+    n = len(frames)
+    if n == 0:
+        return None
+    height, width = frames[0].shape[:2]
+    scale = detect_width / float(width)
+    small_size = (detect_width, max(1, int(round(height * scale))))
+    crop_w, crop_h = face_size
+    sx, sy = size / float(crop_w), size / float(crop_h)
+    masks = np.zeros((n, size, size), np.uint8)
+    found = 0
+    with mp.solutions.hands.Hands(static_image_mode=False, max_num_hands=2, model_complexity=0,
+                                  min_detection_confidence=min_confidence,
+                                  min_tracking_confidence=min_confidence) as hands:
+        for i in range(n):
+            result = hands.process(cv2.resize(np.ascontiguousarray(frames[i]), small_size, interpolation=cv2.INTER_AREA))
+            if not result.multi_hand_landmarks:
+                continue
+            affine = _affine_2x3(affines[i])
+            for hand in result.multi_hand_landmarks:
+                pts = np.array([[l.x * width, l.y * height, 1.0] for l in hand.landmark])  # source px
+                crop_pts = pts @ affine.T  # (21,2) in face_size crop
+                crop_pts[:, 0] *= sx
+                crop_pts[:, 1] *= sy
+                if crop_pts[:, 0].max() < -size or crop_pts[:, 0].min() > 2 * size or \
+                        crop_pts[:, 1].max() < -size or crop_pts[:, 1].min() > 2 * size:
+                    continue  # nowhere near the face
+                masks[i] |= hand_mask_from_landmarks(crop_pts, size)
+            found += int(masks[i].any())
+    spread = masks.copy()
+    spread[1:] |= masks[:-1]
+    spread[:-1] |= masks[1:]
+    log.info("hand masks: hands near the face on %d of %d frames", found, n)
+    return torch.from_numpy(spread.astype(np.float32)).unsqueeze(1)
+
+
 class FaceParser:
     """Lazy BiSeNet wrapper. `masks(crops)` takes (N,3,H,W) uint8 RGB face crops
     (LatentSync's canonical crops) and returns (N,1,out_h,out_w) float masks on
@@ -260,12 +367,14 @@ class FaceParser:
                         log.warning("face parsing unavailable, occluders will not be masked: %s", exc)
         return self._net is not None
 
-    def masks(self, crops, out_size: tuple[int, int], batch_size: int = 32, visible=None):
+    def masks(self, crops, out_size: tuple[int, int], batch_size: int = 32, visible=None,
+              frames=None, affines=None):
         """Returns `(masks, covered)`: (N,1,h,w) paste masks for `out_size` =
         (height, width) of the warp crop, and the per-frame fraction of the
         lower-face band hidden by an occluder (zeros without `visible`). With
         `visible` (per-frame detection / confidence) the temporal occluder
-        mask is subtracted as well. `(None, None)` when parsing is unavailable."""
+        mask is subtracted as well; with `frames` (source RGB) and `affines`
+        the MediaPipe hand mask too. `(None, None)` when parsing is unavailable."""
         if not self.available():
             return None, None
         import torch
@@ -284,9 +393,16 @@ class FaceParser:
             parsing = torch.cat(parsed, dim=0)
             mask = face_mask_from_parsing(parsing)
             covered = torch.zeros(len(mask), dtype=torch.float32)
+            occluders = None
             if visible is not None and os.environ.get("LATENTSYNC_OCCLUDER_MASK", "1") == "1":
                 occluders = occluder_masks(crops.to(self.device, non_blocking=True), visible).to(mask.device)
                 occluders = F.interpolate(occluders, size=mask.shape[-2:], mode="bilinear", align_corners=False)
+            if frames is not None and affines is not None and os.environ.get("LATENTSYNC_HAND_MASK", "1") == "1":
+                hands = hand_masks(frames, affines, face_size=(out_size[1], out_size[0]), size=mask.shape[-1])
+                if hands is not None:
+                    hands = hands.to(mask.device)
+                    occluders = hands if occluders is None else torch.maximum(occluders, hands)
+            if occluders is not None:
                 band_face = (mask > 0.5).float()[..., MOUTH_BAND[0], MOUTH_BAND[1]]
                 band_occ = (occluders > 0.5).float()[..., MOUTH_BAND[0], MOUTH_BAND[1]]
                 covered = ((band_face * band_occ).sum((1, 2, 3)) / band_face.sum((1, 2, 3)).clamp(min=1.0)).cpu()

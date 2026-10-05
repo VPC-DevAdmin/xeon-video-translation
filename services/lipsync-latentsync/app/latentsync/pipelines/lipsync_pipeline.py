@@ -910,7 +910,8 @@ class LipsyncPipeline(DiffusionPipeline):
 
         parse_started = time.perf_counter()
         face_masks, covered = self.face_parser().masks(
-            faces, out_size=self.image_processor.restorer.face_size[::-1], visible=visible
+            faces, out_size=self.image_processor.restorer.face_size[::-1], visible=visible,
+            frames=video_frames, affines=affine_matrices,
         )
         gate = np.asarray(visible, dtype=np.float32).copy()
         covered_frames = 0
@@ -923,6 +924,7 @@ class LipsyncPipeline(DiffusionPipeline):
         print(json.dumps({"event": "latentsync_occlusion", "frames": len(faces),
                           "parsed": face_masks is not None, "gated_frames": int((alpha < 1).sum()),
                           "no_face_frames": int((np.asarray(visible) <= 0).sum()), "covered_mouth_frames": covered_frames,
+                          "gated": face_parse.ranges(np.flatnonzero(alpha <= 0.0)),
                           "seconds": round(time.perf_counter() - parse_started, 2)}), flush=True)
         return {
             "whisper_chunks": whisper_chunks, "audio_samples": audio_samples, "video_frames": video_frames,

@@ -11,6 +11,7 @@ def test_final_phrase_can_use_trailing_video_silence(tmp_path, monkeypatch):
         tts, "_xtts_to_file", lambda text, ref, lang, path, **k: path.write_bytes(b"audio")
     )
     monkeypatch.setattr(tts, "_trim_tail_via_whisper", lambda *a: True)
+    monkeypatch.setattr(tts, "_trim_to_speech", lambda *a: None)
     monkeypatch.setattr(tts, "_probe_duration", lambda *a: 1.20)
     monkeypatch.setattr(tts, "_assemble_timeline", lambda *a: None)
     segments = [{"start": 0.43, "end": 1.15, "text": "Buenos días."}]

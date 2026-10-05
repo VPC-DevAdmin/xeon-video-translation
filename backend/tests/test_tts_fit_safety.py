@@ -143,3 +143,17 @@ def test_large_overrun_still_fails_without_discarding(tmp_path, monkeypatch):
             segments, segments, reference, "es", out, options={"rewrite_overruns": True}
         )
     assert stretched == []
+
+
+def test_verified_takes_still_lose_their_trailing_silence(tmp_path, monkeypatch):
+    """A whisper-verified take used to skip the silence trim, so XTTS's trailing
+    silence was stretched into the slot and the speech ended early (the source
+    mouth then showed through for the last 0.6 s of the 5 Oct clip)."""
+    segments, reference, out, stretched = _fitting_at(monkeypatch, tmp_path, [0.9])
+    trimmed = []
+    monkeypatch.setattr(tts, "_trim_to_speech", lambda path: trimmed.append(path))
+    monkeypatch.setattr(tts, "_trim_tail_via_whisper", lambda *a: True)
+    tts._synthesize_per_segment(
+        segments, segments, reference, "es", out, options={"rewrite_overruns": True}
+    )
+    assert len(trimmed) == 1

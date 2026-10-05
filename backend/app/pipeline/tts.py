@@ -1309,7 +1309,11 @@ def _synthesize_per_segment(
                     if backend == "xtts" or _probe_duration(path) > available
                     else None
                 )
-                if verified is not True:
+                if verified is not False:
+                    # Also for whisper-verified takes: XTTS leaves up to a second
+                    # of silence after the last word, and fitting the take to
+                    # its slot would stretch that silence too, so the speech
+                    # ended early and the source mouth showed through at the end.
                     _trim_to_speech(path)
                 duration = _probe_duration(path)
                 if verified is not False and duration <= available * settings.tts_max_speed:
@@ -1365,8 +1369,7 @@ def _synthesize_per_segment(
                         )
                         if verified is False:
                             continue
-                        if verified is not True:
-                            _trim_to_speech(path)
+                        _trim_to_speech(path)
                         duration = _probe_duration(path)
                         speed = duration / available
                         if duration < best_duration:
@@ -1491,7 +1494,7 @@ def _synthesize_whole(
 
 _SILENCE_THRESHOLD_DB = -40.0  # retain quiet words; text alignment handles edge artifacts
 _MIN_SILENCE_SECONDS = 0.10  # how long a quiet stretch needs to be to count
-_HEADROOM_SECONDS = 0.05  # pad on either side of the kept span
+_HEADROOM_SECONDS = 0.10  # pad on either side of the kept span
 _MIN_SPEECH_SECONDS = 0.30  # below this, assume detection failed and skip
 
 
