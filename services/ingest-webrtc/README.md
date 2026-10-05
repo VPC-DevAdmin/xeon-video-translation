@@ -50,7 +50,9 @@ needlessly delay an answer that is already ready.
 The front listening loop is limited to subtle motion close to the speech pose;
 the separate thinking and tablet loops still move the head and gaze. Tune the
 front-loop limit with `ASSISTANT_FRONT_IDLE_MAX_DELTA` (sampled RGB difference,
-default 6).
+default 6); the loop is never trimmed below `ASSISTANT_FRONT_IDLE_MIN_SECONDS`
+(default 4), since a two-second listening loop reads as repetitive and the
+adaptive join covers a larger difference at a clip start.
 
 Set `ASSISTANT_PROGRESS_FILLERS=0` to disable the progress phrases and look-away
 sequence. `ASSISTANT_CLIP_TAIL_SECONDS` controls the silent render tail (minimum

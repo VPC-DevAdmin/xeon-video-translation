@@ -78,6 +78,7 @@ CLIP_TAIL_SECONDS = max(0.35, float(os.getenv("ASSISTANT_CLIP_TAIL_SECONDS", "0.
 PROGRESS_FILLERS = os.getenv("ASSISTANT_PROGRESS_FILLERS", "1") == "1"
 PROGRESS_HORIZON_SECONDS = min(MAX_HEAD_START, float(os.getenv("ASSISTANT_PROGRESS_HORIZON_SECONDS", "12")))
 FRONT_IDLE_MAX_DELTA = float(os.getenv("ASSISTANT_FRONT_IDLE_MAX_DELTA", "6.0"))
+FRONT_IDLE_MIN_SECONDS = float(os.getenv("ASSISTANT_FRONT_IDLE_MIN_SECONDS", "4.0"))   # never trim the listening loop shorter than this
 MIN_IDLE_SECONDS = float(os.getenv("ASSISTANT_MIN_IDLE_SECONDS", "6"))   # shortest take kept as a loop when growth is interrupted
 READING_FRAMES = int(os.getenv("ASSISTANT_READING_FRAMES", "150"))   # reading loop at the tablet (LivePortrait), 25 fps
 THINKING_FRAMES = int(os.getenv("ASSISTANT_THINKING_FRAMES", "100"))  # thinking loop: away and back within 4 s
@@ -686,7 +687,7 @@ class Assistant:
         loop = self.timeline.loop("front")
         if not loop.finalized or not loop.ready:
             return
-        end = stable_idle_end(loop.frames, FPS, FRONT_IDLE_MAX_DELTA)
+        end = stable_idle_end(loop.frames, FPS, FRONT_IDLE_MAX_DELTA, min_seconds=FRONT_IDLE_MIN_SECONDS)
         if end < len(loop.frames) and loop.cursor < end:
             self.metrics["front_idle_trimmed_frames"] = len(loop.frames) - end
             loop.frames = loop.frames[:end]
