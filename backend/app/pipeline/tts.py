@@ -1303,7 +1303,16 @@ def _synthesize_per_segment(
                 raise TTSError(f"segment {i + 1} has invalid or overlapping timestamps")
             # A full expected-text match can distinguish clicks/repeated tails
             # from short words. Never discard content based on span duration alone.
-            for cleanup_attempt in range(settings.tts_segment_retries + 1):
+            # XTTS takes vary a lot in length (10.5 to 13.5 s for the same
+            # sentence on 5 Oct 2026); a take beyond the hard ceiling earns extra
+            # attempts, and the shortest verified take is the one kept.
+            import shutil
+
+            best_take = work / f"segment-{i}.take.wav"
+            best_take_duration = None
+            attempts = settings.tts_segment_retries + 1
+            cleanup_attempt = 0
+            while True:
                 verified = (
                     _trim_tail_via_whisper(path, target_language, text)
                     if backend == "xtts" or _probe_duration(path) > available
@@ -1316,16 +1325,27 @@ def _synthesize_per_segment(
                     # ended early and the source mouth showed through at the end.
                     _trim_to_speech(path)
                 duration = _probe_duration(path)
+                if verified is not False and (best_take_duration is None or duration < best_take_duration):
+                    shutil.copyfile(path, best_take)
+                    best_take_duration = duration
                 if verified is not False and duration <= available * settings.tts_max_speed:
                     break
-                if cleanup_attempt == settings.tts_segment_retries:
-                    if verified is False:
+                if verified is not False and duration > available * settings.tts_max_speed_hard:
+                    # Extra attempts for an outlier take, granted once.
+                    attempts = max(attempts, settings.tts_segment_retries + 1 + settings.tts_overrun_retries)
+                cleanup_attempt += 1
+                if cleanup_attempt >= attempts:
+                    if verified is False and best_take_duration is None:
                         raise TTSError(
                             f"segment {i + 1}: generated speech does not match the complete translation"
                         )
                     break
                 # Retry the same words before asking an LLM to shorten them.
                 generate_take(text)
+            if best_take_duration is not None and best_take_duration < duration:
+                shutil.copyfile(best_take, path)
+                duration = best_take_duration
+            best_take.unlink(missing_ok=True)
             if duration > available:
                 speed = duration / available
                 if speed > settings.tts_max_speed and (

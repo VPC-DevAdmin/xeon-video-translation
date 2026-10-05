@@ -93,6 +93,9 @@ class Settings(BaseSettings):
     # Ceiling when no shorter faithful translation exists: stretch this far
     # rather than fail the job. Speech is never discarded either way.
     tts_max_speed_hard: float = Field(1.3, ge=1.0, le=1.5)
+    # Extra same-text takes when one comes back beyond the hard ceiling
+    # (XTTS length variance), each ~3 s on the box.
+    tts_overrun_retries: int = Field(2, ge=0, le=5)
     tts_timing_tolerance: float = Field(0.15, ge=0.0, le=1.0)
 
     # Paths (resolved to absolute on init)

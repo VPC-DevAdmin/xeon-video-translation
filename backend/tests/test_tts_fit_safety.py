@@ -42,7 +42,7 @@ def test_faithful_rewrite_failure_is_actionable(fitting, monkeypatch):
 
 def test_rewritten_take_must_match_all_words(fitting, monkeypatch):
     monkeypatch.setattr(quality, "rewrite", lambda *a: "Buen día.")
-    decisions = iter([True, False])
+    decisions = iter([True, True, True, False])  # three outlier takes, then the rewritten one
     monkeypatch.setattr(tts, "_trim_tail_via_whisper", lambda *a: next(decisions))
     segments, reference, out = fitting
     with pytest.raises(tts.TTSError, match="rewritten speech does not match"):
@@ -137,7 +137,7 @@ def test_large_overrun_still_fails_without_discarding(tmp_path, monkeypatch):
         raise ValueError("no shorter faithful translation produced")
 
     monkeypatch.setattr(quality, "rewrite", cannot_shorten)
-    segments, reference, out, stretched = _fitting_at(monkeypatch, tmp_path, [1.6])
+    segments, reference, out, stretched = _fitting_at(monkeypatch, tmp_path, [1.6, 1.6, 1.6])
     with pytest.raises(tts.TTSError, match="No speech was discarded"):
         tts._synthesize_per_segment(
             segments, segments, reference, "es", out, options={"rewrite_overruns": True}
@@ -157,3 +157,14 @@ def test_verified_takes_still_lose_their_trailing_silence(tmp_path, monkeypatch)
         segments, segments, reference, "es", out, options={"rewrite_overruns": True}
     )
     assert len(trimmed) == 1
+
+
+def test_outlier_take_earns_extra_attempts_and_the_shortest_wins(tmp_path, monkeypatch):
+    """XTTS gave 13.5 s for a 9.1 s slot once and the job failed. A take beyond
+    the hard ceiling now earns extra attempts and the shortest verified take is kept."""
+    monkeypatch.setattr(tts.settings, "tts_overrun_retries", 2)
+    segments, reference, out, stretched = _fitting_at(monkeypatch, tmp_path, [1.5, 1.4, 1.2])
+    tts._synthesize_per_segment(
+        segments, segments, reference, "es", out, options={"rewrite_overruns": False}
+    )
+    assert stretched == [(1.0, 1.3)]  # the 1.2 s take fitted within the hard ceiling

@@ -178,7 +178,7 @@ def face_mask_from_parsing(parsing, dilate: int = 9, feather: int = 15):
 
 
 def occluder_masks(crops, visible, size: int = 128, window: int = 30, threshold: float = 22.0,
-                   min_area: float = 0.02, dilate: int = 5, min_reference: int = 5):
+                   min_area: float = 0.02, dilate: int = 3, min_reference: int = 5):
     """(N,3,H,W) uint8 aligned crops + per-frame visibility -> (N,1,size,size)
     float occluder mask (1 = something in front of the face).
 
@@ -271,12 +271,16 @@ HAND_BONES = ((1, 2), (2, 3), (3, 4), (5, 6), (6, 7), (7, 8), (9, 10), (10, 11),
               (13, 14), (14, 15), (15, 16), (17, 18), (18, 19), (19, 20), (0, 1), (0, 5), (0, 17))
 
 
-def hand_mask_from_landmarks(points, size: int = 512, grow: float = 0.30, min_width: int = 8, max_width: int = 36):
+def hand_mask_from_landmarks(points, size: int = 512, grow: float = 0.36, min_width: int = 8, max_width: int = 40,
+                             pad: int = 3):
     """(21,2) landmark pixels in crop space -> (size,size) uint8 mask: the palm
     polygon plus every finger bone drawn `grow` x palm width thick (a finger is
     about a third of the palm width; capped, since a hand near the camera is
-    larger than the face). Hand-shaped, unlike a convex hull, so the mouth
-    beside a finger is still pasted."""
+    larger than the face), grown by `pad` px. Hand-shaped, unlike a convex
+    hull, so the mouth beside a finger is still pasted. The mask is used hard:
+    LatentSync repaints the finger inside its region, so the cut has to lie on
+    the finger's own edge, where a hard edge is invisible; a wide or feathered
+    mask blends two different mouths at the corner."""
     import cv2
 
     pts = np.asarray(points, dtype=np.float32)
@@ -287,9 +291,9 @@ def hand_mask_from_landmarks(points, size: int = 512, grow: float = 0.30, min_wi
     cv2.fillConvexPoly(mask, palm, 1)
     for a, b in HAND_BONES:
         cv2.line(mask, tuple(int(v) for v in pts[a]), tuple(int(v) for v in pts[b]), 1, width)
-    pad = width // 3 * 2 + 1
-    if pad > 1:
-        mask = cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (pad, pad)))
+    if pad > 0:
+        k = 2 * pad + 1
+        mask = cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)))
     return mask
 
 
@@ -464,21 +468,24 @@ class FaceParser:
             band = parsing[:, MOUTH_BAND[0], MOUTH_BAND[1]]
             mouth_open = ((band == 13).float().sum((1, 2)) / float(band.shape[1] * band.shape[2])).cpu()
             covered = torch.zeros(len(mask), dtype=torch.float32)
-            occluders = None
+            occluders = None  # hard, for coverage
+            cut = None        # what actually cuts the paste mask
             if visible is not None and os.environ.get("LATENTSYNC_OCCLUDER_MASK", "1") == "1":
-                occluders = occluder_masks(crops.to(self.device, non_blocking=True), visible).to(mask.device)
-                occluders = F.interpolate(occluders, size=mask.shape[-2:], mode="bilinear", align_corners=False)
+                temporal = occluder_masks(crops.to(self.device, non_blocking=True), visible).to(mask.device)
+                temporal = F.interpolate(temporal, size=mask.shape[-2:], mode="bilinear", align_corners=False)
+                occluders = temporal
+                # The temporal mask is blocky (128 px); a small feather hides the blocks.
+                cut = feather(temporal, 7)
             if frames is not None and affines is not None and os.environ.get("LATENTSYNC_HAND_MASK", "1") == "1":
                 hands = hand_masks(frames, affines, face_size=(out_size[1], out_size[0]), size=mask.shape[-1])
                 if hands is not None:
                     hands = hands.to(mask.device)
                     occluders = hands if occluders is None else torch.maximum(occluders, hands)
+                    cut = hands if cut is None else torch.maximum(cut, hands)  # hand edges stay hard
             if occluders is not None:
                 band_face = (mask > 0.5).float()[..., MOUTH_BAND[0], MOUTH_BAND[1]]
                 band_occ = (occluders > 0.5).float()[..., MOUTH_BAND[0], MOUTH_BAND[1]]
                 covered = ((band_face * band_occ).sum((1, 2, 3)) / band_face.sum((1, 2, 3)).clamp(min=1.0)).cpu()
-                # Soft edge: a hard occluder boundary through the mouth leaves a
-                # visible seam between generated and source pixels.
-                mask = mask * (1.0 - feather(occluders, 15))
+                mask = mask * (1.0 - cut)
             mask = F.interpolate(mask, size=out_size, mode="bilinear", align_corners=False)
         return mask, covered, mouth_open

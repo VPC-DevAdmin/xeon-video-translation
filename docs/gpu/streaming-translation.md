@@ -202,3 +202,15 @@ Same lesson as the assistant's idle joins: no dissolves. The gate and the
 confidence decision are binary now (a frame is pasted or not; margin 2 frames
 around a gap), and the occluder and hand masks are feathered by 15 px before
 they cut the paste mask. Frames 200-207 of the clip are clean.
+
+### Hard hand edges (5 Oct 2026, night)
+
+Feathering the hand mask by 15 px blended the generated and source mouths in
+the band beside a finger, so the mouth corner rendered twice. LatentSync
+repaints the finger inside its region, so the hand mask must cover the finger
+exactly (finger bones at 0.36 x palm width, capped at 40 px, grown 3 px) and
+cut hard on the finger's own edge, where a hard edge is invisible. Only the
+blocky 128 px temporal mask keeps a 7 px feather. XTTS also returned a 13.5 s
+take for the 9.1 s slot once and failed the job: a take beyond the hard
+ceiling now earns `TTS_OVERRUN_RETRIES` (2) extra same-text attempts and the
+shortest verified take is kept.
