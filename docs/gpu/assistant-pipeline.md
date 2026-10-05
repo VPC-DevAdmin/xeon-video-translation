@@ -8,8 +8,12 @@ Date: 4 October 2026. Code: `gpu/track` from `333e869` (pipeline) and `79dfb41`
 > acknowledgement followed by the front idle loop until the reply. Cached
 > acknowledgements and replies render a silent tail; face joins and loop wraps
 > use actual frames without whole-face dissolves. The measurements below describe
-> the earlier build. Visual acceptance and frame-skip rates for the new build
-> require a fresh XE7740 run.
+> the earlier build. A later XE7740 WebRTC run on `cb062b0` received the reply at
+> 25.0 fps, skipped 9 of 971 transmitted frames (0.9%), and found no large idle
+> snaps (maximum full-frame change 1.82 before the turn and 1.59 after it). The
+> acknowledgement audio began 0.198 s after the speech endpoint. This is one
+> fixture turn, so subjective review across several personas is still needed.
+> Its recording is `/jobs/ab/ack-join-cb062b0.mp4` on the XE7740.
 
 ## Try it live
 
