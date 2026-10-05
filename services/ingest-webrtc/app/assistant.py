@@ -899,18 +899,24 @@ class Assistant:
                     closer_len = closer.seconds if closer else 0.0
                     turn_len = len(self.turn_up) / FPS if (away and lookup and self.turn_up is not None) else 0.0
                     settle_len = SETTLE_FRAMES / FPS
-                    cut_at = max(plan["opener_end"], start - 0.25 - turn_len - settle_len - (closer_len + 0.15 if closer else 0.0))
+                    # Keep the thinking/reading pose on screen until the return
+                    # gesture is needed. Returning as soon as the reply is planned
+                    # leaves the person staring at the camera for several seconds.
+                    closer_at = start - closer_len - 0.15 if closer else start
+                    return_at = closer_at - turn_len - 0.02
+                    cut_at = max(plan["opener_end"], return_at - settle_len)
                     cut, cut_end = tl.truncate(cut_at, "filler", settle_to=self.anchor("working" if (away and lookup) else "front"), settle_count=SETTLE_FRAMES)
                     tl.truncate(cut_at, "turn")
                     if away and lookup:
-                        back = self.turn_head(cut_end + 0.02, "up", generation)
+                        back = self.turn_head(max(cut_end + 0.02, return_at), "up", generation)
                     else:
-                        tl.set_mode(cut_end, "front", generation)
-                        back = cut_end
-                    if closer and back + 0.1 + closer_len + 0.15 <= start:
-                        tl.schedule(back + 0.1, closer.audio48, closer.frames, generation, tag="filler")
+                        back = max(cut_end, closer_at if closer else start - 0.2)
+                        tl.set_mode(back, "front", generation)
+                    if closer and max(back, closer_at) + closer_len + 0.15 <= start:
+                        at = max(back, closer_at)
+                        tl.schedule(at, closer.audio48, closer.frames, generation, tag="filler")
                         self.notify("filler", kind="closer", text=closer.text)
-                        self.metrics["fillers"].append({"kind": "closer", "text": closer.text, "at": round(back + 0.1 - t0, 2)})
+                        self.metrics["fillers"].append({"kind": "closer", "text": closer.text, "at": round(at - t0, 2)})
                     self.metrics["fillers"].append({"kind": "cut", "at": round(cut_at - t0, 2), "clips_cut": cut, "mode": plan["mode"], "away": away})
                     return
                 now = tl.now()

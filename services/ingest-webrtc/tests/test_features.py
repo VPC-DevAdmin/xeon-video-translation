@@ -165,6 +165,25 @@ async def test_assistant_rotates_thinking_and_lookup_openers(tmp_path, monkeypat
 
 
 @pytest.mark.asyncio
+async def test_assistant_keeps_thinking_pose_until_the_final_acknowledgement(tmp_path):
+    from app.assistant import Assistant, Clip
+
+    session = Assistant("a", tmp_path, np.zeros((1, 1, 3), np.uint8), "en", "test")
+    session.timeline.add_idle(np.zeros((25, 1, 1, 3), np.uint8))
+    session.timeline.set_mode(3.05, "thinking", session.timeline.generation)
+    session.clips["closer"].append(Clip("closer", "Okay, got it.", np.zeros(48000, np.int16),
+                                        np.zeros((25, 1, 1, 3), np.uint8), "front"))
+    try:
+        await session.fill_gap({"opener_end": 3.0, "mode": "think"}, {"reply_start": 9.0}, 0, 0.0)
+        assert session.timeline.mode_at(7.8) == "thinking"
+        assert session.timeline.mode_at(7.85) == "front"
+        closer = next(c for c in session.timeline.clips if c[4] == "filler")
+        assert closer[0] == pytest.approx(7.85) and closer[1] == pytest.approx(8.85)
+    finally:
+        await session.client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_avatar_storage_limit_stops_before_backend(tmp_path, monkeypatch):
     (tmp_path / "existing.npy").write_bytes(b"x" * 1025)
     monkeypatch.setenv("AVATAR_MAX_STORAGE_MB", "0")
