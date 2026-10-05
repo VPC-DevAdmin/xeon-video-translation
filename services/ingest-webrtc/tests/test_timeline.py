@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
-from app.timeline import Timeline, closest_anchor_end, head_start_required, idle_frame, idle_loop_frame, settle_frames  # noqa: E402
+from app.timeline import Timeline, closest_anchor_end, head_start_required, idle_frame, idle_loop_frame, settle_frames, trim_startup_jump  # noqa: E402
 
 
 def frames(n, value):
@@ -220,6 +220,15 @@ def test_silent_tail_selects_an_actual_rest_like_frame():
     tail = np.array([50, 40, 10, 0, 5, 30], dtype=np.uint8)[:, None, None, None]
     end = closest_anchor_end(tail, np.zeros((1, 1, 1), np.uint8), first=2)
     assert end == 4 and int(tail[end - 1][0, 0, 0]) == 0
+
+
+def test_startup_portrait_preroll_is_trimmed_only_when_it_snaps():
+    initial = np.concatenate((frames(24, 20), frames(32, 100)))
+    trimmed, count = trim_startup_jump(initial, probe_frames=28, fps=25)
+    assert count == 24 and len(trimmed) == 32 and np.all(trimmed[0] == 100)
+    smooth = np.arange(56, dtype=np.uint8)[:, None, None, None]
+    untouched, count = trim_startup_jump(smooth, probe_frames=28, fps=25)
+    assert count == 0 and len(untouched) == 56
 
 
 def test_finalizing_idle_does_not_move_the_current_playback_cursor():
