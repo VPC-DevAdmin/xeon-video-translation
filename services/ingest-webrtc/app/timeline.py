@@ -58,6 +58,12 @@ def best_loop_end(frames, start: int, step: int = 4) -> int:
     return best
 
 
+def join_difference(a, b, step: int = 4) -> float:
+    """Sampled mean absolute difference between two frames (0-255): how visible a cut
+    between them would be."""
+    return float(np.abs(np.asarray(a)[::step, ::step].astype(np.int16) - np.asarray(b)[::step, ::step].astype(np.int16)).mean())
+
+
 def closest_anchor_end(frames, anchor, first: int, step: int = 6) -> int:
     """Exclusive end index in a silent tail, favoring a rest-like, low-motion frame.
 
@@ -169,9 +175,10 @@ class IdleLoop:
         # Shortening the loop past the cursor would remap it and create a visible jump.
         first = max(int(min_seconds * fps), min(self.cursor + 1, len(self.frames) - 1))
         j = best_loop_end(self.frames, first)
-        # Include the frame chosen as the match. Slicing at j discarded that frame,
-        # leaving the loop to jump from a less similar predecessor to frame zero.
-        self.frames = self.frames[:j + 1]
+        # frames[j] is the frame most like frame 0, so the loop plays up to j - 1 and wraps
+        # to 0 in its place: the motion continues. Including j would show two near-identical
+        # frames in a row, a 40 ms hold at every wrap.
+        self.frames = self.frames[:j]
         self.pending.clear()
         self.finalized = True
         self.wrap_blend = 0
@@ -195,7 +202,8 @@ class IdleLoop:
 
 class Timeline:
     def __init__(self, fps: int = 25, still=None, idle_frames=None, audio_rate: int = 48000,
-                 transition_seconds: float = 0.0, idle_crossfade_seconds: float = 0.0):
+                 transition_seconds: float = 0.0, idle_crossfade_seconds: float = 0.0,
+                 join_blend_frames: int = 3, join_threshold: float = 4.0):
         self.epoch = time.monotonic()
         self.fps = int(fps)
         self.audio_rate = int(audio_rate)
@@ -204,6 +212,11 @@ class Timeline:
         self.loops: dict = {"front": IdleLoop(self.idle_crossfade, idle_frames)}
         self.mode_switches: list = []   # (seconds, loop name), sorted; "front" before the first
         self.transition_frames = int(round(transition_seconds * self.fps))   # optional legacy dissolve; off for face clips
+        # Adaptive join: footage that meets at nearly the same pose is cut; a join whose two
+        # frames differ by more than `join_threshold` (sampled mean absolute difference, 0-255)
+        # is hidden behind `join_blend_frames` frames of blend, short enough not to ghost.
+        self.join_blend_frames = int(join_blend_frames)
+        self.join_threshold = float(join_threshold)
         self.generation = 0
         self.clips: list = []           # (start, end, audio48k, frames, tag), sorted by start
         self.promises: list = []        # (start, end) windows a reply has committed to
@@ -369,6 +382,9 @@ class Timeline:
             if self.transition_frames:
                 frames_for_switch = min(self.transition_frames, 4) if any("turn" in name for name in (self._last[1], source)) else self.transition_frames
                 self._blend = (self._last[0], index, frames_for_switch)
+            elif self.join_blend_frames and self._last[0] is not None and self._last[0].shape == image.shape \
+                    and join_difference(self._last[0], image) > self.join_threshold:
+                self._blend = (self._last[0], index, self.join_blend_frames)
         self._last = (image, source)
         if self._blend is not None and image is not None:
             since = index - self._blend[1]

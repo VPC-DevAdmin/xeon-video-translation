@@ -47,6 +47,7 @@ class Speak(BaseModel):
     voice: str | None = Field(None, max_length=100)
     persona_id: str | None = Field(None, pattern=r"^[0-9a-f]{32}$")
     verify: bool = Field(True, description="check each sentence with the recognizer and re-synthesize a bad take")
+    pause: float | None = Field(None, ge=0.0, le=3.0, description="silence after each sentence (s); default ASSISTANT_SENTENCE_PAUSE")
 
 
 def split_sentences(text: str, max_len: int = 220) -> list[str]:
@@ -224,21 +225,23 @@ def _verified_sentence(model, conditioning, sentence: str, language: str, attemp
     return audio, matched, heard, attempts, False
 
 
-def with_pause(audio, sentence: str):
+def with_pause(audio, sentence: str, pause: float | None = None):
     """The sentence's audio with a short fade at its end and the pause a speaker leaves
     before the next sentence. Sentences are synthesized one by one; without this they
-    run together and sound like clips butted end to end."""
+    run together and sound like clips butted end to end. A caller that adds its own
+    silence (the assistant's filler clips render a silent tail) passes `pause=0`."""
     import numpy as np
     audio = np.asarray(audio, dtype=np.float32)
     fade = min(len(audio), int(0.02 * SAMPLE_RATE))
     if fade:
         audio = audio.copy()
         audio[-fade:] *= np.linspace(1.0, 0.0, fade, dtype=np.float32)
-    pause = SENTENCE_PAUSE + (0.2 if sentence.rstrip().endswith(("?", "!", "？", "！")) else 0.0)
+    if pause is None:
+        pause = SENTENCE_PAUSE + (0.2 if sentence.rstrip().endswith(("?", "!", "？", "！")) else 0.0)
     return np.concatenate([audio, np.zeros(int(pause * SAMPLE_RATE), np.float32)])
 
 
-def _speak_events(text: str, language: str, voice, persona_id=None, verify: bool = True):
+def _speak_events(text: str, language: str, voice, persona_id=None, verify: bool = True, pause: float | None = None):
     import numpy as np
     model, conditioning = _speaker(voice, persona_id)
     stock = None
@@ -252,7 +255,7 @@ def _speak_events(text: str, language: str, voice, persona_id=None, verify: bool
         if verify:
             audio, match, heard, takes, fallback = _verified_sentence(model, conditioning, sentence, language,
                                                                       fallback_conditioning=stock)
-            audio = with_pause(audio, sentence)
+            audio = with_pause(audio, sentence, pause)
             chunks = [audio[i: i + CHUNK_SAMPLES] for i in range(0, len(audio), CHUNK_SAMPLES)] or [np.zeros(0, np.float32)]
             for index, chunk in enumerate(chunks):
                 event = pcm_event(chunk, sentence_id, index == len(chunks) - 1, sentence)
@@ -262,7 +265,7 @@ def _speak_events(text: str, language: str, voice, persona_id=None, verify: bool
         else:
             chunks = list(_synthesize(model, conditioning, sentence, language))
             if chunks:
-                chunks[-1] = with_pause(chunks[-1], sentence)
+                chunks[-1] = with_pause(chunks[-1], sentence, pause)
             for index, audio in enumerate(chunks):
                 yield pcm_event(audio, sentence_id, index == len(chunks) - 1, sentence)
 
@@ -342,4 +345,4 @@ async def speak(body: Speak):
         from . import personas
         from ..security import check_owner
         check_owner(personas._load(body.persona_id))
-    return await _ndjson(lambda: _speak_events(body.text, body.language, body.voice, body.persona_id, body.verify))
+    return await _ndjson(lambda: _speak_events(body.text, body.language, body.voice, body.persona_id, body.verify, body.pause))

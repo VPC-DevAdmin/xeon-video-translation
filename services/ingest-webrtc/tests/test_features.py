@@ -184,9 +184,11 @@ async def test_assistant_keeps_thinking_pose_until_the_final_acknowledgement(tmp
 
 
 @pytest.mark.asyncio
-async def test_assistant_handoff_preserves_a_scheduled_progress_phrase(tmp_path):
+async def test_assistant_handoff_preserves_a_scheduled_progress_phrase(tmp_path, monkeypatch):
+    from app import assistant as module
     from app.assistant import Assistant, Clip
 
+    monkeypatch.setattr(module, "FILLER_CUTOFF", False)
     session = Assistant("a", tmp_path, np.zeros((1, 1, 3), np.uint8), "en", "test")
     session.timeline.add_idle(np.zeros((25, 1, 1, 3), np.uint8))
     session.clips["closer"].append(Clip("closer", "Okay, got it.", np.zeros(48000, np.int16),
@@ -286,3 +288,24 @@ async def test_avatar_reply_fallback_ack_and_artifact_cleanup(
     assert session.history[-1]["content"] == "Welcome."
     if not render_fails:
         assert not list(tmp_path.rglob("reply*"))
+
+
+@pytest.mark.asyncio
+async def test_assistant_handoff_cuts_a_talking_progress_phrase_by_default(tmp_path, monkeypatch):
+    from app import assistant as module
+    from app.assistant import Assistant, Clip
+
+    monkeypatch.setattr(module, "FILLER_CUTOFF", True)
+    session = Assistant("a", tmp_path, np.zeros((1, 1, 3), np.uint8), "en", "test")
+    session.timeline.add_idle(np.zeros((25, 1, 1, 3), np.uint8))
+    session.clips["closer"].append(Clip("closer", "Okay, got it.", np.zeros(48000, np.int16),
+                                        np.zeros((25, 1, 1, 3), np.uint8), "front"))
+    session.timeline.schedule(5.0, np.ones(96000, np.int16), np.full((50, 1, 1, 3), 70, np.uint8), 0, tag="filler")   # 5.0 - 7.0
+    try:
+        await session.fill_gap({"opener_end": 3.0, "mode": "think"}, {"reply_start": 7.5}, 0, 0.0)
+        filler = next(c for c in session.timeline.clips if c[0] == 5.0)
+        assert filler[1] == pytest.approx(6.35) and len(filler[3]) == 34                 # cut at the hand-back, audio faded
+        closer = next(c for c in session.timeline.clips if c[0] > 6.0)
+        assert closer[0] == pytest.approx(6.35) and closer[1] == pytest.approx(7.35)
+    finally:
+        await session.client.aclose()

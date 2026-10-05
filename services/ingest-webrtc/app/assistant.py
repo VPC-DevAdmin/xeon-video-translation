@@ -15,6 +15,8 @@ ASSISTANT_WORKING_IDLE_SECONDS (6), ASSISTANT_WORKING_POSE ("pitch,yaw,roll,eyes
 ASSISTANT_<KIND>_TEXT_<LANG> ("|"-separated phrases; kinds OPENER, BEAT, BRIDGE, CLOSER),
 ASSISTANT_PROGRESS_FILLERS (1 by default; set 0 to disable progress acknowledgements),
 ASSISTANT_PROGRESS_HORIZON_SECONDS (12; latest scheduled phrase plus return gesture),
+ASSISTANT_FILLER_CUTOFF (1: a filler still talking when the reply is ready is cut off
+with a fade, as a person interrupts themselves; 0: the reply waits for it to finish),
 ASSISTANT_RENDER_TIMEOUT (30).
 
 Every renderer call of a session goes through one lock (`Renderer.lock`): idle growth,
@@ -70,7 +72,8 @@ THINKING_POSE = dict(zip(("pitch", "yaw", "roll", "eyes_x", "eyes_y"), _THINK_VA
 THINK_RETURN_AT = 0.70                                               # fraction of the thinking loop with the face back at the camera
 WORKING_POSE_ENABLED = os.getenv("ASSISTANT_WORKING_POSE_ENABLED", "1") == "1"
 CACHE_DIR = Path(os.getenv("JOB_ARTIFACTS_DIR", "./jobs")).resolve() / "personas"
-CACHE_VERSION = 7                                                    # invalidate old clips with blended faces
+CACHE_VERSION = 8                                                    # filler clips without the backend sentence pause
+FILLER_CUTOFF = os.getenv("ASSISTANT_FILLER_CUTOFF", "1") == "1"     # cut a filler off when the reply is ready (else wait for it)
 CLIP_TAIL_SECONDS = max(0.35, float(os.getenv("ASSISTANT_CLIP_TAIL_SECONDS", "0.8")))
 PROGRESS_FILLERS = os.getenv("ASSISTANT_PROGRESS_FILLERS", "1") == "1"
 PROGRESS_HORIZON_SECONDS = min(MAX_HEAD_START, float(os.getenv("ASSISTANT_PROGRESS_HORIZON_SECONDS", "12")))
@@ -400,12 +403,13 @@ class Assistant:
             self.channel.send(json.dumps({"type": event, **values}))
 
     # ------------------------------------------------------------- session setup
-    async def speak(self, text: str) -> np.ndarray:
-        """Synthesize `text` with the session voice; PCM16 at 24 kHz."""
+    async def speak(self, text: str, pause: float | None = None) -> np.ndarray:
+        """Synthesize `text` with the session voice; PCM16 at 24 kHz. `pause` overrides the
+        backend's sentence pause (filler clips render their own silent tail)."""
         parts = []
         async with self.client.stream("POST", f"{BACKEND}/assistant/speak",
                                       json={"text": text, "language": self.language, "voice": self.voice,
-                                            "persona_id": self.persona_id, "verify": True},
+                                            "persona_id": self.persona_id, "verify": True, "pause": pause},
                                       headers={"x-owner-id": self.owner}, timeout=120) as response:
             response.raise_for_status()
             async for line in response.aiter_lines():
@@ -739,7 +743,7 @@ class Assistant:
     async def make_clip(self, kind: str, text: str) -> None:
         """Synthesize and render one filler clip in the pose its kind calls for."""
         pose = KIND_POSE[kind] if (self.working_pose and self.renderer.has_pose("working")) else "front"
-        pcm = await self.speak(text)
+        pcm = await self.speak(text, pause=0.0)          # the silent tail below is the clip's only silence
         speech16 = resample(pcm, 24000, 16000)
         # Give the renderer real silent input to close the mouth and return toward
         # rest. A crossfade between face images duplicates eyes and mouth shapes.
@@ -918,12 +922,19 @@ class Assistant:
                     closer = self.pick("closer")
                     closer_len = closer.seconds if closer else 0.0
                     turn_len = len(self.turn_up) / FPS if (away and lookup and self.turn_up is not None) else 0.0
+                    closer_at = start - closer_len - 0.15 if closer else start
+                    return_at = closer_at - turn_len - 0.02
+                    if FILLER_CUTOFF:
+                        # A filler still talking at the hand-back is cut off with a fade (one that
+                        # barely started is dropped); later ones are dropped. The adaptive join
+                        # covers the pose difference at the cut.
+                        cut_at = max(plan["opener_end"], return_at)
+                        cut, _ = tl.truncate(cut_at, "filler")
+                        self.metrics["fillers"].append({"kind": "cut", "at": round(cut_at - t0, 2), "clips_cut": cut})
                     last_filler_end = max([plan["opener_end"]] + [clip[1] for clip in tl.clips_tagged("filler")])
                     # Keep the thinking/reading pose on screen until the return
                     # gesture is needed. Returning as soon as the reply is planned
                     # leaves the person staring at the camera for several seconds.
-                    closer_at = start - closer_len - 0.15 if closer else start
-                    return_at = closer_at - turn_len - 0.02
                     if away and lookup:
                         back = self.turn_head(max(last_filler_end + 0.02, return_at), "up", generation)
                     else:
@@ -1081,14 +1092,16 @@ class Assistant:
             # A late decision (slow transcript or first chunk) must not schedule into the
             # past, or the opening of the reply would be skipped.
             start = max(start, tl.now() + 0.15)
-            if PROGRESS_FILLERS:
-                # A progress phrase already committed to the timeline must finish
-                # before the head turns back and the answer begins. Cutting it
-                # mid-word creates both an audio stutter and a facial dissolve.
+            if PROGRESS_FILLERS and not FILLER_CUTOFF:
+                # Without cut-off, a progress phrase already committed to the timeline
+                # must finish before the head turns back and the answer begins.
                 filler_end = max((clip[1] for clip in tl.clips_tagged("filler")), default=plan["opener_end"])
                 turn_len = len(self.turn_up) / FPS if (mode == "lookup" and self.turn_up is not None) else 0.0
                 closer_len = max((clip.seconds for clip in self.clips["closer"]), default=0.0)
                 start = max(start, filler_end + turn_len + closer_len + 0.25)
+            elif PROGRESS_FILLERS:
+                # With cut-off, only the opener is never interrupted.
+                start = max(start, plan["opener_end"] + 0.3)
             state["reply_start"] = start
             tl.promise(start, start + reply_seconds, generation)
             self.metrics["reply_start_seconds"].append(round(start - t0, 2))

@@ -38,8 +38,12 @@ the end of a reply, then selects a real frame near the portrait's rest pose.
 Face transitions and idle wraps do not blend whole images. Background idle
 replacement keeps the existing generated take on screen until its replacement
 has rendered. The thinking or tablet pose remains active until the final spoken
-acknowledgement, which is scheduled just before the reply. A scheduled progress
-phrase finishes before the reply starts; the service does not cut it mid-word.
+acknowledgement, which is scheduled just before the reply. By default a
+progress phrase still talking when the reply is ready is cut off with a fade,
+the way a person interrupts themselves (`ASSISTANT_FILLER_CUTOFF=1`); set it to 0
+to let the phrase finish, which delays the reply by up to the phrase's length.
+Joins between footage cut when the two frames nearly match and blend over three
+frames when they do not, so neither pops nor whole-face dissolves appear.
 New progress phrases are queued only within the first 12 seconds of a turn
 (`ASSISTANT_PROGRESS_HORIZON_SECONDS`), so a long preplanned bridge does not
 needlessly delay an answer that is already ready.

@@ -86,3 +86,7 @@ def test_sentences_get_a_pause_and_a_fade():
     assert len(audio) == 2400 + int((assistant.SENTENCE_PAUSE + 0.2) * 24000)
     assert audio[-1] == 0 and audio[2399] == 0 and 0 < audio[2200] < 1 and audio[0] == 1
     assert len(assistant.with_pause(np.ones(2400, np.float32), "Fine.")) == 2400 + int(assistant.SENTENCE_PAUSE * 24000)
+
+
+def test_pause_can_be_overridden_per_call():
+    assert len(assistant.with_pause(np.ones(2400, np.float32), "Fine.", pause=0.0)) == 2400

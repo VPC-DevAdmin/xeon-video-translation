@@ -14,7 +14,7 @@ def frames(n, value):
 
 
 def test_future_clips_play_in_order_and_idle_fills_gaps():
-    tl = Timeline(fps=25, still=frames(1, 0)[0], idle_frames=frames(3, 9), transition_seconds=0)
+    tl = Timeline(fps=25, still=frames(1, 0)[0], idle_frames=frames(3, 9), transition_seconds=0, join_blend_frames=0)
     gen = tl.generation
     assert tl.schedule(1.0, np.ones(48000, np.int16), frames(25, 1), gen) == (1.0, 2.0)
     assert tl.schedule(5.0, np.ones(24000, np.int16), frames(25, 2), gen) == (5.0, 6.0)   # frames outlast audio
@@ -141,7 +141,7 @@ def test_idle_loop_growth_after_a_wrap_does_not_jump():
 
 def test_idle_modes_switch_at_scheduled_times_and_fall_back_to_front():
     front = np.zeros((6, 1, 1, 1), np.uint8)
-    tl = Timeline(fps=4, idle_frames=front, transition_seconds=0)
+    tl = Timeline(fps=4, idle_frames=front, transition_seconds=0, join_blend_frames=0)
     tl.set_mode(1.0, "working", tl.generation)
     assert tl.frame_at(0.5)[1] == "idle:front"
     assert tl.frame_at(1.25)[1] == "idle:front"                                # no working footage yet: front
@@ -190,21 +190,24 @@ def test_finalized_loop_cuts_at_the_frame_closest_to_its_start():
     loop = tl.loop("front")
     assert loop.effective_crossfade() == 2
     assert loop.finalize(min_seconds=1.5, fps=4)                              # candidates from index 6 on: index 9 (value 1) wins
-    assert loop.finalized and len(loop.frames) == 10 and loop.effective_crossfade() == 0
+    assert loop.finalized and len(loop.frames) == 9 and loop.effective_crossfade() == 0
     shown = [int(tl.frame_at(t / 4)[0].reshape(-1)[0]) for t in range(11)]
-    assert shown[2:7] == [20, 30, 40, 30, 20] and shown[9:11] == [1, 0]   # nearest frame is included before wrap
+    assert shown[2:7] == [20, 30, 40, 30, 20] and shown[8:11] == [5, 0, 10]   # 5 -> 0 stands in for 5 -> 1: no held frame
     assert not Timeline(fps=4, idle_frames=a[:3]).loop("front").finalize(1.5, 4)      # too short to cut
     loop.restart()
     assert not loop.ready and loop.frame_count == 0
 
 
-def test_default_face_clip_switches_do_not_double_expose_frames():
+def test_joins_cut_when_frames_match_and_blend_briefly_when_they_do_not():
     tl = Timeline(fps=25, idle_frames=frames(20, 0))
-    assert tl.idle_crossfade == 0
-    tl.schedule(1.0, np.full(48000, 10, np.int16), frames(25, 90), tl.generation, tag="filler")
+    assert tl.idle_crossfade == 0 and tl.transition_frames == 0
+    tl.schedule(1.0, np.full(48000, 10, np.int16), frames(25, 2), tl.generation, tag="filler")     # nearly the same pose: cut
+    tl.schedule(3.0, np.full(48000, 10, np.int16), frames(25, 90), tl.generation, tag="filler")    # far apart: 3-frame blend
     assert int(tl.frame_at(0.96)[0][0, 0, 0]) == 0
-    assert int(tl.frame_at(1.0)[0][0, 0, 0]) == 90
-    assert int(tl.frame_at(2.0)[0][0, 0, 0]) == 0
+    assert int(tl.frame_at(1.0)[0][0, 0, 0]) == 2
+    assert int(tl.frame_at(2.0)[0][0, 0, 0]) == 0                                                # back to idle: cut
+    blended = [int(tl.frame_at(3.0 + i / 25)[0][0, 0, 0]) for i in range(4)]
+    assert 0 < blended[0] < blended[1] < blended[2] < 90 and blended[3] == 90
 
 
 def test_overlapping_reply_takes_video_priority_at_the_same_time_as_audio():
@@ -236,7 +239,7 @@ def test_finalizing_idle_does_not_move_the_current_playback_cursor():
     loop = tl.loop("front")
     assert loop.cursor == 6
     assert loop.finalize(min_seconds=1, fps=4)
-    assert loop.cursor == 6 and len(loop.frames) == 9
+    assert loop.cursor == 6 and len(loop.frames) == 8                        # cut before index 8 (value 2), the frame most like 0
     assert int(tl.frame_at(7 / 4)[0][0, 0, 0]) == 50
 
 
