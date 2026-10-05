@@ -909,27 +909,36 @@ class LipsyncPipeline(DiffusionPipeline):
         from latentsync_driver import face_parse
 
         parse_started = time.perf_counter()
-        face_masks, covered = self.face_parser().masks(
+        face_masks, covered, mouth_open = self.face_parser().masks(
             faces, out_size=self.image_processor.restorer.face_size[::-1], visible=visible,
             frames=video_frames, affines=affine_matrices,
         )
         gate = np.asarray(visible, dtype=np.float32).copy()
         covered_frames = 0
+        closed_reference = None
         if face_masks is not None:
             face_masks = face_masks.to(torch.float16).cpu()
             hidden = covered.numpy() > face_parse.MOUTH_COVERED
             covered_frames = int(hidden.sum())
             gate[hidden] = 0.0  # an occluder over the mouth: treat like a lost face
         alpha = face_parse.occlusion_alpha(gate, margin=2, ramp=3)
+        # Silence in the translated audio: render a closed mouth there instead of
+        # copying the source mouth (latentsync_driver.face_parse).
+        silent = face_parse.silent_frames(audio_samples.cpu().numpy() if hasattr(audio_samples, "cpu") else audio_samples,
+                                          16000, video_fps, len(video_frames))
+        if face_masks is not None and silent.any() and os.environ.get("LATENTSYNC_SILENT_CLOSED_MOUTH", "1") == "1":
+            closed_reference = face_parse.pick_closed_mouth(mouth_open.numpy(), alpha, covered.numpy())
         print(json.dumps({"event": "latentsync_occlusion", "frames": len(faces),
                           "parsed": face_masks is not None, "gated_frames": int((alpha < 1).sum()),
                           "no_face_frames": int((np.asarray(visible) <= 0).sum()), "covered_mouth_frames": covered_frames,
                           "gated": face_parse.ranges(np.flatnonzero(alpha <= 0.0)),
+                          "silent": face_parse.ranges(np.flatnonzero(silent)), "closed_reference": closed_reference,
                           "seconds": round(time.perf_counter() - parse_started, 2)}), flush=True)
         return {
             "whisper_chunks": whisper_chunks, "audio_samples": audio_samples, "video_frames": video_frames,
             "faces": faces, "boxes": boxes, "affine_matrices": affine_matrices,
             "face_masks": face_masks, "alpha": alpha,
+            "silent_frames": silent if closed_reference is not None else None, "closed_reference": closed_reference,
             "seconds": time.perf_counter() - started,
         }
 
@@ -1095,6 +1104,7 @@ class LipsyncPipeline(DiffusionPipeline):
 
         restored_frames = None
         face_masks, alpha = None, None
+        silent_frames, closed_reference, closed_ref_pixels = None, None, None
         if synced_video_frames_tensor is not None:
             affine_matrices, boxes = self._smooth_affines(affine_matrices, boxes)
 
@@ -1123,6 +1133,12 @@ class LipsyncPipeline(DiffusionPipeline):
             video_frames = inputs["video_frames"]
             faces, boxes, affine_matrices = inputs["faces"], inputs["boxes"], inputs["affine_matrices"]
             face_masks, alpha = inputs.get("face_masks"), inputs.get("alpha")
+            silent_frames, closed_reference = inputs.get("silent_frames"), inputs.get("closed_reference")
+            closed_ref_pixels = None
+            if silent_frames is not None and closed_reference is not None:
+                closed_ref_pixels = self.image_processor.prepare_masks_and_masked_images(
+                    faces[closed_reference:closed_reference + 1], affine_transform=False
+                )[0][0]
             profile["decode_audio_face_seconds"] = time.perf_counter() - stage_started
             profile["conditioning_seconds"] = 0.0
             profile["wait_for_worker_seconds"] = 0.0
@@ -1339,6 +1355,15 @@ class LipsyncPipeline(DiffusionPipeline):
                     ref_pixel_values, masked_pixel_values, masks = self.image_processor.prepare_masks_and_masked_images(
                         inference_faces, affine_transform=False
                     )
+                    # UNet reference for silent frames: the closed-mouth frame.
+                    # `ref_pixel_values` itself stays the current frame, since the
+                    # paste-back takes the surrounding pixels from it.
+                    unet_ref = ref_pixel_values
+                    if closed_ref_pixels is not None:
+                        quiet = np.flatnonzero(silent_frames[i * num_frames : (i + 1) * num_frames][: len(ref_pixel_values)])
+                        if len(quiet):
+                            unet_ref = ref_pixel_values.clone()
+                            unet_ref[quiet] = closed_ref_pixels.to(unet_ref.device, unet_ref.dtype)
 
                     if bypass_unet:
                         # Short-circuit: use the reference face crop as the
@@ -1375,7 +1400,7 @@ class LipsyncPipeline(DiffusionPipeline):
                             )))
                         else:
                             pool.submit(i, ("pixels", *(
-                                x.detach().to("cpu") for x in (latents, masks, masked_pixel_values, ref_pixel_values)
+                                x.detach().to("cpu") for x in (latents, masks, masked_pixel_values, unet_ref)
                             ), audio_cpu))
                     else:
                         # 7. Prepare mask latent variables
@@ -1391,7 +1416,7 @@ class LipsyncPipeline(DiffusionPipeline):
                         )
                         # 8. Prepare image latents
                         ref_latents = self.prepare_image_latents(
-                            ref_pixel_values,
+                            unet_ref,
                             device,
                             weight_dtype,
                             generator,

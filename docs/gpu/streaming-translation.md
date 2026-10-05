@@ -175,3 +175,19 @@ one under the fingers. Knobs: `LATENTSYNC_OCCLUDER_MASK=0`, `MOUTH_COVERED`.
   English "it" for the last 0.6 s. Verified takes are now trimmed too
   (headroom 0.1 s); the stretch dropped from 1.20x to 1.15x and speech runs to
   8.95 s. The last three frames of silence still show the source mouth.
+
+### Closed mouth in silence (5 Oct 2026, night)
+
+After the translated speech ends the speaker kept mouthing the English,
+because LatentSync is handed the current frame as its reference and copies
+that mouth when the audio is silent. Now silent frames of the translated audio
+(RMS below 0.01 over the frame and its neighbours, runs of at least 10 frames,
+the first 3 frames of each run left alone so the mouth closes naturally) get
+the window's most closed-mouth frame as the UNet reference: the frame with the
+smallest mouth-interior area from the parse, among frames with the face fully
+visible. The masked frame still supplies the pose and the paste-back still
+uses the real frame. The log line lists `silent` ranges and the
+`closed_reference` index; `LATENTSYNC_SILENT_CLOSED_MOUTH=0` disables it.
+Internal pauses longer than 0.4 s get the same treatment. Ending the video at
+the end of the audio was rejected: the source keeps moving, so a cut would be
+visible and the tail would be lost.

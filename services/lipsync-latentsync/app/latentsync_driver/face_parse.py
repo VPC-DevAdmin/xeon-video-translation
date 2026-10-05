@@ -31,6 +31,12 @@ Two layers fix this:
   parser and part of the temporal median, so hands are found directly with
   MediaPipe Hands on the source frame and drawn into the crop through the same
   affine as the paste (palm polygon plus finger bones at finger width).
+* **Closed mouth in silence.** LatentSync is given the current frame as its
+  reference, so under silence it copies that frame's mouth: after the
+  translated speech ends the speaker keeps mouthing the original language.
+  Silent frames (from the translated audio) get the clip's most closed-mouth
+  frame as the UNet reference instead; the masked frame still gives the pose
+  and the paste-back still uses the real frame.
 * **Covered-mouth gate.** A pale, blurred object over the mouth is only partly
   caught by the temporal mask (a half-painted mouth would look worse than
   either extreme), so when the occluder mask covers more than `MOUTH_COVERED`
@@ -327,6 +333,49 @@ def hand_masks(frames, affines, face_size: tuple[int, int], size: int = 512, det
     return torch.from_numpy(spread.astype(np.float32)).unsqueeze(1)
 
 
+def silent_frames(audio, sample_rate: int, fps: float, frames: int, threshold: float = 0.01,
+                  min_run: int = 10, lead: int = 3) -> np.ndarray:
+    """(frames,) bool: frames inside a silent run of at least `min_run` frames
+    (RMS over the frame and its neighbours below `threshold`, audio in [-1,1]),
+    minus the first `lead` frames of each run so the mouth closes naturally
+    rather than snapping. Audio shorter than the video counts as silent."""
+    audio = np.asarray(audio, dtype=np.float32).reshape(-1)
+    per = sample_rate / float(fps)
+    rms = np.zeros(frames, dtype=np.float32)
+    for i in range(frames):
+        lo, hi = int((i - 1) * per), int((i + 2) * per)
+        seg = audio[max(0, lo):max(0, hi)]
+        rms[i] = float(np.sqrt(np.mean(seg**2))) if len(seg) else 0.0
+    quiet = rms < threshold
+    out = np.zeros(frames, dtype=bool)
+    i = 0
+    while i < frames:
+        if not quiet[i]:
+            i += 1
+            continue
+        j = i
+        while j < frames and quiet[j]:
+            j += 1
+        if j - i >= min_run:
+            out[i + lead:j] = True
+        i = j
+    return out
+
+
+def pick_closed_mouth(mouth_open, alpha, covered=None):
+    """Index of the frame to use as the silent-mouth reference: the smallest
+    mouth-interior fraction among frames whose face is fully visible (alpha 1,
+    nothing over the mouth). None when no frame qualifies."""
+    mouth_open = np.asarray(mouth_open, dtype=np.float32)
+    ok = np.asarray(alpha) >= 1.0
+    if covered is not None:
+        ok &= np.asarray(covered) <= 0.0
+    if not ok.any():
+        return None
+    candidates = np.flatnonzero(ok)
+    return int(candidates[np.argmin(mouth_open[candidates])])
+
+
 class FaceParser:
     """Lazy BiSeNet wrapper. `masks(crops)` takes (N,3,H,W) uint8 RGB face crops
     (LatentSync's canonical crops) and returns (N,1,out_h,out_w) float masks on
@@ -369,14 +418,15 @@ class FaceParser:
 
     def masks(self, crops, out_size: tuple[int, int], batch_size: int = 32, visible=None,
               frames=None, affines=None):
-        """Returns `(masks, covered)`: (N,1,h,w) paste masks for `out_size` =
-        (height, width) of the warp crop, and the per-frame fraction of the
-        lower-face band hidden by an occluder (zeros without `visible`). With
+        """Returns `(masks, covered, mouth_open)`: (N,1,h,w) paste masks for
+        `out_size` = (height, width) of the warp crop, the per-frame fraction of
+        the lower-face band hidden by an occluder (zeros without `visible`), and
+        the per-frame fraction of the band parsed as mouth interior. With
         `visible` (per-frame detection / confidence) the temporal occluder
         mask is subtracted as well; with `frames` (source RGB) and `affines`
-        the MediaPipe hand mask too. `(None, None)` when parsing is unavailable."""
+        the MediaPipe hand mask too. `(None, None, None)` when parsing is unavailable."""
         if not self.available():
-            return None, None
+            return None, None, None
         import torch
         import torch.nn.functional as F
 
@@ -392,6 +442,8 @@ class FaceParser:
                 parsed.append(self._net(x)[0].argmax(1).to(torch.uint8))
             parsing = torch.cat(parsed, dim=0)
             mask = face_mask_from_parsing(parsing)
+            band = parsing[:, MOUTH_BAND[0], MOUTH_BAND[1]]
+            mouth_open = ((band == 13).float().sum((1, 2)) / float(band.shape[1] * band.shape[2])).cpu()
             covered = torch.zeros(len(mask), dtype=torch.float32)
             occluders = None
             if visible is not None and os.environ.get("LATENTSYNC_OCCLUDER_MASK", "1") == "1":
@@ -408,4 +460,4 @@ class FaceParser:
                 covered = ((band_face * band_occ).sum((1, 2, 3)) / band_face.sum((1, 2, 3)).clamp(min=1.0)).cpu()
                 mask = mask * (1.0 - occluders)
             mask = F.interpolate(mask, size=out_size, mode="bilinear", align_corners=False)
-        return mask, covered
+        return mask, covered, mouth_open

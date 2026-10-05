@@ -131,3 +131,31 @@ def test_hand_mask_is_hand_shaped_not_a_hull():
     assert mask[int(pts[9, 1]) - 30, int(pts[9, 0])] == 1      # along the middle finger
     gap = (pts[8] + pts[12]) / 2 - np.array([0, 60])          # between index and middle tips
     assert mask[int(gap[1]), int(gap[0])] == 0                 # the hull would have covered this
+
+
+def test_silent_frames_marks_long_runs_minus_their_lead():
+    sr, fps = 16000, 25
+    audio = np.zeros(sr * 4, np.float32)                 # 4 s = 100 frames
+    audio[: int(2.0 * sr)] = 0.3                         # speech for 2 s (frames 0-49)
+    audio[int(2.6 * sr):int(2.8 * sr)] = 0.3             # a 0.2 s blip (frames 65-69)
+    silent = fp.silent_frames(audio, sr, fps, 100, min_run=10, lead=3)
+    assert not silent[:50].any()
+    assert not silent[50] and not silent[51] and not silent[52]   # lead frames stay
+    assert silent[54] and silent[60]
+    assert not silent[67]                                # the blip is voiced
+    assert silent[75] and silent[99]                     # trailing silence to the end
+
+
+def test_silent_frames_short_pause_is_ignored():
+    sr, fps = 16000, 25
+    audio = np.full(sr * 2, 0.3, np.float32)
+    audio[int(1.0 * sr):int(1.2 * sr)] = 0.0             # 0.2 s pause = 5 frames
+    assert not fp.silent_frames(audio, sr, fps, 50, min_run=10).any()
+
+
+def test_pick_closed_mouth_prefers_clear_frames():
+    mouth_open = np.array([0.00, 0.02, 0.01, 0.05], np.float32)
+    alpha = np.array([0.0, 1.0, 1.0, 1.0], np.float32)       # frame 0 is gated
+    covered = np.array([0.0, 0.0, 0.4, 0.0], np.float32)     # frame 2 has a hand
+    assert fp.pick_closed_mouth(mouth_open, alpha, covered) == 1
+    assert fp.pick_closed_mouth(mouth_open, np.zeros(4)) is None
