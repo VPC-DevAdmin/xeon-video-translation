@@ -81,30 +81,6 @@ def closest_anchor_end(frames, anchor, first: int, step: int = 6) -> int:
     return best + 1
 
 
-def trim_startup_jump(frames, probe_frames: int, fps: int, step: int = 4):
-    """Skip a renderer's static portrait pre-roll if it snaps to generated video.
-
-    Some cold FlashHead sessions emit about a second of near-static source pixels
-    before switching to the generated identity. Detect that exceptional seam in
-    the first chunk rather than trimming a fixed number of frames from every take.
-    """
-    frames = np.asarray(frames)
-    if len(frames) < max(probe_frames + 2, fps):
-        return frames, 0
-    changes = []
-    for index in range(1, min(probe_frames + 1, len(frames) - 1)):
-        before = frames[index - 1, ::step, ::step].astype(np.int16)
-        after = frames[index, ::step, ::step].astype(np.int16)
-        changes.append(float(np.abs(after - before).mean()))
-    if not changes:
-        return frames, 0
-    seam = int(np.argmax(changes)) + 1
-    baseline = float(np.median(changes))
-    if changes[seam - 1] > max(12.0, baseline * 8.0) and len(frames) - seam >= fps:
-        return frames[seam:], seam
-    return frames, 0
-
-
 class IdleLoop:
     """One continuous take of idle footage played as a loop.
 

@@ -36,9 +36,8 @@ loop until the reply is ready. This is the default because independently rendere
 progress phrases add visible face joins. The service renders 0.8 seconds of
 silence after each acknowledgement and at the end of a reply, then selects a
 real frame near the portrait's rest pose. Face transitions and idle wraps do not
-blend whole images. On a cold renderer session, the first idle take also drops a
-detected static-portrait pre-roll if it snaps to generated video; the count is
-reported as `startup_trimmed_frames` in session metrics.
+blend whole images. Background idle replacement keeps the existing generated
+take on screen until its replacement has rendered.
 
 Set `ASSISTANT_PROGRESS_FILLERS=1` to compare the older multi-phrase tablet
 sequence. `ASSISTANT_CLIP_TAIL_SECONDS` controls the silent render tail (minimum

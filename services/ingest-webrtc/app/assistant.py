@@ -49,7 +49,7 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
 from .identity import owner, require
-from .timeline import Timeline, closest_anchor_end, head_start_required, trim_startup_jump
+from .timeline import Timeline, closest_anchor_end, head_start_required
 
 router = APIRouter(prefix="/assistant", tags=["assistant"])
 _sessions: dict = {}
@@ -69,7 +69,7 @@ THINKING_POSE = dict(zip(("pitch", "yaw", "roll", "eyes_x", "eyes_y"), _THINK_VA
 THINK_RETURN_AT = 0.70                                               # fraction of the thinking loop with the face back at the camera
 WORKING_POSE_ENABLED = os.getenv("ASSISTANT_WORKING_POSE_ENABLED", "1") == "1"
 CACHE_DIR = Path(os.getenv("JOB_ARTIFACTS_DIR", "./jobs")).resolve() / "personas"
-CACHE_VERSION = 8                                                    # invalidate idle footage containing the startup jump
+CACHE_VERSION = 7                                                    # invalidate old clips with blended faces
 SETTLE_FRAMES = int(os.getenv("ASSISTANT_SETTLE_FRAMES", "10"))      # legacy multi-phrase filler cutoff
 CLIP_TAIL_SECONDS = max(0.35, float(os.getenv("ASSISTANT_CLIP_TAIL_SECONDS", "0.8")))
 PROGRESS_FILLERS = os.getenv("ASSISTANT_PROGRESS_FILLERS", "0") == "1"
@@ -694,10 +694,7 @@ class Assistant:
         cached = {"idle": await self._load_idle("front"), "working_idle": self.working_pose and await self._load_idle("working"),
                   "thinking_idle": PROGRESS_FILLERS and await self._load_idle("thinking"), "clips": await self._load_clips()}
         if not cached["idle"]:
-            initial = await self.render_all(np.zeros(self.renderer.samples * IDLE_CHUNKS, np.int16), "idle:front")
-            initial, trimmed = trim_startup_jump(initial, int(info["frames_per_chunk"]), FPS)
-            self.timeline.add_idle(initial, False)
-            self.metrics["startup_trimmed_frames"] = trimmed
+            self.timeline.add_idle(await self.render_all(np.zeros(self.renderer.samples * IDLE_CHUNKS, np.int16), "idle:front"), False)
         self.metrics["prepare"] = {
             "cached": cached, "renderer_open_seconds": round(t_open - started, 2),
             "idle_seconds_ready": round(self.timeline.idle_seconds(), 2), "idle_finalized": self.timeline.loop("front").finalized,
@@ -767,12 +764,15 @@ class Assistant:
                 if self.turn_active():
                     continue
                 continuous = self.renderer.motion == motion
+                replace = False
                 if not continuous and loop.ready:
                     if loop.finalize(MIN_IDLE_SECONDS, FPS):
                         break
-                    loop.restart()                       # too short to loop well: start a new take
+                    replace = True                    # retain the old take while the replacement renders
                 frames, _ = await self.renderer.render_locked(np.zeros(self.renderer.samples, np.int16), not continuous,
                                                               self.timeline.generation, motion, pose)
+            if replace:
+                loop.restart()                         # swap only after the new frames are available
             loop.add(frames)
             if loop.frame_count >= target:
                 loop.finalize(min(MIN_IDLE_SECONDS, target_seconds / 2), FPS)

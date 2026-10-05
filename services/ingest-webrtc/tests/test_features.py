@@ -114,6 +114,40 @@ async def test_assistant_reply_renders_a_real_silent_tail_across_chunk_boundarie
 
 
 @pytest.mark.asyncio
+async def test_assistant_idle_replacement_keeps_old_video_visible_while_rendering(tmp_path):
+    from app.assistant import Assistant
+
+    class Renderer:
+        samples = 16000
+        motion = "reply:front"
+
+        def __init__(self):
+            self.lock = asyncio.Lock()
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def render_locked(self, pcm, reset, generation, motion, pose):
+            self.started.set()
+            await self.release.wait()
+            self.motion = motion
+            return np.full((25, 1, 1, 3), 90, np.uint8), 0.0
+
+    session = Assistant("a", tmp_path, np.zeros((1, 1, 3), np.uint8), "en", "test")
+    session.renderer = Renderer()
+    session.timeline.add_idle(np.full((25, 1, 1, 3), 20, np.uint8))
+    try:
+        task = asyncio.create_task(session.grow_idle("front", 1.0))
+        await asyncio.wait_for(session.renderer.started.wait(), 1)
+        assert session.timeline.loop("front").ready
+        assert int(session.timeline.frame_at(0)[0][0, 0, 0]) == 20
+        session.renderer.release.set()
+        await asyncio.wait_for(task, 1)
+        assert int(session.timeline.loop("front").frames[0, 0, 0, 0]) == 90
+    finally:
+        await session.client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_avatar_storage_limit_stops_before_backend(tmp_path, monkeypatch):
     (tmp_path / "existing.npy").write_bytes(b"x" * 1025)
     monkeypatch.setenv("AVATAR_MAX_STORAGE_MB", "0")
