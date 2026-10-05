@@ -233,18 +233,21 @@ class Timeline:
         self.promises = [(a, b) for a, b in self.promises if not (a < end and start < b)]
         return start, end
 
-    def truncate(self, seconds: float, tag: str, fade_seconds: float = 0.08, settle_to=None, settle_count: int = 6):
+    def truncate(self, seconds: float, tag: str, fade_seconds: float = 0.08, settle_to=None, settle_count: int = 6,
+                 min_keep_seconds: float = 0.5):
         """Cut clips carrying `tag` at `seconds`: later ones are dropped, the one playing
         across it ends there with a short audio fade and, when `settle_to` is given, a
-        few frames settling into that anchor frame. Returns (affected, end) where `end`
-        is when the cut footage finishes (`seconds` when nothing was playing)."""
+        few frames settling into that anchor frame. A clip that would have played for
+        less than `min_keep_seconds` is dropped rather than cut (a syllable and a fade
+        would sound like a stutter). Returns (affected, end) where `end` is when the cut
+        footage finishes (`seconds` when nothing was playing)."""
         kept, affected, end_at = [], 0, seconds
         for start, end, audio, frames, clip_tag in self.clips:
             if clip_tag != tag or end <= seconds:
                 kept.append((start, end, audio, frames, clip_tag))
                 continue
             affected += 1
-            if start >= seconds:
+            if start >= seconds or seconds - start < min_keep_seconds:
                 continue
             samples = int((seconds - start) * self.audio_rate)
             audio = np.array(audio[:samples], copy=True)

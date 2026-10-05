@@ -196,3 +196,11 @@ def test_finalized_loop_cuts_at_the_frame_closest_to_its_start():
     assert not Timeline(fps=4, idle_frames=a[:3]).loop("front").finalize(1.5, 4)      # too short to cut
     loop.restart()
     assert not loop.ready and loop.frame_count == 0
+
+
+def test_truncate_drops_a_clip_that_barely_started():
+    tl = Timeline(fps=25, transition_seconds=0)
+    tl.schedule(1.0, np.full(48000, 1000, np.int16), frames(25, 1), tl.generation, tag="filler")
+    assert tl.truncate(1.3, "filler") == (1, 1.3) and tl.clips_tagged("filler") == []       # 0.3 s in: dropped, not cut
+    tl.schedule(2.0, np.full(48000, 1000, np.int16), frames(25, 1), tl.generation, tag="filler")
+    assert tl.truncate(2.7, "filler") == (1, 2.7) and tl.clips_tagged("filler")[0][1] == 2.7   # 0.7 s in: cut

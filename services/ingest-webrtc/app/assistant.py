@@ -894,11 +894,11 @@ class Assistant:
                 if not away:
                     pass                                 # nothing is said between the opener and leaving the camera
                 elif lookup:
-                    if cursor - now < 1.5 and cursor < t0 + MAX_HEAD_START - 1.0:
+                    if cursor - now < 3.2 and cursor < t0 + MAX_HEAD_START - 1.0:
                         kind = next(pattern)
                         clip = self.pick(kind) or self.pick("beat") or self.pick("bridge")
                         if clip is not None:
-                            at = max(cursor + random.uniform(0.7, 1.5), now + 0.3)
+                            at = max(cursor + random.uniform(1.0, 3.0), now + 0.3)      # a person pauses between remarks
                             placed = tl.schedule(at, clip.audio48, clip.frames, generation, tag="filler")
                             if placed:
                                 cursor = placed[1]
@@ -910,7 +910,7 @@ class Assistant:
                     # Thinking: a short beat to camera when the loop has brought the face back
                     # (after THINK_RETURN_AT of its cycle); the loop then restarts with a glance away.
                     at_camera = think.cursor >= int(THINK_RETURN_AT * len(think.frames))
-                    if at_camera and now >= cursor + 1.0 and tl.active(now) is None and now < t0 + MAX_HEAD_START - 1.0:
+                    if at_camera and now >= cursor + random.uniform(1.0, 2.0) and tl.active(now) is None and now < t0 + MAX_HEAD_START - 1.0:
                         clip = self.pick("beat_front")
                         if clip is not None:
                             placed = tl.schedule(now + 0.15, clip.audio48, clip.frames, generation, tag="filler")

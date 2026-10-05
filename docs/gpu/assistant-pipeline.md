@@ -80,7 +80,7 @@ looking something up behaves (`Assistant.fill_gap` in the ingest service):
    lowers the gaze), and the working idle
    loop shows the persona reading. Short progress utterances ("Hmm, let me
    see.", "Okay, almost there.") and the occasional longer bridge ("Bear with
-   me, I want to make sure I get this right.") play with 0.7 to 1.5 s pauses,
+   me, I want to make sure I get this right.") play with 1 to 3 s pauses,
    scheduled just in time so the plan can adapt.
 3. The reply start is decided as soon as the first reply chunk is rendered: the
    earliest moment the reply can play without stalling given the measured
