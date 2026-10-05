@@ -59,14 +59,14 @@ MAX_SESSIONS = int(os.getenv("ASSISTANT_MAX_SESSIONS", os.getenv("AVATAR_MAX_SES
 BACKEND = os.getenv("ASSISTANT_BACKEND_URL", os.getenv("BACKEND_URL", "http://localhost:8088"))
 RENDERER = os.getenv("ASSISTANT_RENDERER_URL", "http://localhost:8094")
 ROOT = Path(os.getenv("JOB_ARTIFACTS_DIR", "./jobs")).resolve() / "avatars"
-HEAD_START = float(os.getenv("ASSISTANT_HEAD_START", "7"))             # the reply never starts earlier than this
+HEAD_START = float(os.getenv("ASSISTANT_HEAD_START", "9"))             # the reply never starts earlier than this
 MAX_HEAD_START = float(os.getenv("ASSISTANT_MAX_HEAD_START", "20"))
 IDLE_CHUNKS = int(os.getenv("ASSISTANT_IDLE_CHUNKS", "2"))          # rendered before the session answers
 IDLE_SECONDS = float(os.getenv("ASSISTANT_IDLE_SECONDS", "12"))      # grown to this in the background, then looped
 WORKING_IDLE_SECONDS = float(os.getenv("ASSISTANT_WORKING_IDLE_SECONDS", "6"))
 _POSE_VALUES = [float(v) for v in os.getenv("ASSISTANT_WORKING_POSE", "20,-16,0,-10,-15").split(",")]
 WORKING_POSE = dict(zip(("pitch", "yaw", "roll", "eyes_x", "eyes_y"), _POSE_VALUES + [0.0] * 5))   # toward the notes card, lower left
-_THINK_VALUES = [float(v) for v in os.getenv("ASSISTANT_THINKING_POSE", "-6,8,3,8,10").split(",")]
+_THINK_VALUES = [float(v) for v in os.getenv("ASSISTANT_THINKING_POSE", "-9,12,4,10,13").split(",")]
 THINKING_POSE = dict(zip(("pitch", "yaw", "roll", "eyes_x", "eyes_y"), _THINK_VALUES + [0.0] * 5))  # glance up and to the side
 THINK_RETURN_AT = 0.70                                               # fraction of the thinking loop with the face back at the camera
 WORKING_POSE_ENABLED = os.getenv("ASSISTANT_WORKING_POSE_ENABLED", "1") == "1"

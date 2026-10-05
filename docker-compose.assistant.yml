@@ -67,10 +67,10 @@ services:
     environment:
       ASSISTANT_BACKEND_URL: ${ASSISTANT_BACKEND_URL:-http://localhost:${BACKEND_PORT:-8088}}
       ASSISTANT_RENDERER_URL: ${ASSISTANT_RENDERER_URL:-http://localhost:${FLASHHEAD_PORT:-8094}}
-      ASSISTANT_HEAD_START: ${ASSISTANT_HEAD_START:-7}          # minimum; the reply starts when it can play without stalling
+      ASSISTANT_HEAD_START: ${ASSISTANT_HEAD_START:-9}          # minimum; the reply starts when it can play without stalling, and the thinking or look-up phase needs about 3 s to register
       ASSISTANT_WORKING_IDLE_SECONDS: ${ASSISTANT_WORKING_IDLE_SECONDS:-6}
       ASSISTANT_WORKING_POSE: ${ASSISTANT_WORKING_POSE:-20,-16,0,-10,-15}
-      ASSISTANT_THINKING_POSE: ${ASSISTANT_THINKING_POSE:--6,8,3,8,10}      # glance up and to the side while thinking   # pitch,yaw,roll,eyes_x,eyes_y (degrees; positive pitch looks down, negative eyes_y lowers the gaze)
+      ASSISTANT_THINKING_POSE: ${ASSISTANT_THINKING_POSE:--9,12,4,10,13}   # glance up and to the side while thinking   # pitch,yaw,roll,eyes_x,eyes_y (degrees; positive pitch looks down, negative eyes_y lowers the gaze)
       ASSISTANT_MAX_HEAD_START: ${ASSISTANT_MAX_HEAD_START:-20}
       ASSISTANT_MAX_SESSIONS: ${ASSISTANT_MAX_SESSIONS:-1}
       AVATAR_VAD_BACKEND: ${AVATAR_VAD_BACKEND:-silero}
