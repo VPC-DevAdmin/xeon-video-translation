@@ -40,6 +40,10 @@ replacement keeps the existing generated take on screen until its replacement
 has rendered. The thinking or tablet pose remains active until the final spoken
 acknowledgement, which is scheduled just before the reply. A scheduled progress
 phrase finishes before the reply starts; the service does not cut it mid-word.
+The front listening loop is limited to subtle motion close to the speech pose;
+the separate thinking and tablet loops still move the head and gaze. Tune the
+front-loop limit with `ASSISTANT_FRONT_IDLE_MAX_DELTA` (sampled RGB difference,
+default 6).
 
 Set `ASSISTANT_PROGRESS_FILLERS=0` to disable the progress phrases and look-away
 sequence. `ASSISTANT_CLIP_TAIL_SECONDS` controls the silent render tail (minimum

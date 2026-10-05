@@ -49,7 +49,7 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
 from .identity import owner, require
-from .timeline import Timeline, closest_anchor_end, head_start_required
+from .timeline import Timeline, closest_anchor_end, head_start_required, stable_idle_end
 
 router = APIRouter(prefix="/assistant", tags=["assistant"])
 _sessions: dict = {}
@@ -72,6 +72,7 @@ CACHE_DIR = Path(os.getenv("JOB_ARTIFACTS_DIR", "./jobs")).resolve() / "personas
 CACHE_VERSION = 7                                                    # invalidate old clips with blended faces
 CLIP_TAIL_SECONDS = max(0.35, float(os.getenv("ASSISTANT_CLIP_TAIL_SECONDS", "0.8")))
 PROGRESS_FILLERS = os.getenv("ASSISTANT_PROGRESS_FILLERS", "1") == "1"
+FRONT_IDLE_MAX_DELTA = float(os.getenv("ASSISTANT_FRONT_IDLE_MAX_DELTA", "6.0"))
 MIN_IDLE_SECONDS = float(os.getenv("ASSISTANT_MIN_IDLE_SECONDS", "6"))   # shortest take kept as a loop when growth is interrupted
 READING_FRAMES = int(os.getenv("ASSISTANT_READING_FRAMES", "150"))   # reading loop at the tablet (LivePortrait), 25 fps
 THINKING_FRAMES = int(os.getenv("ASSISTANT_THINKING_FRAMES", "100"))  # thinking loop: away and back within 4 s
@@ -632,6 +633,8 @@ class Assistant:
             loop.frames = data["idle"]
             loop.finalized = bool(data["finalized"]) if "finalized" in data else True
             loop.wrap_blend = int(data["wrap_blend"]) if "wrap_blend" in data else 2
+            if pose == "front":
+                self.stabilize_front_idle()
             return True
         except Exception:
             return False
@@ -671,6 +674,16 @@ class Assistant:
 
     def clip_count(self) -> int:
         return sum(len(v) for v in self.clips.values())
+
+    def stabilize_front_idle(self) -> None:
+        """Keep the listening loop close to the pose where spoken clips begin."""
+        loop = self.timeline.loop("front")
+        if not loop.finalized or not loop.ready:
+            return
+        end = stable_idle_end(loop.frames, FPS, FRONT_IDLE_MAX_DELTA)
+        if end < len(loop.frames) and loop.cursor < end:
+            self.metrics["front_idle_trimmed_frames"] = len(loop.frames) - end
+            loop.frames = loop.frames[:end]
 
     # --------------------------------------------------------------- preparing
     async def prepare(self) -> dict:
@@ -777,6 +790,8 @@ class Assistant:
                 loop.finalize(min(MIN_IDLE_SECONDS, target_seconds / 2), FPS)
         if not self.closed and loop.finalized and loop.frame_count >= MIN_IDLE_SECONDS * FPS:
             await self._save_idle(pose)
+        if pose == "front":
+            self.stabilize_front_idle()
 
     async def open_working_pose(self) -> bool:
         """Make (or load) the portrait looking down at a tablet and open it on the renderer."""

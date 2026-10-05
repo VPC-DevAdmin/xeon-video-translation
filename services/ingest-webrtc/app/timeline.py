@@ -81,6 +81,27 @@ def closest_anchor_end(frames, anchor, first: int, step: int = 6) -> int:
     return best + 1
 
 
+def stable_idle_end(frames, fps: int, max_delta: float = 6.0, min_seconds: float = 2.0,
+                    step: int = 4) -> int:
+    """Keep the neutral listening take before its face drifts far from rest.
+
+    A spoken clip starts from the neutral render state. If a long idle take moves
+    the whole head substantially, that reset looks like a dropped frame. The
+    separate thinking/working loops provide expressive motion while waiting.
+    """
+    frames = np.asarray(frames)
+    minimum = max(2, int(min_seconds * fps))
+    if len(frames) <= minimum + 1:
+        return len(frames)
+    anchor = frames[0, ::step, ::step].astype(np.int16)
+    changes = [float(np.abs(frame[::step, ::step].astype(np.int16) - anchor).mean()) for frame in frames]
+    first_far = next((index for index, value in enumerate(changes) if value > max_delta), len(frames))
+    if first_far <= minimum or first_far == len(frames):
+        return len(frames)
+    best = min(range(minimum, first_far), key=lambda index: changes[index])
+    return best + 1
+
+
 class IdleLoop:
     """One continuous take of idle footage played as a loop.
 

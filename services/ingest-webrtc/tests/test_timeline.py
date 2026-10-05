@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
-from app.timeline import Timeline, closest_anchor_end, head_start_required, idle_frame, idle_loop_frame, settle_frames  # noqa: E402
+from app.timeline import Timeline, closest_anchor_end, head_start_required, idle_frame, idle_loop_frame, settle_frames, stable_idle_end  # noqa: E402
 
 
 def frames(n, value):
@@ -220,6 +220,12 @@ def test_silent_tail_selects_an_actual_rest_like_frame():
     tail = np.array([50, 40, 10, 0, 5, 30], dtype=np.uint8)[:, None, None, None]
     end = closest_anchor_end(tail, np.zeros((1, 1, 1), np.uint8), first=2)
     assert end == 4 and int(tail[end - 1][0, 0, 0]) == 0
+
+
+def test_neutral_idle_stops_before_a_large_pose_drift():
+    values = np.array([0] * 4 + [1, 2, 3, 2, 3, 4, 7, 10, 12, 10, 2], np.uint8)[:, None, None, None]
+    assert stable_idle_end(values, fps=4, max_delta=6, min_seconds=2) == 9
+    assert stable_idle_end(values[:10], fps=4, max_delta=6, min_seconds=2) == 10
 
 
 def test_finalizing_idle_does_not_move_the_current_playback_cursor():
