@@ -6,6 +6,7 @@ import { LanguagePicker } from "./components/LanguagePicker";
 
 import { PipelineView } from "./components/PipelineView";
 import { ResultPlayer } from "./components/ResultPlayer";
+import { StreamPlayer, type StreamProgress } from "./components/StreamPlayer";
 import {
   createJob,
   getJob,
@@ -17,7 +18,9 @@ import {
 export default function HomePage() {
   const [file, setFile] = useState<File | null>(null);
   const [target, setTarget] = useState("es");
-  const [mode, setMode] = useState<"fast" | "quality" | "dub">("quality");
+  const [mode, setMode] = useState<"stream" | "fast" | "quality" | "dub">("stream");
+  const [stream, setStream] = useState<StreamProgress | null>(null);
+  const [streamEnded, setStreamEnded] = useState(false);
   const [job, setJob] = useState<JobRecord | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -34,6 +37,7 @@ export default function HomePage() {
     setSubmitting(true);
     setError(null);
     setJob(null);
+    setStream(null); setStreamEnded(false);
     try {
       const created = await createJob(file, target, { mode });
       // Hydrate initial JobRecord, then subscribe to events.
@@ -44,6 +48,8 @@ export default function HomePage() {
       esRef.current = openJobEventStream(created.job_id, async (eventName, data) => {
         // For high-frequency stage_progress events, patch the stage in-place
         // rather than re-fetching the whole job record.
+        if (eventName === "stream_segment") { setStream(data as StreamProgress); return; }
+        if (eventName === "job_completed" || eventName === "stream_end") setStreamEnded(true);
         if (eventName === "stage_progress") {
           setJob((prev) => {
             if (!prev) return prev;
@@ -98,6 +104,7 @@ export default function HomePage() {
           <LanguagePicker value={target} onChange={setTarget} />
           <label className="text-sm">Translation mode
             <select value={mode} onChange={e => setMode(e.target.value as typeof mode)} className="block w-full mt-1 bg-ink-800 border border-ink-600 rounded p-2">
+              <option value="stream">Streaming · starts playing while it renders</option>
               <option value="fast">Fast · natural lip sync</option>
               <option value="quality">Quality · detailed lip sync</option>
               <option value="dub">Fastest · translated audio only</option>
@@ -133,6 +140,7 @@ export default function HomePage() {
         <PipelineView job={job} />
       </section>
 
+      {job && job.mode === "stream" && job.status !== "completed" && <StreamPlayer jobId={job.job_id} progress={stream} ended={streamEnded} />}
       <ResultPlayer job={job} />
 
       <footer className="border-t border-ink-700 pt-4 mt-8 text-xs text-ink-400">

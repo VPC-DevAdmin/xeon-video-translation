@@ -32,6 +32,7 @@ export interface StageRecord {
 
 export interface JobRecord {
   job_id: string;
+  mode?: string | null;
   status: "queued" | "running" | "completed" | "failed" | "cancelling" | "cancelled";
   current_stage: StageName | null;
   target_language: string;
@@ -49,7 +50,7 @@ export interface JobRecord {
 export async function createJob(
   video: File,
   target_language: string,
-  opts: { source_language?: string; lipsync_backend?: LipsyncBackend; mode?: "fast" | "quality" | "dub" } = {}
+  opts: { source_language?: string; lipsync_backend?: LipsyncBackend; mode?: "stream" | "fast" | "quality" | "dub" } = {}
 ): Promise<{ job_id: string; status: string; created_at: string }> {
   const fd = new FormData();
   fd.append("video", video);
@@ -99,6 +100,9 @@ export function openJobEventStream(
     "stage_completed",
     "stage_skipped",
     "pipeline_etas",
+    "stream_plan",
+    "stream_span_audio",
+    "stream_segment",
     "job_completed",
     "error",
     "ping",

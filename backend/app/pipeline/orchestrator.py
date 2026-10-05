@@ -402,14 +402,25 @@ async def run_pipeline(state: JobState, input_path: Path) -> None:
             stabilized = storage.job_artifact_path(state.job_id, "stabilized.mp4")
             if _stage(state, "stabilize").status == StageStatus.DONE and stabilized.exists():
                 input_path = stabilized
-            for name, runner in (
-                ("transcribe", _run_stage_transcribe),
-                ("translate", _run_stage_translate),
-                ("tts", _run_stage_tts),
-            ):
-                async with speech_lock(20 if lane == "batch" else 10):
-                    await execute(name, runner)
-            await execute("lipsync", _run_stage_lipsync, input_path)
+            async with speech_lock(20 if lane == "batch" else 10):
+                await execute("transcribe", _run_stage_transcribe)
+            if state.mode == "stream":
+                # Streaming translation: translate once, then per speech span synthesize,
+                # render only its frames and publish each piece as it lands.
+                async with speech_lock(10):
+                    await execute("translate", _run_stage_translate)
+                await execute("tts", _run_stage_stream, input_path)
+                stage = _stage(state, "lipsync")
+                if stage.status != StageStatus.DONE:
+                    raise RuntimeError("streaming render did not complete")
+            else:
+                for name, runner in (
+                    ("translate", _run_stage_translate),
+                    ("tts", _run_stage_tts),
+                ):
+                    async with speech_lock(20 if lane == "batch" else 10):
+                        await execute(name, runner)
+                await execute("lipsync", _run_stage_lipsync, input_path)
             await execute("poststabilize", _run_stage_poststabilize)
             await execute("mux", _run_stage_mux, input_path)
             if state.status == "cancelling":
@@ -1055,6 +1066,65 @@ async def _run_stage_lipsync(
             await ticker
         except (asyncio.CancelledError, Exception):
             pass
+
+
+async def _run_stage_stream(state: JobState, queue: EventLog, input_path: Path) -> None:
+    """Mode "stream": the tts and lipsync stages run together, per speech span
+    (see pipeline/streaming.py). Events: stream_plan, stream_span_audio,
+    stream_segment (with the head-start numbers the player uses)."""
+    import json
+
+    from . import streaming
+
+    tts_stage = await _start_stage(state, queue, "tts")
+    lipsync_stage = _stage(state, "lipsync")
+    lipsync_stage.status = StageStatus.RUNNING
+    lipsync_stage.eta_seconds = estimate_eta_seconds(state, "lipsync")
+    await _emit(queue, "stage_started", {"stage": "lipsync", "eta_seconds": lipsync_stage.eta_seconds})
+    started = time.perf_counter()
+    translation = json.loads(storage.job_artifact_path(state.job_id, "translation.json").read_text())
+    transcript = json.loads(storage.job_artifact_path(state.job_id, "transcript.json").read_text())
+    backend = lipsync.backend_in_use(state.lipsync_backend)
+    loop = asyncio.get_running_loop()
+    progress_cb = _progress_emitter(loop, queue, state, "lipsync")
+
+    def emit(event: str, data: dict) -> None:
+        asyncio.run_coroutine_threadsafe(_emit(queue, event, data), loop)
+        if event == "stream_segment" and data.get("total_seconds"):
+            progress_cb(min(0.99, float(data["ready_seconds"]) / float(data["total_seconds"])))
+
+    def _do() -> dict[str, Any]:
+        job = streaming.StreamJob(
+            storage.job_dir(state.job_id), input_path, translation, transcript,
+            backend=backend, steps=(state.lipsync_quality or {}).get("num_inference_steps"),
+            tts_backend=state.tts_backend, options=state.options, emit=emit,
+            cancel=_cancel_signals.get(state.job_id))
+        return job.run(reference_audio=storage.job_artifact_path(state.job_id, "audio.wav"),
+                       original_audio=storage.job_artifact_path(state.job_id, "audio.wav"))
+
+    try:
+        result = await blocking_call(_do)
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        tts_stage.duration_ms = int(result["tts_seconds"] * 1000)
+        tts_stage.output = {"backend": state.tts_backend or settings.tts_backend, "language": state.target_language,
+                            "path": "translated_audio.wav", "per_span": True, "spans": result["spans"]}
+        tts_stage.status = StageStatus.DONE
+        lipsync_stage.duration_ms = elapsed_ms
+        lipsync_stage.output = {"backend": backend, "passthrough": False, "path": "lipsynced.mp4", "streaming": result,
+                                "playlist": "stream.m3u8"}
+        lipsync_stage.progress = 1.0
+        lipsync_stage.status = StageStatus.DONE
+        checkpoints.record(storage.job_dir(state.job_id), "lipsync")
+        _persist(state)
+        await _emit(queue, "stage_completed", {"stage": "tts", "output": tts_stage.output, "duration_ms": tts_stage.duration_ms})
+        await _emit(queue, "stage_completed", {"stage": "lipsync", "output": lipsync_stage.output, "duration_ms": elapsed_ms})
+    except Exception as e:
+        for stage in (tts_stage, lipsync_stage):
+            stage.status = StageStatus.FAILED
+            stage.error = f"{type(e).__name__}: {e}"
+            stage.duration_ms = int((time.perf_counter() - started) * 1000)
+        _persist(state)
+        raise
 
 
 async def _tick_lipsync_progress(

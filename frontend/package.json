@@ -10,6 +10,7 @@
     "test:e2e": "playwright test"
   },
   "dependencies": {
+    "hls.js": "^1.7.3",
     "next": "15.5.27",
     "react": "19.3.0",
     "react-dom": "19.3.0",

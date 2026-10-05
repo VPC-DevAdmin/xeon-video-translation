@@ -63,6 +63,11 @@ class Settings(BaseSettings):
     retention_days: int = Field(0, ge=0)
     window_seconds: float = Field(8.0, ge=1, le=30)
     window_overlap_seconds: float = Field(0.4, ge=0, le=2)
+    # Streaming translation (mode "stream"): render windows per speech span and
+    # the pause that separates two spans; frames outside spans pass through.
+    stream_window_seconds: float = Field(8.0, ge=2, le=30)
+    stream_span_gap_seconds: float = Field(0.6, ge=0, le=5)
+    stream_span_pad_seconds: float = Field(0.25, ge=0, le=2)
     windowed_lipsync: bool = False
     musetalk_frame_budget_mb: int = Field(4096, ge=64)
     latentsync_frame_budget_mb: int = Field(8192, ge=64)

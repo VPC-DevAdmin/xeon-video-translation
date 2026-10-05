@@ -12,10 +12,10 @@ interface StageMeta {
 
 const STAGES: StageMeta[] = [
   { key: "audio", title: "Audio extract", blurb: "ffmpeg → 16 kHz mono WAV" },
-  { key: "transcribe", title: "Transcribe", blurb: "faster-whisper (CPU int8)" },
-  { key: "translate", title: "Translate", blurb: "NLLB-200 distilled-600M" },
-  { key: "tts", title: "Voice clone", blurb: "XTTS-v2 (CPU)" },
-  { key: "lipsync", title: "Lip sync", blurb: "selectable backend" },
+  { key: "transcribe", title: "Transcribe", blurb: "whisper large-v3" },
+  { key: "translate", title: "Translate", blurb: "LLM, per segment" },
+  { key: "tts", title: "Voice clone", blurb: "XTTS, verified per sentence" },
+  { key: "lipsync", title: "Lip sync", blurb: "LatentSync; streaming renders speech spans only" },
   { key: "mux", title: "Mux & watermark", blurb: "ffmpeg + overlay" },
 ];
 
