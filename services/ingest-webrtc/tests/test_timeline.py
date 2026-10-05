@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
-from app.timeline import Timeline, head_start_required, idle_frame, idle_loop_frame, settle_frames  # noqa: E402
+from app.timeline import Timeline, closest_anchor_end, head_start_required, idle_frame, idle_loop_frame, settle_frames  # noqa: E402
 
 
 def frames(n, value):
@@ -24,7 +24,7 @@ def test_future_clips_play_in_order_and_idle_fills_gaps():
     assert tl.frame_at(5.9)[0][0, 0, 0] == 2
     # idle loop with a crossfaded wrap: 8 frames, 2 blended -> loop of 6; frame 0 leans on frame 6
     seq = np.arange(8, dtype=np.uint8) * 10
-    tl2 = Timeline(fps=4, idle_frames=seq[:, None, None, None], transition_seconds=0)
+    tl2 = Timeline(fps=4, idle_frames=seq[:, None, None, None], transition_seconds=0, idle_crossfade_seconds=0.5)
     assert tl2.idle_crossfade == 2
     shown = [int(tl2.frame_at(t / 4)[0].reshape(-1)[0]) for t in range(8)]
     assert shown[2:6] == [20, 30, 40, 50] and shown[6] == shown[0] and 0 < shown[0] < 60 and shown[0] > shown[1]
@@ -81,7 +81,7 @@ def test_idle_frame_wrap_is_a_dissolve_from_the_continuation():
 def test_idle_loop_grows_without_moving_the_frame_on_screen():
     """Appending footage while the loop plays must not jump."""
     a = np.arange(10, dtype=np.uint8)[:, None, None, None] * 10               # one continuous recording
-    tl = Timeline(fps=4, idle_frames=a, transition_seconds=0)
+    tl = Timeline(fps=4, idle_frames=a, transition_seconds=0, idle_crossfade_seconds=0.5)
     shown = [int(tl.frame_at(t / 4)[0].reshape(-1)[0]) for t in range(5)]     # cursor at 4 (frame 40)
     tl.add_idle(np.arange(10, 15, dtype=np.uint8)[:, None, None, None] * 10)
     assert int(tl.frame_at(5 / 4)[0].reshape(-1)[0]) == 50                    # continues, no modulo jump
@@ -116,7 +116,7 @@ def test_switching_between_idle_and_a_clip_is_a_dissolve():
 
 def test_idle_growth_waits_while_the_wrap_dissolve_is_on_screen():
     a = np.arange(0, 100, 10, dtype=np.uint8)[:, None, None, None]            # k = 2, play region 8 frames
-    tl = Timeline(fps=4, idle_frames=a, transition_seconds=0)
+    tl = Timeline(fps=4, idle_frames=a, transition_seconds=0, idle_crossfade_seconds=0.5)
     for t in range(8):
         tl.frame_at(t / 4)
     tl.frame_at(8 / 4)                                                         # cursor 8 -> wraps to j=0: in the dissolve
@@ -130,7 +130,7 @@ def test_idle_growth_waits_while_the_wrap_dissolve_is_on_screen():
 
 def test_idle_loop_growth_after_a_wrap_does_not_jump():
     a = np.arange(0, 100, 10, dtype=np.uint8)[:, None, None, None]            # loop of 8 (k = 2)
-    tl = Timeline(fps=4, idle_frames=a, transition_seconds=0)
+    tl = Timeline(fps=4, idle_frames=a, transition_seconds=0, idle_crossfade_seconds=0.5)
     for t in range(13):
         tl.frame_at(t / 4)
     assert int(tl.frame_at(13 / 4)[0].reshape(-1)[0]) == 50
@@ -186,16 +186,52 @@ def test_finalized_loop_cuts_at_the_frame_closest_to_its_start():
     # a take that drifts away and comes back near its first frame at index 9, then drifts again
     values = [0, 10, 20, 30, 40, 30, 20, 10, 5, 1, 30, 50, 70]
     a = np.array(values, dtype=np.uint8)[:, None, None, None]
-    tl = Timeline(fps=4, idle_frames=a, transition_seconds=0)
+    tl = Timeline(fps=4, idle_frames=a, transition_seconds=0, idle_crossfade_seconds=0.5)
     loop = tl.loop("front")
     assert loop.effective_crossfade() == 2
     assert loop.finalize(min_seconds=1.5, fps=4)                              # candidates from index 6 on: index 9 (value 1) wins
-    assert loop.finalized and len(loop.frames) == 9 and loop.effective_crossfade() == 2
-    shown = [int(tl.frame_at(t / 4)[0].reshape(-1)[0]) for t in range(10)]
-    assert shown[2:7] == [20, 30, 40, 30, 20] and shown[7] < 12 and shown[9] == 20   # wraps 10, 5 -> 0, 10 with a 2-frame blend
+    assert loop.finalized and len(loop.frames) == 10 and loop.effective_crossfade() == 0
+    shown = [int(tl.frame_at(t / 4)[0].reshape(-1)[0]) for t in range(11)]
+    assert shown[2:7] == [20, 30, 40, 30, 20] and shown[9:11] == [1, 0]   # nearest frame is included before wrap
     assert not Timeline(fps=4, idle_frames=a[:3]).loop("front").finalize(1.5, 4)      # too short to cut
     loop.restart()
     assert not loop.ready and loop.frame_count == 0
+
+
+def test_default_face_clip_switches_do_not_double_expose_frames():
+    tl = Timeline(fps=25, idle_frames=frames(20, 0))
+    assert tl.idle_crossfade == 0
+    tl.schedule(1.0, np.full(48000, 10, np.int16), frames(25, 90), tl.generation, tag="filler")
+    assert int(tl.frame_at(0.96)[0][0, 0, 0]) == 0
+    assert int(tl.frame_at(1.0)[0][0, 0, 0]) == 90
+    assert int(tl.frame_at(2.0)[0][0, 0, 0]) == 0
+
+
+def test_overlapping_reply_takes_video_priority_at_the_same_time_as_audio():
+    tl = Timeline(fps=25)
+    tl.schedule(1.0, np.full(48000, 10, np.int16), frames(25, 10), tl.generation, tag="filler")
+    tl.schedule(1.5, np.full(48000, 90, np.int16), frames(25, 90), tl.generation, tag="reply")
+    assert int(tl.frame_at(1.48)[0][0, 0, 0]) == 10
+    assert int(tl.frame_at(1.5)[0][0, 0, 0]) == 90
+    assert tl.audio_packet(1.5, 960)[0] == 90
+
+
+def test_silent_tail_selects_an_actual_rest_like_frame():
+    tail = np.array([50, 40, 10, 0, 5, 30], dtype=np.uint8)[:, None, None, None]
+    end = closest_anchor_end(tail, np.zeros((1, 1, 1), np.uint8), first=2)
+    assert end == 4 and int(tail[end - 1][0, 0, 0]) == 0
+
+
+def test_finalizing_idle_does_not_move_the_current_playback_cursor():
+    values = np.array([0, 10, 20, 10, 1, 30, 40, 50, 2, 60], dtype=np.uint8)[:, None, None, None]
+    tl = Timeline(fps=4, idle_frames=values)
+    for i in range(7):
+        tl.frame_at(i / 4)
+    loop = tl.loop("front")
+    assert loop.cursor == 6
+    assert loop.finalize(min_seconds=1, fps=4)
+    assert loop.cursor == 6 and len(loop.frames) == 9
+    assert int(tl.frame_at(7 / 4)[0][0, 0, 0]) == 50
 
 
 def test_truncate_drops_a_clip_that_barely_started():

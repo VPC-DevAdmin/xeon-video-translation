@@ -1,13 +1,10 @@
 """Video assistant sessions over WebRTC.
 
-Turn: Silero endpoint -> a prepared opener plays at once ("I am going to look that up,
-give me a second") -> the persona turns to its tablet (a second, posed portrait) and
-makes short progress utterances between pauses -> the backend plans the whole reply
-text and streams TTS audio -> FlashHead renders it chunk by chunk -> the reply is
-scheduled at the earliest start that cannot stall given the renderer's measured rate
--> whatever filler is still talking is cut off with a fade, a short closer plays, the
-persona turns back and the reply plays at 25 fps. Speaking again or pressing
-Interrupt clears everything.
+Turn: Silero endpoint -> one prepared opener plays at once -> continuous idle
+motion fills the wait -> the backend plans the reply and streams TTS audio ->
+FlashHead renders it chunk by chunk -> the reply starts after a measured head
+start and plays at 25 fps. The older tablet and multi-phrase sequence is opt-in.
+Speaking again or pressing Interrupt clears everything.
 
 Services (ingest runs with host networking):
   ASSISTANT_BACKEND_URL   backend with /assistant/respond and /assistant/speak
@@ -16,6 +13,7 @@ Tuning: ASSISTANT_HEAD_START (minimum reply start after the endpoint, s, default
 ASSISTANT_MAX_HEAD_START (20), ASSISTANT_IDLE_CHUNKS (2), ASSISTANT_IDLE_SECONDS (12),
 ASSISTANT_WORKING_IDLE_SECONDS (6), ASSISTANT_WORKING_POSE ("pitch,yaw,roll,eyes_x,eyes_y"),
 ASSISTANT_<KIND>_TEXT_<LANG> ("|"-separated phrases; kinds OPENER, BEAT, BRIDGE, CLOSER),
+ASSISTANT_PROGRESS_FILLERS (0 by default; opt in to the multi-phrase tablet sequence),
 ASSISTANT_RENDER_TIMEOUT (30).
 
 Every renderer call of a session goes through one lock (`Renderer.lock`): idle growth,
@@ -51,7 +49,7 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
 from .identity import owner, require
-from .timeline import Timeline, head_start_required, settle_frames
+from .timeline import Timeline, closest_anchor_end, head_start_required
 
 router = APIRouter(prefix="/assistant", tags=["assistant"])
 _sessions: dict = {}
@@ -71,8 +69,10 @@ THINKING_POSE = dict(zip(("pitch", "yaw", "roll", "eyes_x", "eyes_y"), _THINK_VA
 THINK_RETURN_AT = 0.70                                               # fraction of the thinking loop with the face back at the camera
 WORKING_POSE_ENABLED = os.getenv("ASSISTANT_WORKING_POSE_ENABLED", "1") == "1"
 CACHE_DIR = Path(os.getenv("JOB_ARTIFACTS_DIR", "./jobs")).resolve() / "personas"
-CACHE_VERSION = 6                                                    # bump when cached footage changes meaning
-SETTLE_FRAMES = int(os.getenv("ASSISTANT_SETTLE_FRAMES", "10"))      # frames a clip takes to settle back into the rest pose
+CACHE_VERSION = 7                                                    # invalidate old clips with blended faces
+SETTLE_FRAMES = int(os.getenv("ASSISTANT_SETTLE_FRAMES", "10"))      # legacy multi-phrase filler cutoff
+CLIP_TAIL_SECONDS = max(0.35, float(os.getenv("ASSISTANT_CLIP_TAIL_SECONDS", "0.8")))
+PROGRESS_FILLERS = os.getenv("ASSISTANT_PROGRESS_FILLERS", "0") == "1"
 MIN_IDLE_SECONDS = float(os.getenv("ASSISTANT_MIN_IDLE_SECONDS", "6"))   # shortest take kept as a loop when growth is interrupted
 READING_FRAMES = int(os.getenv("ASSISTANT_READING_FRAMES", "150"))   # reading loop at the tablet (LivePortrait), 25 fps
 THINKING_FRAMES = int(os.getenv("ASSISTANT_THINKING_FRAMES", "100"))  # thinking loop: away and back within 4 s
@@ -441,6 +441,27 @@ class Assistant:
                 frames.append(rendered)
         return np.concatenate(frames) if frames else np.zeros((0, 1, 1, 3), np.uint8)
 
+    async def render_reply_piece(self, piece24: np.ndarray, final: bool, generation: int,
+                                 reset: bool) -> tuple[np.ndarray, np.ndarray, int]:
+        """Keep the renderer's motion state continuous through speech and its silent tail."""
+        speech16 = resample(piece24, 24000, 16000)
+        pcm16 = np.concatenate((speech16, np.zeros(int(CLIP_TAIL_SECONDS * 16000), np.int16))) if final else speech16
+        parts = []
+        for offset in range(0, len(pcm16), self.renderer.samples):
+            frames, _ = await self.renderer.render(pcm16[offset:offset + self.renderer.samples],
+                                                   reset and not parts, generation, "reply:front")
+            parts.append(frames)
+        frames = np.concatenate(parts) if parts else np.zeros((0, 1, 1, 3), np.uint8)
+        audio48 = resample(piece24, 24000, 48000)
+        if final and len(frames):
+            speech_frames = (len(audio48) * FPS + 47999) // 48000
+            frames = frames[:closest_anchor_end(frames, self.anchor("front"), speech_frames + int(0.16 * FPS))]
+            duration_samples = len(frames) * 48000 // FPS
+            audio48 = np.pad(audio48[:duration_samples], (0, max(0, duration_samples - len(audio48))))
+        else:
+            audio48 = audio48[:int(round(len(frames) / FPS * 48000))]
+        return frames, audio48, len(parts)
+
     # ------------------------------------------------------------------- cache
     def _cache_dir(self) -> Path | None:
         if not self.persona_id:
@@ -466,7 +487,7 @@ class Assistant:
 
     def _clip_prefix(self) -> str:
         return self._fingerprint(kind="clip", language=self.language, voice=self.voice or "", voice_digest=self.voice_digest,
-                                 posed=WORKING_POSE if self.working_pose else None)
+                                 posed=WORKING_POSE if self.working_pose else None, tail_seconds=CLIP_TAIL_SECONDS)
 
     def _clip_file(self, kind: str, text: str) -> Path | None:
         directory = self._cache_dir()
@@ -661,7 +682,7 @@ class Assistant:
         info = await self.renderer.open(self.directory / "image.png")
         t_open = time.monotonic()
         working_file = self._working_portrait_file()
-        if WORKING_POSE_ENABLED and working_file is not None and working_file.exists():
+        if PROGRESS_FILLERS and WORKING_POSE_ENABLED and working_file is not None and working_file.exists():
             # The posed portrait is cached: open it now so cached working clips match it.
             (self.directory / "image-working.png").write_bytes(working_file.read_bytes())
             try:
@@ -671,7 +692,7 @@ class Assistant:
             except httpx.HTTPError:
                 self.working_pose = False
         cached = {"idle": await self._load_idle("front"), "working_idle": self.working_pose and await self._load_idle("working"),
-                  "thinking_idle": await self._load_idle("thinking"), "clips": await self._load_clips()}
+                  "thinking_idle": PROGRESS_FILLERS and await self._load_idle("thinking"), "clips": await self._load_clips()}
         if not cached["idle"]:
             self.timeline.add_idle(await self.render_all(np.zeros(self.renderer.samples * IDLE_CHUNKS, np.int16), "idle:front"), False)
         self.metrics["prepare"] = {
@@ -705,11 +726,20 @@ class Assistant:
         """Synthesize and render one filler clip in the pose its kind calls for."""
         pose = KIND_POSE[kind] if (self.working_pose and self.renderer.has_pose("working")) else "front"
         pcm = await self.speak(text)
-        frames = await self.render_all(resample(pcm, 24000, 16000), f"{kind}:{pose}", pose)
+        speech16 = resample(pcm, 24000, 16000)
+        # Give the renderer real silent input to close the mouth and return toward
+        # rest. A crossfade between face images duplicates eyes and mouth shapes.
+        tail16 = np.zeros(int(CLIP_TAIL_SECONDS * 16000), np.int16)
+        frames = await self.render_all(np.concatenate((speech16, tail16)), f"{kind}:{pose}", pose)
         if not len(frames):
             return
-        frames = self.settled(frames, pose)
-        clip = Clip(kind, text, resample(pcm, 24000, 48000), frames, pose)
+        audio48 = resample(pcm, 24000, 48000)
+        speech_frames = (len(audio48) * FPS + 47999) // 48000
+        earliest = speech_frames + int(0.16 * FPS)
+        frames = frames[:closest_anchor_end(frames, self.anchor(pose), earliest)]
+        duration_samples = len(frames) * 48000 // FPS
+        audio48 = np.pad(audio48[:duration_samples], (0, max(0, duration_samples - len(audio48))))
+        clip = Clip(kind, text, audio48, frames, pose)
         self.clips[kind].append(clip)
         await self._save_clip(clip)
         self.notify("filler_ready", kind=kind, count=len(self.clips[kind]), clips=self.clip_count())
@@ -717,14 +747,6 @@ class Assistant:
     def anchor(self, pose: str):
         """The rest frame of `pose`: the first idle frame, which every reset render starts from."""
         return self.timeline.loop(pose).anchor
-
-    def settled(self, frames: np.ndarray, pose: str) -> np.ndarray:
-        """`frames` followed by a short settle into the pose's rest frame, so the clip can
-        be followed by anything that starts there (idle, another clip, the reply)."""
-        anchor = self.anchor(pose)
-        if anchor is None or not len(frames) or anchor.shape != frames.shape[1:]:
-            return frames
-        return np.concatenate([frames, settle_frames(frames[-1], anchor, SETTLE_FRAMES)])
 
     async def grow_idle(self, pose: str, target_seconds: float) -> None:
         """Grow the idle loop of `pose` as one continuous take to `target_seconds`, then
@@ -789,10 +811,16 @@ class Assistant:
         loop, then the filler repertoire. Yields to turns; everything is cached."""
         try:
             plan = self._plan_texts()
-            for kind, text in plan[:2]:                      # one opener of each mode before anything else
+            opening = filler_texts(self.language, "opener_think")
+            first = plan[:2] if PROGRESS_FILLERS else ([("opener_think", opening[0])] if opening else [])
+            for kind, text in first:
                 if not self.has_clip(kind, text):
                     await self.make_clip(kind, text)
             await self.grow_idle("front", IDLE_SECONDS)
+            if not PROGRESS_FILLERS:
+                self.notify("ready", idle_seconds=round(self.timeline.idle_seconds(), 1), clips=self.clip_count(),
+                            working_pose=False, thinking=False)
+                return
             if not self.timeline.loop("thinking").ready:
                 await self.make_thinking_loop()
             self.metrics["prepare"].update(idle_seconds_final=round(self.timeline.idle_seconds(), 2),
@@ -839,7 +867,8 @@ class Assistant:
     def pick_opener(self):
         """An opener and the mode it announces: "think" (glance away, beats to camera) or
         "lookup" (turn to the notes card). Modes alternate when both are prepared."""
-        modes = [kind for kind in ("opener_think", "opener_lookup") if self.clips.get(kind)]
+        kinds = ("opener_think", "opener_lookup") if PROGRESS_FILLERS else ("opener_think",)
+        modes = [kind for kind in kinds if self.clips.get(kind)]
         if not modes:
             return None, "think"
         last = self.last_used.get("opener_mode")
@@ -955,7 +984,7 @@ class Assistant:
                 self.metrics["ack_start_seconds"].append(round(placed[0] - t0, 2))
                 self.metrics["fillers"].append({"kind": opener.kind, "text": opener.text, "at": round(placed[0] - t0, 2), "mode": mode})
                 self.notify("acknowledging", seconds=round(placed[1] - placed[0], 2), text=opener.text, mode=mode)
-        filler = asyncio.create_task(self.fill_gap(plan, state, generation, t0))
+        filler = asyncio.create_task(self.fill_gap(plan, state, generation, t0)) if PROGRESS_FILLERS else None
 
         # 2. Plan then speak on the backend; audio arrives as PCM events.
         queue: asyncio.Queue = asyncio.Queue()
@@ -1058,18 +1087,23 @@ class Assistant:
                     take(await queue.get())
                     continue
                 piece = pending24.pop(need)
-                frames, _ = await self.renderer.render(resample(piece, 24000, 16000), state["chunks"] == 0, generation, "reply:front")
+                last_piece = state["tts_done"] and not len(pending24)
+                frames, audio48, chunks = await self.render_reply_piece(piece, last_piece, generation, state["chunks"] == 0)
                 if generation != tl.generation:
                     return
-                state["chunks"] += 1
-                covered = int(round(len(frames) / FPS * 48000))
-                if state["tts_done"] and not len(pending24):
-                    frames = self.settled(frames, "front")          # the reply ends in the rest pose the idle loop restarts from
-                rendered.append((frames, resample(piece, 24000, 48000)[:covered]))
+                state["chunks"] += chunks
+                rendered.append((frames, audio48))
                 if state["reply_start"] is None and (state["tts_done"] or tl.now() >= t0 + HEAD_START - 2.0):
                     decide_start()
                 if state["reply_start"] is not None:
                     place_rendered()
+            if state["chunks"] and not last_piece:
+                # A reply ending exactly on a renderer chunk has no partial final
+                # piece. Render the silent continuation before returning to idle.
+                frames, audio48, _ = await self.render_reply_piece(np.zeros(0, np.int16), True, generation, False)
+                if generation != tl.generation:
+                    return
+                rendered.append((frames, audio48))
             if rendered:
                 if state["reply_start"] is None:
                     decide_start()
@@ -1090,9 +1124,10 @@ class Assistant:
             self.metrics["renderer_errors"] += 1
             self.notify("error", message=str(exc))
         finally:
-            filler.cancel()
+            if filler is not None:
+                filler.cancel()
             producer.cancel()
-            await asyncio.gather(filler, producer, return_exceptions=True)
+            await asyncio.gather(*(task for task in (filler, producer) if task is not None), return_exceptions=True)
 
     async def consume(self, track):
         from .vad import Detector

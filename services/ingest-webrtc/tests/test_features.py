@@ -84,6 +84,36 @@ def test_silero_real_onnx_when_configured(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_assistant_reply_renders_a_real_silent_tail_across_chunk_boundaries(tmp_path):
+    from app.assistant import Assistant
+
+    class Renderer:
+        samples = 16000
+
+        def __init__(self):
+            self.calls = []
+
+        async def render(self, pcm, reset, generation, motion):
+            self.calls.append((len(pcm), reset))
+            values = [100 if np.any(pcm[i:i + 640]) else 0 for i in range(0, len(pcm), 640)]
+            return np.asarray(values, np.uint8)[:, None, None, None].repeat(3, axis=3), 0.0
+
+    session = Assistant("a", tmp_path, np.zeros((1, 1, 3), np.uint8), "en", "test")
+    session.renderer = Renderer()
+    session.timeline.add_idle(np.zeros((25, 1, 1, 3), np.uint8))
+    try:
+        frames, audio, chunks = await session.render_reply_piece(np.ones(12000, np.int16), True, 0, True)
+        assert chunks == 2 and session.renderer.calls == [(16000, True), (4800, False)]
+        assert set(np.unique(frames)) == {0, 100} and np.all(frames[-1] == 0)
+        assert len(audio) == len(frames) * 48000 // 25 and np.all(audio[-4800:] == 0)
+        tail, silence, chunks = await session.render_reply_piece(np.zeros(0, np.int16), True, 0, False)
+        assert chunks == 1 and session.renderer.calls[-1] == (12800, False)
+        assert np.all(tail == 0) and np.all(silence == 0)
+    finally:
+        await session.client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_avatar_storage_limit_stops_before_backend(tmp_path, monkeypatch):
     (tmp_path / "existing.npy").write_bytes(b"x" * 1025)
     monkeypatch.setenv("AVATAR_MAX_STORAGE_MB", "0")

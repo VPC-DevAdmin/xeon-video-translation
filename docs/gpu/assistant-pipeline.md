@@ -3,6 +3,14 @@
 Date: 4 October 2026. Code: `gpu/track` from `333e869` (pipeline) and `79dfb41`
 (personas). Measurements: `artifacts/bench/assistant-ab-2026-10-04/assistant-e2e-*.json`.
 
+> Update, 5 October: the multi-phrase tablet sequence below is now an optional
+> comparison mode (`ASSISTANT_PROGRESS_FILLERS=1`). The default plays one
+> acknowledgement followed by the front idle loop until the reply. Cached
+> acknowledgements and replies render a silent tail; face joins and loop wraps
+> use actual frames without whole-face dissolves. The measurements below describe
+> the earlier build. Visual acceptance and frame-skip rates for the new build
+> require a fresh XE7740 run.
+
 ## Try it live
 
 On your machine, tunnel the frontend (the box binds it to localhost only, and the

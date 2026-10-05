@@ -9,10 +9,10 @@ times far ahead, loops idle footage when nothing is active, and counts stalls
 
 Idle footage is a list of segments, each a continuous recording of the renderer's
 motion. Growth appends to the last segment while the renderer still continues it and
-starts a new one after a reply moved the motion state; the loop runs over all
-segments and hides every boundary (and the wrap) behind a half-second dissolve. The
-loop position is a cursor that advances with the frames shown, so appending footage
-never moves the frame on screen. Switching between idle and a clip dissolves too.
+starts a new one after a reply moved the motion state. Finalized loops cut at a
+naturally matching frame. The loop
+position is a cursor that advances with the frames shown, so appending footage never
+moves the frame on screen. Prepared face clips use direct joins instead of dissolves.
 
 There can be several idle loops ("front": listening; "working": looking down at a
 tablet) and the active one is switched at scheduled times, so the filler plan of a
@@ -20,12 +20,10 @@ turn can send the persona to its tablet and back. Filler clips carry a tag so th
 plan can cut them off (with a short fade) the moment the reply is ready.
 
 Anchors: every clip starts from the renderer's rest pose (it is rendered from a reset)
-and ends by settling back into that rest frame (`settle_frames`) after its trailing
-silence, and every idle loop starts from that same rest pose, so clips and idle join
-with a hard cut instead of a dissolve between two different poses. The idle loop
-itself never returns to centre: it is one continuous take cut at the frame that best
-matches its start. Only switches that cannot be anchored (an opener landing mid-idle,
-a head-turn clip) get a very short dissolve."""
+and ends after naturally rendered trailing silence, and every idle loop starts from
+that same rest pose. The idle loop is one continuous take cut at the frame that best
+matches its start. Whole-face dissolves remain available only as an explicit legacy
+option for comparison."""
 
 from __future__ import annotations
 
@@ -48,7 +46,7 @@ def settle_frames(last_frame, anchor, count: int):
 
 
 def best_loop_end(frames, start: int, step: int = 4) -> int:
-    """Index j >= start whose frame is closest to frame 0, so frames[0:j] loops back to
+    """Index j >= start whose frame is closest to frame 0, so frames[0:j+1] loops back to
     its start through a naturally similar pose instead of a cut or a dissolve."""
     frames = np.asarray(frames)
     head = frames[0, ::step, ::step].astype(np.float32)
@@ -60,13 +58,35 @@ def best_loop_end(frames, start: int, step: int = 4) -> int:
     return best
 
 
+def closest_anchor_end(frames, anchor, first: int, step: int = 6) -> int:
+    """Exclusive end index in a silent tail, favoring a rest-like, low-motion frame.
+
+    This selects an actual rendered frame. Pixel dissolves of a moving face create
+    two sets of facial features, so a prepared clip should finish on natural output.
+    """
+    frames = np.asarray(frames)
+    target = np.asarray(anchor) if anchor is not None else None
+    if not len(frames) or target is None or target.shape != frames.shape[1:]:
+        return len(frames)
+    first = min(max(0, int(first)), len(frames) - 1)
+    sampled_target = target[::step, ::step].astype(np.int16)
+    best, best_score = len(frames) - 1, float("inf")
+    for index in range(first, len(frames)):
+        frame = frames[index, ::step, ::step].astype(np.int16)
+        pose = np.abs(frame - sampled_target).mean()
+        motion = np.abs(frame - frames[index - 1, ::step, ::step].astype(np.int16)).mean() if index else 0.0
+        score = float(pose + 0.2 * motion)
+        if score < best_score:
+            best, best_score = index, score
+    return best + 1
+
+
 class IdleLoop:
     """One continuous take of idle footage played as a loop.
 
-    While the take is still growing, the wrap is hidden by a crossfade. Once the take is
+    An optional legacy crossfade can hide a growing take's wrap. Once the take is
     finalized it is cut at the frame that best matches its first frame (`best_loop_end`),
-    so the wrap is a natural continuation with only two frames of blend: no return to a
-    rest pose, no dissolve between two different poses. Frame 0 is the renderer's rest
+    so the wrap is a natural continuation without blended facial features. Frame 0 is the renderer's rest
     pose (every take starts from a reset), which is also where clips start and end."""
 
     def __init__(self, crossfade: int, frames=None):
@@ -124,10 +144,16 @@ class IdleLoop:
         self.publish()
         if self.frames is None or len(self.frames) < int(min_seconds * fps) + 2:
             return False
-        j = best_loop_end(self.frames, int(min_seconds * fps))
-        self.frames = self.frames[:j]
+        # Do not choose an endpoint before the frame currently being displayed.
+        # Shortening the loop past the cursor would remap it and create a visible jump.
+        first = max(int(min_seconds * fps), min(self.cursor + 1, len(self.frames) - 1))
+        j = best_loop_end(self.frames, first)
+        # Include the frame chosen as the match. Slicing at j discarded that frame,
+        # leaving the loop to jump from a less similar predecessor to frame zero.
+        self.frames = self.frames[:j + 1]
         self.pending.clear()
         self.finalized = True
+        self.wrap_blend = 0
         self.cursor %= idle_loop_length([self.frames], self.effective_crossfade())
         return True
 
@@ -147,15 +173,16 @@ class IdleLoop:
 
 
 class Timeline:
-    def __init__(self, fps: int = 25, still=None, idle_frames=None, audio_rate: int = 48000, transition_seconds: float = 0.16):
+    def __init__(self, fps: int = 25, still=None, idle_frames=None, audio_rate: int = 48000,
+                 transition_seconds: float = 0.0, idle_crossfade_seconds: float = 0.0):
         self.epoch = time.monotonic()
         self.fps = int(fps)
         self.audio_rate = int(audio_rate)
         self.still = still
-        self.idle_crossfade = int(round(0.5 * self.fps))        # frames blended at each idle boundary
+        self.idle_crossfade = int(round(idle_crossfade_seconds * self.fps))  # legacy wrap dissolve; off for faces
         self.loops: dict = {"front": IdleLoop(self.idle_crossfade, idle_frames)}
         self.mode_switches: list = []   # (seconds, loop name), sorted; "front" before the first
-        self.transition_frames = int(round(transition_seconds * self.fps))   # dissolve when idle and clips alternate
+        self.transition_frames = int(round(transition_seconds * self.fps))   # optional legacy dissolve; off for face clips
         self.generation = 0
         self.clips: list = []           # (start, end, audio48k, frames, tag), sorted by start
         self.promises: list = []        # (start, end) windows a reply has committed to
@@ -276,12 +303,15 @@ class Timeline:
     def active(self, seconds: float):
         while self.clips and self.clips[0][1] < seconds - 0.5:
             self.clips.pop(0)
+        active = None
         for clip in self.clips:
             if clip[0] <= seconds < clip[1]:
-                return clip
+                # A reply supersedes a filler at its scheduled start. Audio packets
+                # already use this later-clip priority; video must do the same.
+                active = clip
             if clip[0] > seconds:
                 break
-        return None
+        return active
 
     def promised(self, seconds: float) -> bool:
         return any(a <= seconds < b for a, b in self.promises)
