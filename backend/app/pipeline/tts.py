@@ -1329,6 +1329,15 @@ def _synthesize_per_segment(
                 ):
                     from .quality import rewrite
 
+                    # Rewrites are a gamble: the LLM may not shorten the text, and a
+                    # shorter text can still come back as a slower take. Keep the
+                    # shortest verified take so a failed gamble never replaces a
+                    # usable one with a worse one.
+                    best = work / f"segment-{i}.best.wav"
+                    best_duration, best_text = duration, text
+                    import shutil
+
+                    shutil.copyfile(path, best)
                     for fit_attempt in range(settings.tts_fit_retries):
                         try:
                             text = rewrite(
@@ -1339,10 +1348,15 @@ def _synthesize_per_segment(
                                 options.get("glossary"),
                             )
                         except ValueError as exc:
-                            raise TTSError(
-                                f"segment {i + 1} cannot fit its {available:.2f}s slot: {exc}. "
-                                "No speech was discarded."
-                            ) from exc
+                            log.warning(
+                                "segment %d: no faithful rewrite for its %.2fs slot (%s); "
+                                "keeping the %.2fs take",
+                                i + 1,
+                                available,
+                                exc,
+                                best_duration,
+                            )
+                            break
                         generate_take(text)
                         verified = (
                             _trim_tail_via_whisper(path, target_language, text)
@@ -1355,20 +1369,37 @@ def _synthesize_per_segment(
                             _trim_to_speech(path)
                         duration = _probe_duration(path)
                         speed = duration / available
-                        segment["original_text"] = segment.get("original_text", segment["text"])
-                        segment["text"] = text
+                        if duration < best_duration:
+                            shutil.copyfile(path, best)
+                            best_duration, best_text = duration, text
                         if speed <= settings.tts_max_speed:
                             break
-                    if verified is False:
+                    if verified is False and best_duration / available > settings.tts_max_speed_hard:
                         raise TTSError(
                             f"segment {i + 1}: rewritten speech does not match the complete translation"
                         )
-                if speed > settings.tts_max_speed:
+                    shutil.copyfile(best, path)
+                    best.unlink()
+                    duration, text = best_duration, best_text
+                    speed = duration / available
+                    if text != segment["text"]:
+                        segment["original_text"] = segment.get("original_text", segment["text"])
+                        segment["text"] = text
+                if speed > settings.tts_max_speed_hard:
                     raise TTSError(
                         f"segment {i + 1} needs {duration:.2f}s in a {available:.2f}s slot; "
                         "shorten the translation or use a faster TTS voice. No speech was discarded."
                     )
-                _maybe_time_stretch(path, target_duration=available)
+                if speed > settings.tts_max_speed:
+                    # Nothing shorter exists; a bounded stretch beats a failed job.
+                    log.warning(
+                        "segment %d: stretching %.2fx (above the preferred %.2fx) to fit %.2fs",
+                        i + 1,
+                        speed,
+                        settings.tts_max_speed,
+                        available,
+                    )
+                _maybe_time_stretch(path, target_duration=available, max_speed=settings.tts_max_speed_hard)
                 duration = _probe_duration(path)
                 if duration > available + settings.tts_timing_tolerance:
                     raise TTSError(f"segment {i + 1} could not be fitted safely")
@@ -1738,7 +1769,9 @@ def _trim_tail_via_whisper(
     return True
 
 
-def _maybe_time_stretch(audio_path: Path, target_duration: float) -> None:
+def _maybe_time_stretch(
+    audio_path: Path, target_duration: float, max_speed: float | None = None
+) -> None:
     """Run rubberband to shorten `audio_path` to ~`target_duration` seconds.
 
     No-op when the current duration is already within the target or when
@@ -1756,12 +1789,13 @@ def _maybe_time_stretch(audio_path: Path, target_duration: float) -> None:
         # Already at or under the target — nothing to do.
         return
 
+    max_speed = max_speed or settings.tts_max_speed
     ratio = target_duration / current
-    if ratio < 1.0 / settings.tts_max_speed:
+    if ratio < 1.0 / max_speed:
         log.info(
             "time-stretch would need %.2fx (< min %.2fx); retaining complete audio for caller to handle",
             ratio,
-            1.0 / settings.tts_max_speed,
+            1.0 / max_speed,
         )
         return
 

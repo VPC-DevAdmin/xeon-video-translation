@@ -90,6 +90,9 @@ class Settings(BaseSettings):
     quality_translate_backend: Literal["nllb", "llm"] = "nllb"
     tts_segment_retries: int = Field(1, ge=0, le=3)
     tts_max_speed: float = Field(1.15, ge=1.0, le=1.3)
+    # Ceiling when no shorter faithful translation exists: stretch this far
+    # rather than fail the job. Speech is never discarded either way.
+    tts_max_speed_hard: float = Field(1.3, ge=1.0, le=1.5)
     tts_timing_tolerance: float = Field(0.15, ge=0.0, le=1.0)
 
     # Paths (resolved to absolute on init)

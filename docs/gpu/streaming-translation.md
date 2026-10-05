@@ -97,3 +97,14 @@ job completes.
   stem would unify them.
 - Webcam capture into the span pipeline (translation while recording) is not
   wired yet.
+
+## Slot fitting on short clips (5 Oct 2026)
+
+A 9 s user clip transcribed as one segment whose Spanish ran 10.7 s at natural
+pace, 1.18x the slot against the preferred 1.15x cap. The LLM rewrite did not
+shorten the text, the rewritten take rendered slower (17 s) and replaced the
+usable one, and the job failed with "cannot fit its 9.12s slot". Now the
+shortest verified take is always kept, a failed rewrite is a warning rather
+than an error, and a take is stretched up to `TTS_MAX_SPEED_HARD` (1.3x,
+formant-preserving) when nothing shorter exists. Beyond that the job still
+fails without discarding speech. This applies to every mode, not only stream.
