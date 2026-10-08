@@ -6,6 +6,7 @@ import { LanguagePicker } from "./components/LanguagePicker";
 
 import { PipelineView } from "./components/PipelineView";
 import { ResultPlayer } from "./components/ResultPlayer";
+import { FinishedJobs } from "./components/FinishedJobs";
 import { StreamPlayer, type StreamProgress } from "./components/StreamPlayer";
 import {
   createJob,
@@ -142,6 +143,7 @@ export default function HomePage() {
 
       {job && (job.mode === "stream" || stream) && job.status !== "completed" && <StreamPlayer jobId={job.job_id} progress={stream} ended={streamEnded} />}
       <ResultPlayer job={job} />
+      <FinishedJobs refreshKey={job ? `${job.job_id}:${job.status}` : undefined} />
 
       <footer className="border-t border-ink-700 pt-4 mt-8 text-xs text-ink-400">
         Outputs are AI-generated and watermarked. See <code>docs/ethics.md</code>.

@@ -114,6 +114,12 @@ export function openJobEventStream(
   return es;
 }
 
+export async function listJobs(limit = 100): Promise<JobRecord[]> {
+  const res = await fetch(`${API_BASE_URL}/jobs?limit=${limit}`, { cache: "no-store" });
+  if (!res.ok) throw new Error(`list jobs failed: ${res.status}`);
+  return (await res.json()).jobs as JobRecord[];
+}
+
 export function artifactUrl(jobId: string, name: string): string {
   return `${API_BASE_URL}/jobs/${jobId}/artifacts/${name}`;
 }
