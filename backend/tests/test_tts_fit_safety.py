@@ -9,6 +9,7 @@ def fitting(tmp_path, monkeypatch):
     monkeypatch.setattr(tts.settings, "tts_fit_retries", 1)
     monkeypatch.setattr(tts.settings, "tts_max_speed", 1.15)
     monkeypatch.setattr(tts.settings, "tts_overrun_retries", 2)
+    monkeypatch.setattr(tts.settings, "tts_max_speed_last_resort", 1.0)
     monkeypatch.setattr(tts, "_select_reference", lambda *a: None)
     monkeypatch.setattr(
         tts, "_xtts_to_file", lambda text, ref, lang, path, **k: path.write_bytes(b"audio")
@@ -46,7 +47,9 @@ def test_rewritten_take_must_match_all_words(fitting, monkeypatch):
     decisions = iter([True, True, True, False])  # three outlier takes, then the rewritten one
     monkeypatch.setattr(tts, "_trim_tail_via_whisper", lambda *a: next(decisions))
     segments, reference, out = fitting
-    with pytest.raises(tts.TTSError, match="rewritten speech does not match"):
+    # The rejected rewrite never replaces the verified take; the 2x overrun then
+    # fails as an overflow, with the original text intact and nothing assembled.
+    with pytest.raises(tts.TTSError, match="No speech was discarded"):
         tts._synthesize_per_segment(
             segments, segments, reference, "es", out, options={"rewrite_overruns": True}
         )
@@ -61,6 +64,7 @@ def _fitting_at(monkeypatch, tmp_path, durations):
     monkeypatch.setattr(tts.settings, "tts_max_speed", 1.15)
     monkeypatch.setattr(tts.settings, "tts_max_speed_hard", 1.3)
     monkeypatch.setattr(tts.settings, "tts_short_slot_seconds", 0.0)
+    monkeypatch.setattr(tts.settings, "tts_max_speed_last_resort", 1.0)
     monkeypatch.setattr(tts.settings, "tts_overrun_retries", 2)
     monkeypatch.setattr(tts, "_select_reference", lambda *a: None)
     takes = iter(durations)
@@ -197,3 +201,44 @@ def test_short_slot_allows_the_short_ceiling_and_retries_speak_faster(tmp_path, 
     assert stretched == [(1.0, 1.5)]
     assert speeds[0] is None                                          # first take at normal speed
     assert speeds[1:] and all(s == tts.settings.tts_retry_speed for s in speeds[1:])
+
+
+def test_plan_borrows_the_following_pause_before_speeding_up():
+    # line 1 overruns its 2 s slot by 0.6 s; line 2 has room after it
+    placements, factors = tts._plan_timeline([0.0, 2.0], [2.6, 1.0], [2.0, 5.0], [1.3, 1.3], 5.0, max_drift=1.5)
+    assert factors == [1.0, 1.0]
+    assert placements == pytest.approx([0.0, 2.6])
+
+
+def test_plan_speeds_up_at_a_hard_end_within_the_ceiling():
+    placements, factors = tts._plan_timeline([0.0], [2.0], [1.5], [1.5], 1.5)
+    assert factors[0] == pytest.approx(2.0 / 1.5)
+    assert tts._plan_timeline([0.0], [2.4], [1.5], [1.5], 1.5) is None
+
+
+def test_plan_respects_the_drift_cap():
+    # unhurried, line 2 would start 2 s late; the plan speeds line 1 up just enough
+    placements, factors = tts._plan_timeline([0.0, 1.0], [3.0, 0.5], [1.0, 4.0], [1.3, 1.3], 4.0, max_drift=1.5)
+    assert placements[1] - 1.0 <= 1.5 + 1e-6
+    assert 1.15 <= factors[0] <= 1.3
+
+
+def test_last_resort_speed_rather_than_failing(tmp_path, monkeypatch):
+    segments, reference, out, stretched = _fitting_at(monkeypatch, tmp_path, [1.6, 1.6, 1.6])
+    monkeypatch.setattr(tts.settings, "tts_max_speed_last_resort", 1.7)
+    tts._synthesize_per_segment(segments, segments, reference, "es", out, options={"rewrite_overruns": False})
+    import json
+
+    timing = json.loads(out.with_suffix(".timing.json").read_text())[0]
+    assert timing["last_resort"] is True and timing["speed"] == pytest.approx(1.6, abs=1e-3)
+    assert stretched == [(1.0, 1.7)]
+
+
+def test_numbers_are_compared_as_words():
+    assert "ochenta y ocho" in tts._spell_numbers("unos 88 años", "es")
+    assert "por ciento" in tts._spell_numbers("al 85%", "es")
+
+
+def test_near_match_is_ambiguous_not_different():
+    assert tts._near_match("estoesunafrasecompletaylarga", "estoesunafrasecompletaylargas") is None
+    assert tts._near_match("estoesunafrase", "otracosadistinta") is False

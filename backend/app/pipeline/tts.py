@@ -1413,10 +1413,8 @@ def _synthesize_per_segment(
                             best_duration, best_text = duration, text
                         if speed <= settings.tts_max_speed:
                             break
-                    if verified is False and best_duration / available > ceiling:
-                        raise TTSError(
-                            f"segment {i + 1}: rewritten speech does not match the complete translation"
-                        )
+                    # The best take is a verified (or ambiguous) one from before the
+                    # rewrites; a rejected rewrite never replaces it.
                     shutil.copyfile(best, path)
                     best.unlink()
                     duration, text = best_duration, best_text
@@ -1424,39 +1422,133 @@ def _synthesize_per_segment(
                     if text != segment["text"]:
                         segment["original_text"] = segment.get("original_text", segment["text"])
                         segment["text"] = text
-                if speed > ceiling:
-                    raise TTSError(
-                        f"segment {i + 1} needs {duration:.2f}s in a {available:.2f}s slot; "
-                        "shorten the translation or use a faster TTS voice. No speech was discarded."
-                    )
-                if speed > settings.tts_max_speed:
-                    # Nothing shorter exists; a bounded stretch beats a failed job.
-                    log.warning(
-                        "segment %d: stretching %.2fx (above the preferred %.2fx) to fit %.2fs",
-                        i + 1,
-                        speed,
-                        settings.tts_max_speed,
-                        available,
-                    )
-                _maybe_time_stretch(path, target_duration=available, max_speed=ceiling)
-                duration = _probe_duration(path)
-                if duration > available + settings.tts_timing_tolerance:
-                    raise TTSError(f"segment {i + 1} could not be fitted safely")
-            paths.append(path)
+            # Fitting is decided for all segments together below: a line that
+            # overruns its own slot may borrow from the pauses that follow it.
+            kept = work / f"segment-{i}.kept.wav"
+            shutil.copyfile(path, kept)
+            paths.append(kept)
             timings.append(
                 {
                     "segment": i,
                     "start": start,
                     "slot_end": end,
                     "speech_seconds": duration,
+                    "natural_seconds": duration,
+                    "ceiling": ceiling,
                     "text": text,
                 }
             )
-        _assemble_timeline(paths, translation_segments, output_path)
+        plan_args = (
+            [t["start"] for t in timings],
+            [t["natural_seconds"] for t in timings],
+            [t["slot_end"] for t in timings],
+        )
+        plan = _plan_timeline(*plan_args, [t["ceiling"] for t in timings], timings[-1]["slot_end"],
+                              max_drift=settings.tts_max_drift_seconds)
+        tail = float(options.get("tail_overlap_seconds") or 0.0)
+        if plan is None and tail > 0:
+            # At a turn the next speaker starts at once. Let this one finish
+            # over the next span's first moments, as people do in conversation.
+            plan = _plan_timeline(*plan_args, [t["ceiling"] for t in timings], timings[-1]["slot_end"] + tail,
+                                  max_drift=settings.tts_max_drift_seconds)
+            if plan is not None:
+                timings[-1]["tail_overlap"] = True
+        if plan is None and settings.tts_max_speed_last_resort > max(t["ceiling"] for t in timings):
+            # Faster than we like, but one line must not fail an hour-long job.
+            # Every line above its ceiling is marked in the timing file.
+            plan = _plan_timeline(*plan_args, [settings.tts_max_speed_last_resort] * len(timings),
+                                  timings[-1]["slot_end"] + tail, max_drift=settings.tts_max_drift_seconds)
+            if plan is not None:
+                for t in timings:
+                    t["normal_ceiling"], t["ceiling"] = t["ceiling"], settings.tts_max_speed_last_resort
+        if plan is None:
+            worst = max(timings, key=lambda t: t["natural_seconds"] / max(t["slot_end"] - t["start"], 1e-3))
+            raise TTSError(
+                f"segment {worst['segment'] + 1} needs {worst['natural_seconds']:.2f}s in a "
+                f"{worst['slot_end'] - worst['start']:.2f}s slot and the following pauses cannot absorb it; "
+                "shorten the translation or use a faster TTS voice. No speech was discarded."
+            )
+        placements, factors = plan
+        placed_segments = []
+        for t, path, placed, factor, segment in zip(timings, paths, placements, factors, translation_segments):
+            if factor > 1.0 + 1e-6:
+                if factor > settings.tts_max_speed:
+                    log.warning("segment %d: %.2fx (above the preferred %.2fx)", t["segment"] + 1, factor,
+                                settings.tts_max_speed)
+                _maybe_time_stretch(path, target_duration=round(t["natural_seconds"] / factor, 3), max_speed=t["ceiling"])
+                t["speech_seconds"] = _probe_duration(path)
+            t["placed_start"] = round(placed, 3)
+            t["speed"] = round(factor, 3)
+            if factor > t.get("normal_ceiling", t["ceiling"]) + 1e-6:
+                t["last_resort"] = True
+                log.warning("segment %d spoken at %.2fx (last resort): %s", t["segment"] + 1, factor, t["text"][:80])
+            t["drift_seconds"] = round(placed - t["start"], 3)
+            placed_segments.append({**segment, "start": placed})
+        drifted = [t for t in timings if t["drift_seconds"] > 0.05]
+        if drifted:
+            log.info("timeline: %d of %d segments start later than the source (max %.2fs) to absorb overruns",
+                     len(drifted), len(timings), max(t["drift_seconds"] for t in drifted))
+        _assemble_timeline(paths, placed_segments, output_path)
     output_path.with_suffix(".timing.json").write_text(
         json.dumps(timings, ensure_ascii=False, indent=2)
     )
     return len(paths)
+
+
+def _plan_timeline(starts, durations, slot_ends, ceilings, end_limit, *, max_drift=1.5,
+                   preferred=None, tolerance=1e-6):
+    """Where each utterance starts and how much it is sped up, decided for the
+    whole run of segments instead of one slot at a time.
+
+    Each utterance starts at its source onset or right after the previous one,
+    whichever is later, and is sped up only as much as it needs for its own slot,
+    but at most `g`. The smallest `g` (up to each segment's ceiling) for which
+    every start stays within `max_drift` of the source and the last utterance
+    ends by `end_limit` wins. So a line that overruns borrows the pauses after
+    it, and the overrun is shared out before anything is sped up hard. The lip
+    sync follows the audio, so a start that drifts by a second only shifts the
+    speech against the speaker's gestures.
+
+    Returns (placements, speed factors), or None when nothing fits."""
+    preferred = settings.tts_max_speed if preferred is None else preferred
+    n = len(starts)
+    if n == 0:
+        return [], []
+
+    def layout(g):
+        placements, factors, cursor = [], [], None
+        for s, d, e, cap in zip(starts, durations, slot_ends, ceilings):
+            own = d / max(e - s, 1e-3)
+            f = min(cap, max(1.0, min(own, g)))
+            p = s if cursor is None else max(s, cursor)
+            if p - s > max_drift + 1e-9:
+                return None
+            placements.append(p)
+            factors.append(f)
+            cursor = p + d / f
+        if cursor > end_limit + tolerance:
+            return None
+        return placements, factors
+
+    top = max(ceilings)
+    if layout(top) is None:
+        return None
+    unhurried = layout(1.0)
+    if unhurried is not None:
+        return unhurried
+    # Prefer staying at or under the preferred speed when that fits.
+    low = 1.0
+    if layout(min(preferred, top)) is not None:
+        high = min(preferred, top)
+    else:
+        low, high = min(preferred, top), top
+    for _ in range(30):
+        mid = (low + high) / 2
+        if layout(mid) is None:
+            low = mid
+        else:
+            high = mid
+    return layout(high)
 
 
 def _assemble_timeline(seg_paths, transcript_segments, output_path):
@@ -1771,6 +1863,44 @@ def _find_last_real_word_end(
     return last_matched_end, matched_count, len(expected_tokens)
 
 
+_PERCENT_WORDS = {"es": "por ciento", "pt": "por cento", "it": "percento", "fr": "pour cent",
+                  "de": "prozent", "en": "percent", "nl": "procent", "pl": "procent"}
+
+
+def _spell_numbers(text: str, language: str | None) -> str:
+    """Digits and % as words in `language`, so "88" in the text matches a spoken
+    "ochenta y ocho" that the recognizer may write either way."""
+    import re
+
+    lang = (language or "").lower()
+    text = text.replace("%", f" {_PERCENT_WORDS[lang]} " if lang in _PERCENT_WORDS else " ")
+    try:
+        from num2words import num2words
+    except ImportError:
+        return text
+
+    def spell(match):
+        raw = match.group(0)
+        try:
+            value = float(raw.replace(",", ".")) if re.search(r"[.,]\d", raw) else int(raw)
+            return f" {num2words(value, lang=lang or 'en')} "
+        except Exception:
+            return raw
+
+    return re.sub(r"\d+(?:[.,]\d+)?", spell, text)
+
+
+def _near_match(expected: str, heard: str, threshold: float = 0.92) -> bool | None:
+    """A recognition that differs only slightly from the text (an accent, a
+    split compound, a number read differently) is ambiguous, not different
+    speech: keep the take whole (None) instead of rejecting it (False)."""
+    from difflib import SequenceMatcher
+
+    if not expected or not heard:
+        return False
+    return None if SequenceMatcher(None, expected, heard).ratio() >= threshold else False
+
+
 def _trim_tail_via_whisper(
     audio_path: Path,
     target_language: str,
@@ -1787,7 +1917,8 @@ def _trim_tail_via_whisper(
     import unicodedata
 
     def normalize(text):
-        return "".join(c for c in unicodedata.normalize("NFKC", text).casefold() if c.isalnum())
+        text = _spell_numbers(unicodedata.normalize("NFKC", text), target_language)
+        return "".join(c for c in text.casefold() if c.isalnum())
 
     expected = normalize(expected_text)
     if not expected:
@@ -1818,12 +1949,12 @@ def _trim_tail_via_whisper(
     for i, word in enumerate(words):
         matched += normalize(word.word)
         if not expected.startswith(matched):
-            return False
+            return _near_match(expected, "".join(normalize(w.word) for w in words))
         if matched == expected:
             last = i
             break
     if last is None:
-        return False
+        return _near_match(expected, matched)
     total = _probe_duration(audio_path)
     start, end = 0.0, total
     # Only remove a leading isolated click when every expected word is accounted

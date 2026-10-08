@@ -10,6 +10,9 @@ The orchestrator picks based on `settings.translate_backend`.
 """
 
 from __future__ import annotations
+import logging as _logging
+
+log = _logging.getLogger(__name__)
 
 import json
 import re
@@ -219,6 +222,47 @@ SPEECH_CHARS_PER_SECOND = {
 }
 
 
+_BUDGET_SLACK = 1.1  # TTS fitting absorbs up to ~10% past the budget
+
+
+def _enforce_budget(text: str, source: str, src: str, tgt: str, budget: int | None, glossary=None,
+                    attempts: int = 2) -> str:
+    """The model treats a character budget as a suggestion on long lines (391
+    characters against 180 on 7 Oct 2026). Ask again with the actual count;
+    keep the shortest result that still passes the safety checks."""
+    if not budget or len(text) <= budget * _BUDGET_SLACK:
+        return text
+    from .quality import issues
+
+    best = text
+    for _ in range(attempts):
+        try:
+            candidate = llm.chat(
+                [
+                    {"role": "system", "content": _LLM_SYSTEM.format(src_name=LANG_NAMES.get(src, src),
+                                                                      tgt_name=LANG_NAMES.get(tgt, tgt)) + _ADAPTATION},
+                    {"role": "user", "content": (
+                        f"Source: {source}\nDraft translation ({len(best)} characters): {best}\n"
+                        f"The limit is {budget} characters. Rewrite the draft in {LANG_NAMES.get(tgt, tgt)} "
+                        f"within {budget} characters, keeping every fact, name, number and negation. "
+                        "Output only the new translation."
+                        + (f"\nRequired terminology: {json.dumps(glossary, ensure_ascii=False)}" if glossary else "")
+                    )},
+                ],
+                temperature=0.2,
+                max_tokens=max(64, min(1024, 4 * len(source))),
+            ).strip().strip('"')
+        except llm.LLMError:
+            break
+        if candidate and len(candidate) < len(best) and not issues(source, candidate, glossary):
+            best = candidate
+        if len(best) <= budget * _BUDGET_SLACK:
+            break
+    if len(best) > budget * _BUDGET_SLACK:
+        log.info("translation stays over its budget: %d characters for %d (%s...)", len(best), budget, best[:60])
+    return best
+
+
 def char_budget(language: str, seconds: float | None) -> int | None:
     rate = SPEECH_CHARS_PER_SECOND.get((language or "").lower())
     if not rate or not seconds or seconds <= 0:
@@ -375,13 +419,20 @@ def _translate_segments(
         if index + 1 < len(segments):
             end = min(max(end, float(segments[index + 1]["start"])), end + 1.0)
         slot = end - float(seg["start"])
+        budget = char_budget(tgt, slot)
         if src == tgt:
             translated = source_text
         elif backend == "llm":
-            context = " ".join(s["text"] for s in segments[max(0, index - 2) : index])
+            # Very short lines ("Okay.") get no context: the model translated the
+            # context instead (7 Oct 2026: "Okay." -> five sentences).
+            context = ("" if len(source_text.split()) <= 3
+                       else " ".join(s["text"] for s in segments[max(0, index - 2) : index]))
             translated = _translate_segment_llm(
                 source_text, src, tgt, context, slot, glossary
             ).strip()
+            if budget and len(translated) > 2 * budget and context:
+                translated = _translate_segment_llm(source_text, src, tgt, "", slot, glossary).strip()
+            translated = _enforce_budget(translated, source_text, src, tgt, budget, glossary)
         else:
             translated = translate_fn(source_text).strip()
         if not translated:
@@ -411,7 +462,12 @@ def _translate_segments(
             )
             if decision["unresolved_issues"] or checks:
                 unresolved_review_segments.append(index + 1)
-            translated = decision["translation"]
+            # The review may restore what the adaptation dropped; past the
+            # budget the draft is kept, the reviewed text noted in the audit.
+            if budget and len(decision["translation"]) > budget * _BUDGET_SLACK >= len(translated):
+                review_audit[-1]["kept_draft"] = "review exceeded the character budget"
+            else:
+                translated = decision["translation"]
 
         out_segments.append(
             TranslatedSegment(

@@ -149,6 +149,7 @@ def test_tts_overflow_fails_without_cutting_speech(tmp_path, monkeypatch):
         tts, "_xtts_to_file", lambda text, ref, lang, path, **k: path.write_bytes(b"wav")
     )
     segments = [{"text": "long speech", "start": 0, "end": 1}]
+    monkeypatch.setattr(tts.settings, "tts_max_speed_last_resort", 1.7)  # 3x is beyond even the last resort
     with pytest.raises(tts.TTSError, match="No speech was discarded"):
         tts._synthesize_per_segment(
             segments, segments, tmp_path / "ref.wav", "en", tmp_path / "out.wav"

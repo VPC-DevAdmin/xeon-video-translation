@@ -78,3 +78,35 @@ Extrapolated to the full 17 minutes in Fast mode: about an hour.
   window vote.
 * `SPEECH_CHARS_PER_SECOND` covers Latin-script languages; others get a seconds
   budget only.
+
+## Never fail a long job on one line (7 Oct 2026, evening)
+
+The first full 17-minute run failed two minutes in on one line ("If it's a bad
+output, we adjust the dial. Okay." -> 5.3 s of Spanish for a 2.3 s slot). With
+169 lines of fast conversation some line always loses a one-slot-at-a-time
+fit, so fitting is now planned per span:
+
+* **Timeline plan** (`tts._plan_timeline`): every line's best take is made
+  first; then each line starts at its source onset or right after the previous
+  one, and is sped up only as far as its own slot needs and at most a common
+  factor `g`. The smallest `g` that keeps every start within
+  `TTS_MAX_DRIFT_SECONDS` (1.5 s) and ends the span in time wins. Overruns
+  borrow the following pauses before anything is sped up; the lip sync follows
+  the audio, so a late start only shifts speech against gestures.
+* **Turn overlap**: a span's last line may run 0.6 s into the next span
+  (`STREAM_TAIL_OVERLAP_SECONDS`), mixed under the next voice, when nothing
+  else fits ("Understood." right before the other person speaks).
+* **Last resort** 1.7x (`TTS_MAX_SPEED_LAST_RESORT`) instead of failing; such
+  lines are marked `last_resort` in the span's timing file.
+* **Budget enforcement**: a translation more than 10% over its character budget
+  is sent back with the actual count (twice at most; shortest safe result
+  kept); a draft over twice the budget is retranslated without context, and
+  lines of three words or fewer never get context ("Okay." had become five
+  sentences of context). A review may not push a line back over budget.
+* **Verification**: digits and % are spelled out on both sides before the
+  word-for-word check ("88" vs "ochenta y ocho"), and a 92% match counts as
+  ambiguous (take kept whole) rather than different speech.
+
+Full-video TTS sweep after these changes: all 72 spans synthesized (5 of them
+re-run after the last fixes); 153 lines, median speed 1.00, 6 above 1.3x,
+1 last resort, largest start drift 1.5 s.

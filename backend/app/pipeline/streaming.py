@@ -194,11 +194,16 @@ def synthesize_span(span: Span, translation: dict, transcript: dict, reference_a
     sub = {"target_language": translation["target_language"], "source_language": translation.get("source_language"),
            "backend": translation.get("backend"), "text": " ".join(s["text"] for s in segments), "segments": segments}
     raw = out.with_name(out.stem + "-raw.wav")
+    # A span's last line may run into the next span's first moments when nothing
+    # else fits (tts.py); that tail is kept in the span audio and mixed under the
+    # next span by assemble_audio.
+    tail = float(settings.stream_tail_overlap_seconds)
+    options = {**(options or {}), "tail_overlap_seconds": tail}
     # The full, unshifted transcript keeps the voice reference selection on the real clip.
     tts.synthesize(translation=sub, reference_audio=reference_audio, output_path=raw,
                    first_speech_seconds=segments[0]["start"], source_duration_seconds=span.seconds,
                    transcript_segments=transcript.get("segments") or None, backend=backend, options=options)
-    _cut_audio(raw, 0.0, span.seconds, out)
+    _cut_audio(raw, 0.0, span.seconds + tail if duration(raw) > span.seconds + 0.01 else span.seconds, out)
     raw.unlink(missing_ok=True)
     return out
 

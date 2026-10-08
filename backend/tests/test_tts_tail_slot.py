@@ -32,6 +32,8 @@ def test_final_phrase_can_use_trailing_video_silence(tmp_path, monkeypatch):
     assert timing["slot_end"] == 1.766667
     assert timing["speech_seconds"] == 1.2
     assert segments[0]["end"] == 1.15
+    # Without the trailing silence it does not fit (last-resort speed off here).
+    monkeypatch.setattr(tts.settings, "tts_max_speed_last_resort", 1.0)
     with pytest.raises(tts.TTSError, match="No speech was discarded"):
         tts._synthesize_per_segment(
             segments, segments, reference, "es", out, options={"rewrite_overruns": False}

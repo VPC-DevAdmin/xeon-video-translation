@@ -66,6 +66,8 @@ class Settings(BaseSettings):
     # Streaming translation (mode "stream"): render windows per speech span and
     # the pause that separates two spans; frames outside spans pass through.
     stream_window_seconds: float = Field(8.0, ge=2, le=30)
+    # How far a span's last line may run into the next span (conversational overlap).
+    stream_tail_overlap_seconds: float = Field(0.6, ge=0.0, le=2.0)
     stream_span_gap_seconds: float = Field(0.6, ge=0, le=5)
     stream_span_pad_seconds: float = Field(0.25, ge=0, le=2)
     windowed_lipsync: bool = False
@@ -101,6 +103,12 @@ class Settings(BaseSettings):
     tts_max_speed_short: float = Field(1.5, ge=1.0, le=1.8)
     # XTTS native speed for retries of a take that overran its slot.
     tts_retry_speed: float = Field(1.2, ge=1.0, le=1.5)
+    # How far a line may start after its source onset when it absorbs the
+    # overrun of the line before it (the lip sync follows the audio).
+    tts_max_drift_seconds: float = Field(1.5, ge=0.0, le=5.0)
+    # Rather than failing a long job, a span that cannot fit within the
+    # ceilings may go this fast; such lines are marked last_resort in timing.
+    tts_max_speed_last_resort: float = Field(1.7, ge=1.0, le=2.0)
     # Extra same-text takes when one overruns the preferred speed (XTTS
     # length variance; the shortest verified take is kept), each ~3 s on the box.
     tts_overrun_retries: int = Field(4, ge=0, le=8)
