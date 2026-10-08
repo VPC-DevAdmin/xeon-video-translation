@@ -276,6 +276,7 @@ def _run_impl(
     request_temp_dir: str | None = None,
     face_track_source: Path | str | None = None,
     face_track_offset_frames: int = 0,
+    face_track_identity: int | None = None,
     prepare_only: bool = False,
     persona_key: str | None = None,
 ) -> InferenceResult:
@@ -663,7 +664,8 @@ def _run_impl(
         autocast_enabled,
     )
 
-    face_track = _load_face_track(pipeline, config, mask_image_path, face_track_source, face_track_offset_frames)
+    face_track = _load_face_track(pipeline, config, mask_image_path, face_track_source, face_track_offset_frames,
+                                  face_track_identity)
 
     started = time.perf_counter()
     with torch.no_grad(), autocast_ctx:
@@ -715,8 +717,26 @@ _RUN_LOCK = _threading.Lock()
 _PREPARE_LOCK = _threading.Lock()
 
 
-def _load_face_track(pipeline, config, mask_image_path, face_track_source, face_track_offset_frames):
-    """Landmarks for the source clip a window was cut from (cached by content)."""
+def identities_for(pipeline, config, mask_image_path, source):
+    """Per-person tracks for `source` (latentsync_driver.identities), cached by content."""
+    from . import identities as _identities
+
+    processor = pipeline.ensure_image_processor(int(config.data.resolution), str(mask_image_path))
+    return _identities.load_or_build(
+        Path(source),
+        model_cache_dir=Path(os.environ.get("MODEL_CACHE_DIR", "/models")),
+        fps=25,
+        scanner_factory=lambda: _identities.Scanner(processor.face_detector, processor._landmarks3_from_detection),
+        smooth_window=int(os.environ.get("LATENTSYNC_LANDMARK_SMOOTH_WINDOW", "5")),
+        frame_budget_bytes=int(os.environ.get("LATENTSYNC_FRAME_BUDGET_MB", "8192")) * 1024 * 1024,
+    )
+
+
+def _load_face_track(pipeline, config, mask_image_path, face_track_source, face_track_offset_frames,
+                     face_track_identity=None):
+    """Landmarks for the source clip a window was cut from (cached by content).
+    With `face_track_identity`, the track of that person (identities.py) instead
+    of the largest face in each frame."""
     if not face_track_source:
         return None
     from . import face_track as _face_track
@@ -724,6 +744,15 @@ def _load_face_track(pipeline, config, mask_image_path, face_track_source, face_
     source = Path(face_track_source)
     if not source.exists():
         raise RuntimeError(f"face_track_source not found: {source}")
+    if face_track_identity is not None:
+        people = identities_for(pipeline, config, mask_image_path, source)
+        k = int(face_track_identity)
+        if not 0 <= k < len(people.landmarks):
+            raise RuntimeError(f"face identity {k} not found ({len(people.landmarks)} people in {source.name})")
+        log.info("face track: person %d of %d (present in %.0f%% of frames); window offset %d",
+                 k, len(people.landmarks), 100 * people.presence[k], int(face_track_offset_frames or 0))
+        return {"landmarks": people.landmarks[k], "visible": people.visible[k],
+                "offset": int(face_track_offset_frames or 0)}
     processor = pipeline.ensure_image_processor(int(config.data.resolution), str(mask_image_path))
     model_cache_dir = Path(os.environ.get("MODEL_CACHE_DIR", "/models"))
     track_started = time.perf_counter()
@@ -743,7 +772,8 @@ def _load_face_track(pipeline, config, mask_image_path, face_track_source, face_
             "offset": int(face_track_offset_frames or 0)}
 
 
-def prepare(video_path, audio_path, weight_paths, face_track_source=None, face_track_offset_frames=0) -> dict:
+def prepare(video_path, audio_path, weight_paths, face_track_source=None, face_track_offset_frames=0,
+            face_track_identity=None) -> dict:
     """Decode, warp and compute audio features for a window ahead of its
     /lipsync request. Runs outside _RUN_LOCK so it overlaps the previous
     window's denoise; the coordinator thread is mostly waiting then."""
@@ -753,7 +783,8 @@ def prepare(video_path, audio_path, weight_paths, face_track_source=None, face_t
             video_path=Path(video_path), audio_path=Path(audio_path), output_path=Path("/nonexistent"),
             weight_paths=weight_paths, prepare_only=True,
         )
-        face_track = _load_face_track(pipeline, config, mask_image_path, face_track_source, face_track_offset_frames)
+        face_track = _load_face_track(pipeline, config, mask_image_path, face_track_source, face_track_offset_frames,
+                                      face_track_identity)
         import torch
 
         with torch.no_grad():
@@ -807,3 +838,23 @@ def shutdown_workers():
         if pool is not None:
             pool.close()
     _PIPELINE_CACHE.clear()
+
+
+def identities(video_path, weight_paths) -> dict:
+    """People in `video_path`, their presence and per-frame mouth opening (25 fps).
+    Builds and caches the per-person tracks the renders then use."""
+    started = time.perf_counter()
+    with _PREPARE_LOCK:
+        pipeline, config, mask_image_path = _run_impl(
+            video_path=Path(video_path), audio_path=Path(video_path), output_path=Path("/nonexistent"),
+            weight_paths=weight_paths, prepare_only=True,
+        )
+        people = identities_for(pipeline, config, mask_image_path, video_path)
+    import math
+
+    def clean(values):
+        return [None if not math.isfinite(float(v)) else round(float(v), 4) for v in values]
+
+    return {"fps": people.fps, "frames": people.frames, "people": people.summary(),
+            "mouth": [clean(m) for m in people.mouth], "visible": [clean(v) for v in people.visible],
+            "build": people.meta, "seconds": round(time.perf_counter() - started, 1)}

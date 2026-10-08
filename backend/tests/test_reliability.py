@@ -146,7 +146,7 @@ def test_tts_overflow_fails_without_cutting_speech(tmp_path, monkeypatch):
     monkeypatch.setattr(tts, "_trim_to_speech", lambda *a: None)
     monkeypatch.setattr(tts, "_probe_duration", lambda *a: 3)
     monkeypatch.setattr(
-        tts, "_xtts_to_file", lambda text, ref, lang, path: path.write_bytes(b"wav")
+        tts, "_xtts_to_file", lambda text, ref, lang, path, **k: path.write_bytes(b"wav")
     )
     segments = [{"text": "long speech", "start": 0, "end": 1}]
     with pytest.raises(tts.TTSError, match="No speech was discarded"):

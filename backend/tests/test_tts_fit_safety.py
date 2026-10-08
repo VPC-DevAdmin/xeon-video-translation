@@ -60,6 +60,7 @@ def _fitting_at(monkeypatch, tmp_path, durations):
     monkeypatch.setattr(tts.settings, "tts_fit_retries", 2)
     monkeypatch.setattr(tts.settings, "tts_max_speed", 1.15)
     monkeypatch.setattr(tts.settings, "tts_max_speed_hard", 1.3)
+    monkeypatch.setattr(tts.settings, "tts_short_slot_seconds", 0.0)
     monkeypatch.setattr(tts.settings, "tts_overrun_retries", 2)
     monkeypatch.setattr(tts, "_select_reference", lambda *a: None)
     takes = iter(durations)
@@ -177,3 +178,22 @@ def test_best_of_n_stops_at_the_first_take_that_fits(tmp_path, monkeypatch):
         segments, segments, reference, "es", out, options={"rewrite_overruns": False}
     )
     assert stretched == [(1.0, 1.3)]  # the 1.1 s take was fitted; the third take was never generated
+
+
+def test_short_slot_allows_the_short_ceiling_and_retries_speak_faster(tmp_path, monkeypatch):
+    """A 1.6 s turn: the Spanish needed 1.44x and failed the job on 7 Oct 2026."""
+    segments, reference, out, stretched = _fitting_at(monkeypatch, tmp_path, [1.5, 1.45, 1.44])
+    monkeypatch.setattr(tts.settings, "tts_short_slot_seconds", 3.0)
+    monkeypatch.setattr(tts.settings, "tts_max_speed_short", 1.5)
+    speeds = []
+    real = tts._xtts_to_file
+
+    def spy(text, ref, lang, path, **k):
+        speeds.append(k.get("speed"))
+        return real(text, ref, lang, path, **k)
+
+    monkeypatch.setattr(tts, "_xtts_to_file", spy)
+    tts._synthesize_per_segment(segments, segments, reference, "es", out, options={"rewrite_overruns": False})
+    assert stretched == [(1.0, 1.5)]
+    assert speeds[0] is None                                          # first take at normal speed
+    assert speeds[1:] and all(s == tts.settings.tts_retry_speed for s in speeds[1:])

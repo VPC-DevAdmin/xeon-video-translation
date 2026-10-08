@@ -198,6 +198,33 @@ _LLM_SYSTEM = (
     "notes or explanations. Output only the translation."
 )
 
+# Dubbing adaptation: the translation has to be spoken in the time the
+# original took. Fast talkers leave no slack (the 7 Oct 2026 two-presenter
+# video needed ~1.7x its time for a literal Spanish rendering), so when a
+# character budget is given the model condenses the way a dubbing writer does.
+_ADAPTATION = (
+    " This is a dubbing adaptation with a hard length limit: stay within the "
+    "character budget. Keep every fact, claim, name, number, negation and "
+    "technical term. To fit, drop fillers (um, uh, like, you know, right, "
+    "so), false starts, repetitions and hedges, merge redundant phrases and "
+    "prefer shorter wording."
+)
+
+# Characters of target-language speech per second that XTTS reads at the
+# preferred 1.15x fit (measured for Spanish: ~11.3 chars/s natural). Languages
+# without an entry get a seconds budget only.
+SPEECH_CHARS_PER_SECOND = {
+    "es": 13.0, "pt": 13.0, "it": 13.0, "fr": 13.0, "de": 12.5, "nl": 12.5,
+    "pl": 12.5, "en": 14.0, "ro": 13.0, "ca": 13.0,
+}
+
+
+def char_budget(language: str, seconds: float | None) -> int | None:
+    rate = SPEECH_CHARS_PER_SECOND.get((language or "").lower())
+    if not rate or not seconds or seconds <= 0:
+        return None
+    return max(8, int(seconds * rate))
+
 
 def _translate_segment_llm(
     text: str,
@@ -212,8 +239,11 @@ def _translate_segment_llm(
     user = f"Text: {text}"
     if context:
         user += f"\nPreceding context (do not translate): {context}"
+    budget = char_budget(tgt, duration)
     if duration:
         user += f"\nSpeech time budget: {duration:.1f} seconds."
+    if budget:
+        user += f"\nCharacter budget: at most {budget} characters."
     if glossary:
         user += f"\nRequired terminology: {json.dumps(glossary, ensure_ascii=False)}"
     try:
@@ -222,7 +252,8 @@ def _translate_segment_llm(
                 [
                     {
                         "role": "system",
-                        "content": _LLM_SYSTEM.format(src_name=src_name, tgt_name=tgt_name),
+                        "content": _LLM_SYSTEM.format(src_name=src_name, tgt_name=tgt_name)
+                        + (_ADAPTATION if budget else ""),
                     },
                     {"role": "user", "content": user},
                 ],
@@ -279,7 +310,7 @@ def _parse_review(raw: str) -> dict:
     return result
 
 
-def _review_translation(source, draft, src, tgt, context, glossary):
+def _review_translation(source, draft, src, tgt, context, glossary, max_characters=None):
     """A contextual model revision; this is not independent human validation."""
     try:
         raw = llm.chat(
@@ -296,6 +327,13 @@ def _review_translation(source, draft, src, tgt, context, glossary):
                         "speak, but do not expand it. Keep source digit numerals as digits. "
                         "Return only a JSON object with translation (string), changes (list of strings), "
                         "and unresolved_issues (list of strings). List any uncertainty you cannot resolve."
+                        + (
+                            " The draft is a dubbing adaptation limited to `max_characters`: dropped "
+                            "fillers, false starts and repetitions are intended, not omissions. Keep the "
+                            "translation within `max_characters` unless a fact, name, number or negation "
+                            "would be lost."
+                            if max_characters else ""
+                        )
                     ),
                 },
                 {
@@ -308,6 +346,7 @@ def _review_translation(source, draft, src, tgt, context, glossary):
                             "draft": draft,
                             "context": context,
                             "required_terminology": glossary or {},
+                            **({"max_characters": max_characters} if max_characters else {}),
                         },
                         ensure_ascii=False,
                     ),
@@ -330,12 +369,18 @@ def _translate_segments(
         source_text = seg["text"].strip()
         if not source_text:
             continue
+        # The slot the speech may fill: up to the next segment's start (the
+        # following pause is usable), capped at 1 s past this segment's end.
+        end = float(seg["end"])
+        if index + 1 < len(segments):
+            end = min(max(end, float(segments[index + 1]["start"])), end + 1.0)
+        slot = end - float(seg["start"])
         if src == tgt:
             translated = source_text
         elif backend == "llm":
             context = " ".join(s["text"] for s in segments[max(0, index - 2) : index])
             translated = _translate_segment_llm(
-                source_text, src, tgt, context, float(seg["end"]) - float(seg["start"]), glossary
+                source_text, src, tgt, context, slot, glossary
             ).strip()
         else:
             translated = translate_fn(source_text).strip()
@@ -343,7 +388,8 @@ def _translate_segments(
             raise TranslationError(f"empty translation at segment {index + 1}")
         if quality_review and backend == "llm" and src != tgt:
             context = " ".join(s["text"] for s in segments[max(0, index - 2) : index + 3])
-            decision = _review_translation(source_text, translated, src, tgt, context, glossary)
+            decision = _review_translation(source_text, translated, src, tgt, context, glossary,
+                                           char_budget(tgt, slot))
             from .quality import issues
 
             checks = issues(source_text, decision["translation"], glossary)

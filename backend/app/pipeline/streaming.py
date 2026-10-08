@@ -51,6 +51,7 @@ class Span:
     start: float                # seconds, on the 25 fps grid
     end: float
     segments: list[int]         # transcript / translation segment indices inside it
+    speaker: str | None = None  # speakers.py id; spans never cross a speaker change
 
     @property
     def seconds(self) -> float:
@@ -70,26 +71,37 @@ class Piece:
 
 def speech_spans(segments: list[dict], total_seconds: float, gap: float = 0.6, pad: float = 0.25) -> list[Span]:
     """Merge transcript segments separated by less than `gap` seconds into spans,
-    pad them, snap to the frame grid and clamp to the clip."""
+    pad them, snap to the frame grid and clamp to the clip. Segments of
+    different speakers never share a span: each span is rendered on its
+    speaker's face, and where two speakers' padded spans meet they are cut at
+    the frame midway between the two segments."""
     spans: list[Span] = []
     for i, seg in enumerate(segments):
         start, end = float(seg["start"]), float(seg["end"])
         if end <= start:
             continue
-        if spans and start - spans[-1].end <= gap:
+        who = seg.get("speaker")
+        if spans and start - spans[-1].end <= gap and spans[-1].speaker == who:
             spans[-1].end = end
             spans[-1].segments.append(i)
         else:
-            spans.append(Span(len(spans), start, end, [i]))
+            spans.append(Span(len(spans), start, end, [i], who))
     out: list[Span] = []
     for span in spans:
         start = max(0.0, span.start - pad)
         end = min(total_seconds, span.end + pad)
         if out and start <= out[-1].end:
-            out[-1].end = max(out[-1].end, end)
-            out[-1].segments += span.segments
-            continue
-        out.append(Span(len(out), math.floor(start * FPS) / FPS, math.ceil(end * FPS) / FPS, list(span.segments)))
+            if out[-1].speaker == span.speaker:
+                out[-1].end = max(out[-1].end, math.ceil(end * FPS) / FPS)
+                out[-1].segments += span.segments
+                continue
+            # Different speaker: cut at the frame midway between the two segments.
+            previous_speech_end = max(float(segments[i]["end"]) for i in out[-1].segments)
+            cut = round(((previous_speech_end + span.start) / 2) * FPS) / FPS
+            out[-1].end = min(out[-1].end, cut)
+            start = cut
+        out.append(Span(len(out), math.floor(start * FPS) / FPS if not out or start > out[-1].end else start,
+                        math.ceil(end * FPS) / FPS, list(span.segments), span.speaker))
     return [s for s in out if s.end > s.start]
 
 
@@ -237,6 +249,9 @@ class StreamJob:
         self.overlap = float(settings.window_overlap_seconds)
         self.root = job_dir / "stream-pieces"
         self.root.mkdir(exist_ok=True)
+        from .speakers import face_map
+
+        self.faces = face_map(transcript)      # speaker -> face identity on screen
         self.playlist = Playlist(job_dir)
         self.pieces: list[Piece] = []
         self.total = duration(input_path)
@@ -302,6 +317,8 @@ class StreamJob:
 
         def overrides(left: float) -> dict:
             merged: dict[str, Any] = {"face_track_source": str(self.input), "face_track_offset_frames": int(round(left * FPS))}
+            if span.speaker in self.faces:
+                merged["face_track_identity"] = self.faces[span.speaker]
             if self.steps is not None:
                 merged["num_inference_steps"] = self.steps
             return merged
@@ -361,7 +378,8 @@ class StreamJob:
     def run(self, reference_audio: Path, original_audio: Path) -> dict:
         segments = self.transcript.get("segments") or []
         spans = speech_spans(segments, self.total, settings.stream_span_gap_seconds, settings.stream_span_pad_seconds)
-        self.emit("stream_plan", {"spans": [{"start": s.start, "end": s.end, "segments": len(s.segments)} for s in spans],
+        self.emit("stream_plan", {"spans": [{"start": s.start, "end": s.end, "segments": len(s.segments), "speaker": s.speaker,
+                                             "face": self.faces.get(s.speaker)} for s in spans],
                                   "speech_seconds": round(sum(s.seconds for s in spans), 2), "total_seconds": round(self.total, 2),
                                   "window_seconds": self.window})
         index = 0

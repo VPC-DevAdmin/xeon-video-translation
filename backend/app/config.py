@@ -75,6 +75,9 @@ class Settings(BaseSettings):
     rewrite_overruns: bool = False
     tts_fit_retries: int = Field(2, ge=0, le=3)
     enable_diarization: bool = False
+    # Per-speaker voices and faces (pipeline/speakers.py): runs after
+    # transcription for LatentSync jobs unless the job sets speakers=one.
+    speaker_analysis: bool = True
     enable_alignment: bool = False
     enable_background_audio: bool = False
     background_gain: float = Field(0.35, ge=0, le=1)
@@ -93,6 +96,11 @@ class Settings(BaseSettings):
     # Ceiling when no shorter faithful translation exists: stretch this far
     # rather than fail the job. Speech is never discarded either way.
     tts_max_speed_hard: float = Field(1.3, ge=1.0, le=1.5)
+    # Slots shorter than this (conversational turns) may go up to the short ceiling.
+    tts_short_slot_seconds: float = Field(3.0, ge=0.0, le=10.0)
+    tts_max_speed_short: float = Field(1.5, ge=1.0, le=1.8)
+    # XTTS native speed for retries of a take that overran its slot.
+    tts_retry_speed: float = Field(1.2, ge=1.0, le=1.5)
     # Extra same-text takes when one overruns the preferred speed (XTTS
     # length variance; the shortest verified take is kept), each ~3 s on the box.
     tts_overrun_retries: int = Field(4, ge=0, le=8)

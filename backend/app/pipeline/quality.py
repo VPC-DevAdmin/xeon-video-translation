@@ -27,9 +27,14 @@ def issues(source, translated, glossary=None):
 
 
 def rewrite(text, source, language, seconds, glossary=None):
+    from .translate import char_budget
+
+    budget = char_budget(language, seconds)
+    limit = f" (at most {budget} characters; it is now {len(text)})" if budget else ""
     prompt = (
-        f"Rewrite this translated utterance in {language} for at most {seconds:.2f} seconds of natural speech. "
+        f"Rewrite this dubbed utterance in {language} for at most {seconds:.2f} seconds of natural speech{limit}. "
         "Preserve every factual claim, negation, name and number. Do not summarize away information. "
+        "Drop fillers, false starts, repetitions and hedges and prefer shorter wording; these are not information. "
         "If it cannot be shortened safely return the original translation. Return only the rewritten text.\n"
         f"Source: {source}\nTranslation: {text}\nRequired terminology: {json.dumps(glossary or {}, ensure_ascii=False)}"
     )

@@ -151,6 +151,13 @@ class LipsyncRequest(BaseModel):
         None, ge=0,
         description="First frame of this window on the source's 25 fps grid.",
     )
+    face_track_identity: int | None = Field(
+        None, ge=0, le=15,
+        description=(
+            "Render on this person's face track (POST /faces/identities numbers "
+            "the people in face_track_source left to right). Omit for the largest face."
+        ),
+    )
     persona_key: str | None = Field(
         None, max_length=128, pattern=r"^[A-Za-z0-9._-]+$",
         description=(
@@ -166,6 +173,11 @@ class PrepareRequest(BaseModel):
     audio_path: str
     face_track_source: str | None = None
     face_track_offset_frames: int | None = Field(None, ge=0)
+    face_track_identity: int | None = Field(None, ge=0, le=15)
+
+
+class IdentitiesRequest(BaseModel):
+    video_path: str
 
 
 class LipsyncResponse(BaseModel):
@@ -389,11 +401,39 @@ def lipsync_prepare(req: PrepareRequest) -> dict:
             req.video_path, req.audio_path, weight_paths,
             face_track_source=req.face_track_source,
             face_track_offset_frames=req.face_track_offset_frames or 0,
+            face_track_identity=req.face_track_identity,
         )
     except Exception as e:
         log.exception("prepare failed")
         raise HTTPException(500, {"phase": "prepare", "error": f"{type(e).__name__}: {e}"})
     return {"status": "ok", **result, "duration_ms": int((time.perf_counter() - started) * 1000)}
+
+
+@app.post("/faces/identities")
+def faces_identities(req: IdentitiesRequest) -> dict:
+    """The people in a clip: presence, mean position and per-frame mouth opening
+    on the 25 fps grid. Builds the per-person face tracks (cached by content)
+    that /lipsync uses with face_track_identity. Takes the inference lock: on a
+    long clip this is minutes of detection."""
+    root = Path(os.environ.get("JOB_ARTIFACTS_DIR", "/jobs")).resolve()
+    candidate = Path(req.video_path).resolve()
+    if not candidate.is_relative_to(root) or candidate == root:
+        raise HTTPException(400, "media paths must be inside JOB_ARTIFACTS_DIR")
+    if not candidate.exists():
+        raise HTTPException(400, f"not visible to this service: {req.video_path}")
+    from .latentsync_driver.inference import WeightPaths, identities
+
+    weight_paths = WeightPaths.from_cache(MODEL_CACHE_DIR)
+    if weight_paths.missing():
+        raise HTTPException(503, {"phase": "weights-missing"})
+    try:
+        with _INFERENCE_LOCK:
+            return {"status": "ok", **identities(candidate, weight_paths)}
+    except FileNotFoundError as e:
+        raise HTTPException(503, {"phase": "identities", "error": str(e)})
+    except Exception as e:
+        log.exception("identities failed")
+        raise HTTPException(500, {"phase": "identities", "error": f"{type(e).__name__}: {e}"})
 
 
 @app.post("/lipsync", response_model=LipsyncResponse)
@@ -474,6 +514,7 @@ def _lipsync_locked(req: LipsyncRequest) -> LipsyncResponse:
             seed=req.seed,
             face_track_source=req.face_track_source,
             face_track_offset_frames=req.face_track_offset_frames or 0,
+            face_track_identity=req.face_track_identity,
             persona_key=req.persona_key,
         )
     except FileNotFoundError as e:

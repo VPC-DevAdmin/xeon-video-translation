@@ -66,7 +66,7 @@ def run(
         # (LATENTSYNC_STEPS / LATENTSYNC_GUIDANCE).
         for key in (
             "num_inference_steps", "guidance_scale", "seed",
-            "face_track_source", "face_track_offset_frames",
+            "face_track_source", "face_track_offset_frames", "face_track_identity",
         ):
             val = quality_overrides.get(key)
             if val is not None:
@@ -169,7 +169,7 @@ def _raise_from_http_error(e: urllib.error.HTTPError, LipsyncError: type) -> Non
 def prepare(video_in: Path, audio_in: Path, quality_overrides: dict | None = None) -> bool:
     """Ask the service to decode/warp a window ahead of its render. Best effort."""
     payload: dict = {"video_path": str(video_in), "audio_path": str(audio_in)}
-    for key in ("face_track_source", "face_track_offset_frames"):
+    for key in ("face_track_source", "face_track_offset_frames", "face_track_identity"):
         val = (quality_overrides or {}).get(key)
         if val is not None:
             payload[key] = val
@@ -187,3 +187,22 @@ def prepare(video_in: Path, audio_in: Path, quality_overrides: dict | None = Non
     except Exception as e:  # the render computes its own inputs if this failed
         log.warning("latentsync prepare skipped for %s: %s", video_in.name, str(e)[-200:])
         return False
+
+
+def identities(video: Path, timeout: float = 3600) -> dict:
+    """People in `video` (POST /faces/identities): presence, mean position and
+    per-frame mouth opening at 25 fps. Builds the per-person face tracks the
+    renders use, so on a long clip this takes minutes."""
+    req = urllib.request.Request(
+        f"{settings.latentsync_service_url.rstrip('/')}/faces/identities",
+        data=json.dumps({"video_path": str(video)}).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        _raise_from_http_error(e, LipsyncError)
+    except urllib.error.URLError as e:
+        raise LipsyncError(f"LatentSync service unreachable at {settings.latentsync_service_url}: {e.reason}") from e

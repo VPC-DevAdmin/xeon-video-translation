@@ -140,7 +140,7 @@ export default function HomePage() {
         <PipelineView job={job} />
       </section>
 
-      {job && job.mode === "stream" && job.status !== "completed" && <StreamPlayer jobId={job.job_id} progress={stream} ended={streamEnded} />}
+      {job && (job.mode === "stream" || stream) && job.status !== "completed" && <StreamPlayer jobId={job.job_id} progress={stream} ended={streamEnded} />}
       <ResultPlayer job={job} />
 
       <footer className="border-t border-ink-700 pt-4 mt-8 text-xs text-ink-400">

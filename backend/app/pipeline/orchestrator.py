@@ -403,8 +403,8 @@ async def run_pipeline(state: JobState, input_path: Path) -> None:
             if _stage(state, "stabilize").status == StageStatus.DONE and stabilized.exists():
                 input_path = stabilized
             async with speech_lock(20 if lane == "batch" else 10):
-                await execute("transcribe", _run_stage_transcribe)
-            if state.mode == "stream":
+                await execute("transcribe", _run_stage_transcribe, input_path)
+            if state.mode == "stream" or _needs_span_render(state):
                 # Streaming translation: translate once, then per speech span synthesize,
                 # render only its frames and publish each piece as it lands.
                 async with speech_lock(10):
@@ -740,7 +740,40 @@ async def _run_stage_stabilize(
         return input_path
 
 
-async def _run_stage_transcribe(state: JobState, queue: EventLog) -> None:
+def _needs_span_render(state: JobState) -> bool:
+    """Several people on screen and speakers tied to faces: render per speech
+    span on each speaker's face (streaming.py), in any mode."""
+    import json
+
+    from . import speakers
+
+    path = storage.job_artifact_path(state.job_id, "transcript.json")
+    try:
+        return speakers.needs_span_render(json.loads(path.read_text()))
+    except (OSError, ValueError):
+        return False
+
+
+def _analyze_speakers(state: JobState, result: dict, audio_path: Path, input_path: Path | None) -> dict:
+    """Voices, faces and per-speaker segments (pipeline/speakers.py)."""
+    if not settings.speaker_analysis or input_path is None:
+        return result
+    if state.options.get("speakers", "auto") == "one":
+        return result
+    if lipsync.backend_in_use(state.lipsync_backend) != "latentsync":
+        return result
+    from . import speakers
+    from ._lipsync import latentsync_client
+
+    people = None
+    try:
+        people = latentsync_client.identities(input_path)
+    except Exception as exc:  # voices still separate; renders use the largest face
+        log.warning("face identities unavailable for %s: %s", state.job_id, str(exc)[-300:])
+    return speakers.analyze(audio_path, result, input_path, people)
+
+
+async def _run_stage_transcribe(state: JobState, queue: EventLog, input_path: Path | None = None) -> None:
     name = "transcribe"
     stage = await _start_stage(state, queue, name)
 
@@ -767,7 +800,12 @@ async def _run_stage_transcribe(state: JobState, queue: EventLog) -> None:
             import json
 
             out_path.write_text(json.dumps(result, ensure_ascii=False, indent=2))
-        return result
+        analyzed = _analyze_speakers(state, result, audio_path, input_path)
+        if analyzed is not result:
+            import json
+
+            out_path.write_text(json.dumps(analyzed, ensure_ascii=False, indent=2))
+        return analyzed
 
     try:
         result = await blocking_call(_do)
@@ -781,6 +819,8 @@ async def _run_stage_transcribe(state: JobState, queue: EventLog) -> None:
             "text": result["text"],
             "segment_count": len(result["segments"]),
             "path": out_path.name,
+            "speakers": result.get("speakers"),
+            "people_visible": (result.get("diarization") or {}).get("people_visible"),
         }
         stage.status = StageStatus.DONE
         _persist(state)

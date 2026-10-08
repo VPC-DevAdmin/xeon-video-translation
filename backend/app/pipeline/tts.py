@@ -1247,11 +1247,14 @@ def _synthesize_per_segment(
             )
             segment_ref = selected[0] if selected else ref
 
+            take_speed = {"value": None}  # XTTS native speed for retries of an overrunning segment
+
             def generate_take(value):
                 if backend == "xtts":
-                    _xtts_to_file(
-                        value, segment_ref, language, path, **({"voice": voice} if voice else {})
-                    )
+                    extra = {"voice": voice} if voice else {}
+                    if take_speed["value"]:
+                        extra["speed"] = take_speed["value"]
+                    _xtts_to_file(value, segment_ref, language, path, **extra)
                 else:
                     generate(value, target_language, reference_audio, path, reference_segments)
 
@@ -1301,6 +1304,10 @@ def _synthesize_per_segment(
             available = end - start
             if available <= 0:
                 raise TTSError(f"segment {i + 1} has invalid or overlapping timestamps")
+            # Short slots get a higher ceiling: at a conversational turn there is
+            # no pause to borrow, and Spanish runs longer than English.
+            ceiling = (settings.tts_max_speed_short if available < settings.tts_short_slot_seconds
+                       else settings.tts_max_speed_hard)
             # A full expected-text match can distinguish clicks/repeated tails
             # from short words. Never discard content based on span duration alone.
             # XTTS takes vary a lot in length for the same sentence; a take that
@@ -1337,6 +1344,10 @@ def _synthesize_per_segment(
                     # shortest of five always fitted. Extra attempts, granted
                     # once; the loop stops as soon as a take fits.
                     attempts = max(attempts, settings.tts_segment_retries + 1 + settings.tts_overrun_retries)
+                    # Retries speak faster inside the model (more natural than
+                    # stretching the waveform afterwards).
+                    if backend == "xtts" and settings.tts_retry_speed > 1.0:
+                        take_speed["value"] = settings.tts_retry_speed
                 cleanup_attempt += 1
                 if cleanup_attempt >= attempts:
                     if verified is False and best_take_duration is None:
@@ -1402,7 +1413,7 @@ def _synthesize_per_segment(
                             best_duration, best_text = duration, text
                         if speed <= settings.tts_max_speed:
                             break
-                    if verified is False and best_duration / available > settings.tts_max_speed_hard:
+                    if verified is False and best_duration / available > ceiling:
                         raise TTSError(
                             f"segment {i + 1}: rewritten speech does not match the complete translation"
                         )
@@ -1413,7 +1424,7 @@ def _synthesize_per_segment(
                     if text != segment["text"]:
                         segment["original_text"] = segment.get("original_text", segment["text"])
                         segment["text"] = text
-                if speed > settings.tts_max_speed_hard:
+                if speed > ceiling:
                     raise TTSError(
                         f"segment {i + 1} needs {duration:.2f}s in a {available:.2f}s slot; "
                         "shorten the translation or use a faster TTS voice. No speech was discarded."
@@ -1427,7 +1438,7 @@ def _synthesize_per_segment(
                         settings.tts_max_speed,
                         available,
                     )
-                _maybe_time_stretch(path, target_duration=available, max_speed=settings.tts_max_speed_hard)
+                _maybe_time_stretch(path, target_duration=available, max_speed=ceiling)
                 duration = _probe_duration(path)
                 if duration > available + settings.tts_timing_tolerance:
                     raise TTSError(f"segment {i + 1} could not be fitted safely")
@@ -1490,6 +1501,7 @@ def _xtts_to_file(
     language: str,
     output: Path,
     voice: str | None = None,
+    speed: float | None = None,
 ) -> None:
     """Single XTTS call that writes to `output`."""
     tts = _get_xtts()
@@ -1498,6 +1510,7 @@ def _xtts_to_file(
         **({"speaker": voice} if voice else {"speaker_wav": str(reference_audio)}),
         language=language,
         file_path=str(output),
+        **({"speed": float(speed)} if speed else {}),
     )
     if not output.exists() or output.stat().st_size == 0:
         raise TTSError(f"XTTS produced no output at {output}")
