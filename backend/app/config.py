@@ -103,6 +103,11 @@ class Settings(BaseSettings):
     tts_max_speed_short: float = Field(1.5, ge=1.0, le=1.8)
     # XTTS native speed for retries of a take that overran its slot.
     tts_retry_speed: float = Field(1.2, ge=1.0, le=1.5)
+    # A line the timeline plan speeds up by at least this factor is re-spoken
+    # by XTTS at that speed (up to `tts_native_speed_takes` takes) before any
+    # waveform stretch; the stretch then only covers what is left.
+    tts_native_speed_min: float = Field(1.05, ge=1.0, le=2.0)
+    tts_native_speed_takes: int = Field(2, ge=0, le=4)
     # How far a line may start after its source onset when it absorbs the
     # overrun of the line before it (the lip sync follows the audio).
     tts_max_drift_seconds: float = Field(1.5, ge=0.0, le=5.0)

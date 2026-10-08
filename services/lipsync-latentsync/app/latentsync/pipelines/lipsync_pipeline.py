@@ -700,12 +700,20 @@ class LipsyncPipeline(DiffusionPipeline):
             affine_matrices.append(affine_matrix)
 
         faces = torch.stack(faces)
+        # Heads turned too far for the frontal template keep the source mouth
+        # (latentsync_driver.face_parse.turned_frames).
+        from latentsync_driver import face_parse
+
+        turned = np.zeros(total_frames, dtype=bool)
+        if os.environ.get("LATENTSYNC_YAW_GATE", "1") == "1":
+            turned = face_parse.turned_frames(face_parse.head_yaw(np.stack(per_frame_landmarks)))
         print(json.dumps({"event": "latentsync_face_prep", "frames": len(video_frames),
                           "detect_seconds": round(warp_started - detect_started, 2),
                           "warp_seconds": round(time.perf_counter() - warp_started, 2),
                           "shared_track": landmarks is not None,
-                          "occluded_frames": int((visible <= 0).sum())}), flush=True)
-        return faces, boxes, affine_matrices, visible
+                          "occluded_frames": int((visible <= 0).sum()),
+                          "turned_frames": int(turned.sum())}), flush=True)
+        return faces, boxes, affine_matrices, visible, turned
 
     def restore_video(
         self,
@@ -845,13 +853,14 @@ class LipsyncPipeline(DiffusionPipeline):
     def loop_video(self, whisper_chunks: list, video_frames: np.ndarray, landmarks=None, visible=None):
         # If the audio is longer than the video, we need to loop the video
         if len(whisper_chunks) > len(video_frames):
-            faces, boxes, affine_matrices, visible = self.affine_transform_video(video_frames, landmarks, visible)
+            faces, boxes, affine_matrices, visible, turned = self.affine_transform_video(video_frames, landmarks, visible)
             num_loops = math.ceil(len(whisper_chunks) / len(video_frames))
             loop_video_frames = []
             loop_faces = []
             loop_boxes = []
             loop_affine_matrices = []
             loop_visible = []
+            loop_turned = []
             for i in range(num_loops):
                 if i % 2 == 0:
                     loop_video_frames.append(video_frames)
@@ -859,27 +868,30 @@ class LipsyncPipeline(DiffusionPipeline):
                     loop_boxes += boxes
                     loop_affine_matrices += affine_matrices
                     loop_visible.append(visible)
+                    loop_turned.append(turned)
                 else:
                     loop_video_frames.append(video_frames[::-1])
                     loop_faces.append(faces.flip(0))
                     loop_boxes += boxes[::-1]
                     loop_affine_matrices += affine_matrices[::-1]
                     loop_visible.append(visible[::-1])
+                    loop_turned.append(turned[::-1])
 
             video_frames = np.concatenate(loop_video_frames, axis=0)[: len(whisper_chunks)]
             faces = torch.cat(loop_faces, dim=0)[: len(whisper_chunks)]
             boxes = loop_boxes[: len(whisper_chunks)]
             affine_matrices = loop_affine_matrices[: len(whisper_chunks)]
             visible = np.concatenate(loop_visible, axis=0)[: len(whisper_chunks)]
+            turned = np.concatenate(loop_turned, axis=0)[: len(whisper_chunks)]
         else:
             video_frames = video_frames[: len(whisper_chunks)]
             if landmarks is not None:
                 landmarks = landmarks[: len(video_frames)]
             if visible is not None:
                 visible = visible[: len(video_frames)]
-            faces, boxes, affine_matrices, visible = self.affine_transform_video(video_frames, landmarks, visible)
+            faces, boxes, affine_matrices, visible, turned = self.affine_transform_video(video_frames, landmarks, visible)
 
-        return video_frames, faces, boxes, affine_matrices, visible
+        return video_frames, faces, boxes, affine_matrices, visible, turned
 
     def prepare_inputs(self, video_path: str, audio_path: str, video_fps: int, window_landmarks=None) -> dict:
         """Everything a window needs before denoising: audio features, decoded
@@ -900,7 +912,7 @@ class LipsyncPipeline(DiffusionPipeline):
                     np.asarray(window_landmarks["visible"], dtype=np.float32), offset, len(video_frames)
                 )
             window_landmarks = slice_for_window(window_landmarks["landmarks"], offset, len(video_frames))
-        video_frames, faces, boxes, affine_matrices, visible = self.loop_video(
+        video_frames, faces, boxes, affine_matrices, visible, turned = self.loop_video(
             whisper_chunks, video_frames, window_landmarks, window_visible
         )
         affine_matrices, boxes = self._smooth_affines(affine_matrices, boxes)
@@ -909,7 +921,7 @@ class LipsyncPipeline(DiffusionPipeline):
         from latentsync_driver import face_parse
 
         parse_started = time.perf_counter()
-        face_masks, covered, mouth_open = self.face_parser().masks(
+        face_masks, covered, mouth_open, lips = self.face_parser().masks(
             faces, out_size=self.image_processor.restorer.face_size[::-1], visible=visible,
             frames=video_frames, affines=affine_matrices,
         )
@@ -921,6 +933,7 @@ class LipsyncPipeline(DiffusionPipeline):
             hidden = covered.numpy() > face_parse.MOUTH_COVERED
             covered_frames = int(hidden.sum())
             gate[hidden] = 0.0  # an occluder over the mouth: treat like a lost face
+        gate[turned] = 0.0  # head turned too far: the source mouth beats a squeezed one
         # ramp=1: binary. A partial paste dissolves two different mouths.
         alpha = face_parse.occlusion_alpha(gate, margin=2, ramp=1)
         # Silence in the translated audio: render a closed mouth there instead of
@@ -929,10 +942,16 @@ class LipsyncPipeline(DiffusionPipeline):
                                           16000, video_fps, len(video_frames))
         if face_masks is not None and silent.any() and os.environ.get("LATENTSYNC_SILENT_CLOSED_MOUTH", "1") == "1":
             closed_reference = face_parse.pick_closed_mouth(mouth_open.numpy(), alpha, covered.numpy())
+            if closed_reference is not None:
+                # Only the lips come from the closed-mouth render; beard and
+                # chin stay the source's.
+                quiet = torch.from_numpy(silent[: len(face_masks)])
+                face_masks[quiet] = lips[quiet].to(face_masks.dtype).cpu()
         print(json.dumps({"event": "latentsync_occlusion", "frames": len(faces),
                           "parsed": face_masks is not None, "gated_frames": int((alpha < 1).sum()),
                           "no_face_frames": int((np.asarray(visible) <= 0).sum()), "covered_mouth_frames": covered_frames,
                           "gated": face_parse.ranges(np.flatnonzero(alpha <= 0.0)),
+                          "turned": face_parse.ranges(np.flatnonzero(turned)),
                           "silent": face_parse.ranges(np.flatnonzero(silent)), "closed_reference": closed_reference,
                           "seconds": round(time.perf_counter() - parse_started, 2)}), flush=True)
         return {

@@ -173,3 +173,31 @@ def test_feather_softens_a_hard_edge():
     m = torch.zeros((1, 1, 64, 64)); m[..., :, 32:] = 1.0
     f = fp.feather(m, 15)
     assert 0.1 < float(f[0, 0, 32, 30]) < 0.5 and float(f[0, 0, 32, 10]) == 0.0 and float(f[0, 0, 32, 60]) == 1.0
+
+
+def test_head_yaw_is_zero_frontal_signed_when_turned_and_ignores_roll():
+    frontal = [[0, 0], [10, 0], [5, 6]]
+    turned = [[0, 0], [10, 0], [9, 6]]
+    rolled = [[0, 0], [7.071, 7.071], [0.0, 7.071]]  # frontal face tilted 45 degrees
+    yaw = fp.head_yaw([frontal, turned, rolled])
+    assert yaw[0] == pytest.approx(0.0) and yaw[1] == pytest.approx(0.4) and yaw[2] == pytest.approx(0.0, abs=1e-3)
+    assert fp.head_yaw([[[0, 0], [10, 0], [1, 6]]])[0] == pytest.approx(-0.4)
+
+
+def test_turned_frames_use_hysteresis_and_join_short_gaps():
+    yaw = [0.1] * 3 + [0.5, 0.42, 0.40] + [0.3] * 3 + [0.6] + [0.1] * 20 + [0.5]
+    turned = fp.turned_frames(yaw, enter=0.45, exit=0.38, min_gap=4)
+    assert turned[3:6].all()                 # stays on above the exit threshold
+    assert turned[6:9].all()                 # 3-frame dip joined to the next run
+    assert turned[9] and not turned[10:30].any() and turned[30]
+    assert not fp.turned_frames([0.44] * 5).any()
+
+
+def test_lip_mask_covers_the_lips_and_not_the_chin():
+    torch = pytest.importorskip("torch")
+    parsing = torch.ones(1, 64, 64, dtype=torch.uint8)  # skin, beard included
+    parsing[0, 30:34, 20:44] = 12
+    parsing[0, 34:38, 20:44] = 13
+    lips = fp.lip_mask_from_parsing(parsing, dilate=5, feather_size=1)
+    assert lips[0, 0, 32, 32] == 1.0 and lips[0, 0, 36, 22] == 1.0
+    assert lips[0, 0, 50, 32] == 0.0 and lips[0, 0, 10, 32] == 0.0

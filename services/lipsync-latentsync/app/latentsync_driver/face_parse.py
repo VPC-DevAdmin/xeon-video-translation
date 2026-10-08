@@ -37,6 +37,14 @@ Two layers fix this:
   Silent frames (from the translated audio) get the clip's most closed-mouth
   frame as the UNet reference instead; the masked frame still gives the pose
   and the paste-back still uses the real frame.
+  The closed-mouth render does not keep the lower face around the mouth
+  (a full beard vanished for 1.5 s on 8 Oct 2026), so on silent frames only
+  the lips (`LIP_CLASSES`, dilated) are pasted; the rest stays the source.
+* **Turned heads.** LatentSync warps every face to a frontal template; on a
+  head turned well away from the camera the far half of the mouth is squeezed
+  and the paste smears it into the cheek. Frames whose yaw (`head_yaw`) passes
+  `YAW_ENTER` keep the source mouth until it drops below `YAW_EXIT`
+  (`turned_frames`).
 * **Covered-mouth gate.** A pale, blurred object over the mouth is only partly
   caught by the temporal mask (a half-painted mouth would look worse than
   either extreme), so when the occluder mask covers more than `MOUTH_COVERED`
@@ -71,6 +79,12 @@ CONF_LOW, CONF_HIGH = 0.55, 0.72
 # Lower-face band of the canonical 512 crop (where LatentSync changes pixels)
 # and the fraction of it an occluder may cover before the frame is skipped.
 MOUTH_BAND = (slice(300, 430), slice(130, 390))
+# Lips and mouth interior: the paste region on silent frames.
+LIP_CLASSES = (11, 12, 13)
+# Head yaw (nose offset from the eye midpoint along the eye line, in eye
+# distances). On the 8 Oct 2026 lightboard clip the mouth was clean below
+# ~0.35, visibly squeezed at 0.36-0.43 and smeared from 0.55.
+YAW_ENTER, YAW_EXIT = 0.45, 0.38
 MOUTH_COVERED = 0.30  # clean frames on handheld footage reach ~0.1, boxes/hands over the mouth 0.4+
 
 
@@ -175,6 +189,21 @@ def face_mask_from_parsing(parsing, dilate: int = 9, feather: int = 15):
         padded = torch.cat([mask[:1], mask, mask[-1:]], dim=0)
         mask = (padded[:-2] + padded[1:-1] + padded[2:]) / 3.0
     return mask.clamp_(0.0, 1.0)
+
+
+def lip_mask_from_parsing(parsing, dilate: int = 15, feather_size: int = 15):
+    """(N,H,W) class map -> (N,1,H,W) mask of the lips and mouth interior,
+    dilated by `dilate` px so a closed mouth rendered where the source mouth
+    is open still lands inside it, then feathered."""
+    import torch
+    import torch.nn.functional as F
+
+    classes = torch.tensor(LIP_CLASSES, device=parsing.device)
+    mask = torch.isin(parsing, classes).to(torch.float32).unsqueeze(1)
+    k = dilate if dilate % 2 else dilate + 1
+    if k > 1:
+        mask = F.max_pool2d(mask, k, stride=1, padding=k // 2)
+    return feather(mask, feather_size)
 
 
 def occluder_masks(crops, visible, size: int = 128, window: int = 30, threshold: float = 22.0,
@@ -385,6 +414,36 @@ def silent_frames(audio, sample_rate: int, fps: float, frames: int, threshold: f
     return out
 
 
+def head_yaw(landmarks3) -> np.ndarray:
+    """(N,) yaw per frame from (N,3,2) left-eye / right-eye / nose points: the
+    nose's offset from the eye midpoint, measured along the eye line (so head
+    roll does not count) in units of the eye distance. 0 is frontal."""
+    points = np.asarray(landmarks3, dtype=np.float64).reshape(-1, 3, 2)
+    left, right, nose = points[:, 0], points[:, 1], points[:, 2]
+    axis = right - left
+    distance = np.linalg.norm(axis, axis=1)
+    offset = ((nose - (left + right) / 2) * axis).sum(1) / np.maximum(distance, 1e-3) ** 2
+    return offset.astype(np.float32)
+
+
+def turned_frames(yaw, enter: float = YAW_ENTER, exit: float = YAW_EXIT, min_gap: int = 8) -> np.ndarray:
+    """(N,) bool: frames whose head is turned too far for the lip sync. A run
+    starts above `enter` and lasts until |yaw| falls below `exit`
+    (hysteresis), and runs fewer than `min_gap` frames apart are joined, so
+    the mouth does not switch between source and generated every few frames."""
+    yaw = np.abs(np.asarray(yaw, dtype=np.float32))
+    out = np.zeros(len(yaw), dtype=bool)
+    on = False
+    for i, value in enumerate(yaw):
+        on = value > enter if not on else value >= exit
+        out[i] = on
+    idx = np.flatnonzero(out)
+    for a, b in zip(idx, idx[1:]):
+        if 1 < b - a <= min_gap:
+            out[a:b] = True
+    return out
+
+
 def pick_closed_mouth(mouth_open, alpha, covered=None):
     """Index of the frame to use as the silent-mouth reference: the smallest
     mouth-interior fraction among frames whose face is fully visible (alpha 1,
@@ -441,15 +500,17 @@ class FaceParser:
 
     def masks(self, crops, out_size: tuple[int, int], batch_size: int = 32, visible=None,
               frames=None, affines=None):
-        """Returns `(masks, covered, mouth_open)`: (N,1,h,w) paste masks for
+        """Returns `(masks, covered, mouth_open, lips)`: (N,1,h,w) paste masks for
         `out_size` = (height, width) of the warp crop, the per-frame fraction of
         the lower-face band hidden by an occluder (zeros without `visible`), and
         the per-frame fraction of the band parsed as mouth interior. With
         `visible` (per-frame detection / confidence) the temporal occluder
         mask is subtracted as well; with `frames` (source RGB) and `affines`
-        the MediaPipe hand mask too. `(None, None, None)` when parsing is unavailable."""
+        the MediaPipe hand mask too. `lips` is the paste mask restricted to
+        the lips (for silent frames). `(None, None, None, None)` when parsing
+        is unavailable."""
         if not self.available():
-            return None, None, None
+            return None, None, None, None
         import torch
         import torch.nn.functional as F
 
@@ -465,6 +526,7 @@ class FaceParser:
                 parsed.append(self._net(x)[0].argmax(1).to(torch.uint8))
             parsing = torch.cat(parsed, dim=0)
             mask = face_mask_from_parsing(parsing)
+            lips = lip_mask_from_parsing(parsing)
             band = parsing[:, MOUTH_BAND[0], MOUTH_BAND[1]]
             mouth_open = ((band == 13).float().sum((1, 2)) / float(band.shape[1] * band.shape[2])).cpu()
             covered = torch.zeros(len(mask), dtype=torch.float32)
@@ -487,5 +549,7 @@ class FaceParser:
                 band_occ = (occluders > 0.5).float()[..., MOUTH_BAND[0], MOUTH_BAND[1]]
                 covered = ((band_face * band_occ).sum((1, 2, 3)) / band_face.sum((1, 2, 3)).clamp(min=1.0)).cpu()
                 mask = mask * (1.0 - cut)
+            lips = torch.minimum(lips, mask)  # occluders cut it too
             mask = F.interpolate(mask, size=out_size, mode="bilinear", align_corners=False)
-        return mask, covered, mouth_open
+            lips = F.interpolate(lips, size=out_size, mode="bilinear", align_corners=False)
+        return mask, covered, mouth_open, lips

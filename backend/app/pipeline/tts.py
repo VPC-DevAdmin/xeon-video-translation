@@ -19,8 +19,8 @@ XTTS processing pipeline (per request):
    when word timestamps aren't available or no ≥3 s clean span exists.
 2. Per-segment synthesis when the transcript has multiple segments —
    preserves the source clip's pause structure. Single-shot otherwise.
-3. Optional formant-preserving time-stretch (rubberband) if assembled
-   audio overshoots the source video's available window.
+3. Lines that must be faster are re-spoken at XTTS's own speed; what is
+   left is sped up with ffmpeg atempo.
 4. Prepend silence to align the first spoken frame with the source.
 5. Loudness normalization (EBU R128 / −16 LUFS) so dialog lands at a
    consistent broadcast level regardless of the XTTS take.
@@ -274,8 +274,7 @@ def synthesize(
     first spoken frame — otherwise a 1 s "speaker pauses then talks" clip
     becomes a "speaker starts talking immediately" clip.
 
-    `source_duration_seconds` enables formant-preserving time-stretch
-    (rubberband) when the post-trim TTS is still a bit longer than the
+    `source_duration_seconds` enables a time-stretch (atempo) when the post-trim TTS is still a bit longer than the
     remaining source video. Stretching is skipped when the ratio would be
     aggressive — we'd rather freeze-pad video than produce chipmunk audio.
 
@@ -1207,6 +1206,7 @@ def _synthesize_per_segment(
             if selected is not None:
                 ref = selected[0]
         paths = []
+        retakes = []  # per segment: (re-speak at a given XTTS speed, speed of the kept take)
         for i, segment in enumerate(translation_segments):
             text = str(segment.get("text", "")).strip()
             if not text:
@@ -1247,7 +1247,9 @@ def _synthesize_per_segment(
             )
             segment_ref = selected[0] if selected else ref
 
-            take_speed = {"value": None}  # XTTS native speed for retries of an overrunning segment
+            # XTTS native speed for retries of an overrunning segment; "take"
+            # and "best" are the speeds the current and the best take were made at.
+            take_speed = {"value": None, "take": 1.0, "best": 1.0}
 
             def generate_take(value):
                 if backend == "xtts":
@@ -1255,6 +1257,7 @@ def _synthesize_per_segment(
                     if take_speed["value"]:
                         extra["speed"] = take_speed["value"]
                     _xtts_to_file(value, segment_ref, language, path, **extra)
+                    take_speed["take"] = take_speed["value"] or 1.0
                 else:
                     generate(value, target_language, reference_audio, path, reference_segments)
 
@@ -1336,6 +1339,7 @@ def _synthesize_per_segment(
                 if verified is not False and (best_take_duration is None or duration < best_take_duration):
                     shutil.copyfile(path, best_take)
                     best_take_duration = duration
+                    take_speed["best"] = take_speed["take"]
                 if verified is not False and duration <= available * settings.tts_max_speed:
                     break
                 if verified is not False and duration > available * settings.tts_max_speed:
@@ -1360,6 +1364,7 @@ def _synthesize_per_segment(
             if best_take_duration is not None and best_take_duration < duration:
                 shutil.copyfile(best_take, path)
                 duration = best_take_duration
+                take_speed["take"] = take_speed["best"]
             best_take.unlink(missing_ok=True)
             if duration > available:
                 speed = duration / available
@@ -1374,6 +1379,7 @@ def _synthesize_per_segment(
                     # usable one with a worse one.
                     best = work / f"segment-{i}.best.wav"
                     best_duration, best_text = duration, text
+                    take_speed["best"] = take_speed["take"]
                     import shutil
 
                     shutil.copyfile(path, best)
@@ -1411,6 +1417,7 @@ def _synthesize_per_segment(
                         if duration < best_duration:
                             shutil.copyfile(path, best)
                             best_duration, best_text = duration, text
+                            take_speed["best"] = take_speed["take"]
                         if speed <= settings.tts_max_speed:
                             break
                     # The best take is a verified (or ambiguous) one from before the
@@ -1418,6 +1425,7 @@ def _synthesize_per_segment(
                     shutil.copyfile(best, path)
                     best.unlink()
                     duration, text = best_duration, best_text
+                    take_speed["take"] = take_speed["best"]
                     speed = duration / available
                     if text != segment["text"]:
                         segment["original_text"] = segment.get("original_text", segment["text"])
@@ -1427,6 +1435,19 @@ def _synthesize_per_segment(
             kept = work / f"segment-{i}.kept.wav"
             shutil.copyfile(path, kept)
             paths.append(kept)
+            if backend == "xtts":
+                def retake(out, speed, text=text, segment_ref=segment_ref, voice=voice):
+                    _xtts_to_file(text, segment_ref, language, out, speed=speed,
+                                  **({"voice": voice} if voice else {}))
+                    if _trim_tail_via_whisper(out, target_language, text) is False:
+                        return None
+                    _trim_to_speech(out)
+                    _compress_pauses(out)
+                    return _probe_duration(out)
+
+                retakes.append((retake, take_speed["take"]))
+            else:
+                retakes.append(None)
             timings.append(
                 {
                     "segment": i,
@@ -1470,12 +1491,18 @@ def _synthesize_per_segment(
             )
         placements, factors = plan
         placed_segments = []
-        for t, path, placed, factor, segment in zip(timings, paths, placements, factors, translation_segments):
+        for t, path, placed, factor, segment, redo in zip(timings, paths, placements, factors,
+                                                           translation_segments, retakes):
             if factor > 1.0 + 1e-6:
                 if factor > settings.tts_max_speed:
                     log.warning("segment %d: %.2fx (above the preferred %.2fx)", t["segment"] + 1, factor,
                                 settings.tts_max_speed)
-                _maybe_time_stretch(path, target_duration=round(t["natural_seconds"] / factor, 3), max_speed=t["ceiling"])
+                target = round(t["natural_seconds"] / factor, 3)
+                if redo is not None and factor >= settings.tts_native_speed_min:
+                    native = _respeak_faster(path, target, factor, *redo)
+                    if native:
+                        t["native_speed"] = native
+                _maybe_time_stretch(path, target_duration=target, max_speed=t["ceiling"])
                 t["speech_seconds"] = _probe_duration(path)
             t["placed_start"] = round(placed, 3)
             t["speed"] = round(factor, 3)
@@ -1493,6 +1520,35 @@ def _synthesize_per_segment(
         json.dumps(timings, ensure_ascii=False, indent=2)
     )
     return len(paths)
+
+
+def _respeak_faster(path: Path, target: float, factor: float, retake, base_speed: float) -> float | None:
+    """Re-speak a line at XTTS's own speed instead of stretching the waveform.
+
+    The model speaks faster with natural articulation; a stretch of the
+    waveform smears it (PESQ 4.1 vs 3.9 at 1.1x and 3.8 vs 3.6 at 1.25x
+    against atempo, 8 Oct 2026). Up to `tts_native_speed_takes` verified
+    takes; the shortest one that beats the current take replaces it, and the
+    caller's stretch covers whatever is still over `target`. Returns the
+    XTTS speed of the take kept, or None when the original take stays."""
+    speed = min(2.0, round(base_speed * factor, 3))
+    current = _probe_duration(path)
+    kept = None
+    for n in range(settings.tts_native_speed_takes):
+        candidate = path.with_name(f"{path.stem}.native{n}.wav")
+        try:
+            duration = retake(candidate, speed)
+        except Exception as exc:
+            log.warning("native-speed retake of %s failed: %s", path.name, exc)
+            duration = None
+        if duration is None or duration >= current:
+            candidate.unlink(missing_ok=True)
+            continue
+        candidate.replace(path)
+        current, kept = duration, speed
+        if current <= target + 0.05:
+            break
+    return kept
 
 
 def _plan_timeline(starts, durations, slot_ends, ceilings, end_limit, *, max_drift=1.5,
@@ -1982,18 +2038,14 @@ def _trim_tail_via_whisper(
 def _maybe_time_stretch(
     audio_path: Path, target_duration: float, max_speed: float | None = None
 ) -> None:
-    """Run rubberband to shorten `audio_path` to ~`target_duration` seconds.
+    """Speed `audio_path` up to ~`target_duration` seconds with ffmpeg's atempo.
 
     No-op when the current duration is already within the target or when
-    the required ratio is too aggressive. Requires `rubberband-cli` on
-    PATH — which the backend Docker image installs via apt.
+    the required ratio is too aggressive. atempo replaced rubberband on
+    8 Oct 2026: on the same XTTS line rubberband (R2 --formant, and R3)
+    scored PESQ 1.8 at 1.1x and 1.4-1.5 at 1.25x, heard as static and
+    scratchiness, where atempo scored 3.9 and 3.6.
     """
-    import shutil as _shutil
-
-    if _shutil.which("rubberband") is None:
-        log.info("rubberband-cli not installed; skipping time-stretch")
-        return
-
     current = _probe_duration(audio_path)
     if current <= target_duration + 0.05:
         # Already at or under the target — nothing to do.
@@ -2010,20 +2062,14 @@ def _maybe_time_stretch(
         return
 
     tmp = audio_path.parent / f"{audio_path.stem}.stretch{audio_path.suffix}"
-    cmd = [
-        "rubberband",
-        "--time",
-        f"{ratio:.4f}",
-        # `--formant` preserves formant frequencies during the stretch so
-        # the speaker still sounds like themselves.
-        "--formant",
-        str(audio_path),
-        str(tmp),
-    ]
-    proc = subprocess.run(cmd, capture_output=True, timeout=120)
+    proc = subprocess.run(
+        ["ffmpeg", "-v", "error", "-y", "-i", str(audio_path),
+         "-filter:a", f"atempo={1.0 / ratio:.4f}", str(tmp)],
+        capture_output=True, timeout=120,
+    )
     if proc.returncode != 0:
         raise RuntimeError(
-            f"rubberband exit {proc.returncode}: {proc.stderr.decode(errors='replace')[-500:]}"
+            f"atempo exit {proc.returncode}: {proc.stderr.decode(errors='replace')[-500:]}"
         )
     tmp.replace(audio_path)
     log.info(
@@ -2043,7 +2089,7 @@ def _maybe_time_stretch(
 def _prepend_silence(audio_path: Path, seconds: float) -> None:
     """Prepend `seconds` of silence to `audio_path` (in place) via ffmpeg.
 
-    Matches sample rate and channel layout of the input. The result is an
+    Keeps the input's sample rate, channels and 16-bit depth. The result is an
     audio file whose first spoken frame sits at `seconds` — aligning the
     TTS with the source clip's pre-speech silence.
     """
@@ -2058,7 +2104,7 @@ def _prepend_silence(audio_path: Path, seconds: float) -> None:
             "-select_streams",
             "a:0",
             "-show_entries",
-            "stream=sample_rate,channels",
+            "stream=sample_rate",
             "-of",
             "default=nw=1",
             str(audio_path),
@@ -2066,32 +2112,27 @@ def _prepend_silence(audio_path: Path, seconds: float) -> None:
         capture_output=True,
         timeout=30,
     )
-    sr, ch = 24000, 1
+    sr = 24000
     for line in probe.stdout.decode(errors="replace").splitlines():
-        if "=" in line:
-            k, v = line.split("=", 1)
-            if k == "sample_rate":
-                sr = int(v)
-            elif k == "channels":
-                ch = int(v)
+        if line.startswith("sample_rate="):
+            sr = int(line.split("=", 1)[1])
 
     tmp = audio_path.parent / f"{audio_path.stem}.pad{audio_path.suffix}"
-    channel_layout = "mono" if ch == 1 else "stereo"
+    # adelay on the speech itself. This used to concat an anullsrc lead in
+    # front of it, and ffmpeg negotiated that graph to unsigned 8-bit: every
+    # span with a pause before its first word was quantized to 256 levels,
+    # heard as static (PESQ 3.86 -> 3.26, found 8 Oct 2026).
     cmd = [
         "ffmpeg",
         "-v",
         "error",
         "-y",
-        "-f",
-        "lavfi",
-        "-i",
-        f"anullsrc=r={sr}:cl={channel_layout}",
         "-i",
         str(audio_path),
-        "-filter_complex",
-        f"[0:a]atrim=duration={seconds:.3f}[lead];[lead][1:a]concat=n=2:v=0:a=1[out]",
-        "-map",
-        "[out]",
+        "-af",
+        f"adelay=delays={round(seconds * sr)}S:all=1",
+        "-c:a",
+        "pcm_s16le",
         str(tmp),
     ]
     proc = subprocess.run(cmd, capture_output=True, timeout=120)

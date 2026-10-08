@@ -61,6 +61,7 @@ def _fitting_at(monkeypatch, tmp_path, durations):
     """Like `fitting`, but takes have the given durations in order and may assemble."""
     monkeypatch.setattr(tts.settings, "tts_segment_retries", 0)
     monkeypatch.setattr(tts.settings, "tts_fit_retries", 2)
+    monkeypatch.setattr(tts.settings, "tts_native_speed_takes", 0)  # see test_tts_native_speed
     monkeypatch.setattr(tts.settings, "tts_max_speed", 1.15)
     monkeypatch.setattr(tts.settings, "tts_max_speed_hard", 1.3)
     monkeypatch.setattr(tts.settings, "tts_short_slot_seconds", 0.0)

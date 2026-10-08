@@ -110,3 +110,40 @@ fit, so fitting is now planned per span:
 Full-video TTS sweep after these changes: all 72 spans synthesized (5 of them
 re-run after the last fixes); 153 lines, median speed 1.00, 6 above 1.3x,
 1 last resort, largest start drift 1.5 s.
+
+## Quality pass: audio, turned heads, beard (8 Oct 2026)
+
+Three problems on the 2-minute Quality run of the lightboard video, measured
+before fixing. Speech quality is SQUIM's objective PESQ (4.5 is perfect).
+
+* **Scratchy speech.** Three causes. (1) The main one, found only after the
+  first two were fixed: `tts._prepend_silence` concatenated an `anullsrc` lead
+  in front of each span's speech, and ffmpeg negotiated that graph to unsigned
+  8-bit, so every span with a pause before its first word was quantized to 256
+  levels (229 distinct sample values in a take that had 20,400). Speech-only
+  PESQ of the same takes fell from 3.86 to 3.26 at that step; it now uses
+  `adelay` on the speech and stays bit-exact. (2) Every line the timeline plan sped up,
+  even by 10%, went through rubberband, which wrecked it: on the same XTTS line
+  rubberband scored 1.82 at 1.1x and 1.44 at 1.25x (R3 `--fine` no better), ffmpeg
+  atempo 3.87 and 3.55, and XTTS's own speed control 4.11 and 3.76. Speed-ups
+  now re-speak the line at the planned XTTS speed (`tts_native_speed_min` 1.05,
+  up to `tts_native_speed_takes` 2 verified takes, compounded with the speed
+  the kept take was made at), and atempo covers whatever is left
+  (`tts._respeak_faster`, `tts._maybe_time_stretch`). (2) XTTS cloned the voice
+  from the 16 kHz copy made for recognition. The audio stage now also writes
+  `voice_reference.wav` at 24 kHz, used for cloning and for the original sound
+  in untranslated gaps: the raw take went from 3.11 to 3.95 (the source
+  recording scores 3.64).
+* **Distorted mouths on turned heads.** LatentSync warps every face to a
+  frontal template; the far half of the mouth is squeezed and smears into the
+  cheek, growing with head yaw (nose offset from the eye midpoint along the eye
+  line, in eye distances). Clean below about 0.35, visibly squeezed at 0.36 to
+  0.43, smeared from 0.55; 19% of speaking frames in the clip were above 0.4.
+  Frames above `YAW_ENTER` 0.45 keep the source mouth until yaw falls below
+  `YAW_EXIT` 0.38, runs up to 8 frames apart are joined, and the usual 2-frame
+  gate margin applies (`face_parse.turned_frames`, `LATENTSYNC_YAW_GATE=0`
+  disables). The switch is a cut, not a dissolve.
+* **Beard vanishing at 19.6 to 21.1 s.** Exactly the frames where the
+  translation had already ended, which render with the closed-mouth reference
+  frame. That render drops the lower face texture, so on silent frames only the
+  lips (parse classes 11 to 13, dilated 15 px and feathered) are pasted.

@@ -595,6 +595,16 @@ async def _start_stage(
     return stage
 
 
+VOICE_REFERENCE = "voice_reference.wav"
+
+
+def _voice_reference(job_id: str) -> Path:
+    """The XTTS speaker reference: the full-band copy, or the recognition audio
+    for jobs whose audio stage ran before the copy existed."""
+    reference = storage.job_artifact_path(job_id, VOICE_REFERENCE)
+    return reference if reference.exists() else storage.job_artifact_path(job_id, "audio.wav")
+
+
 async def _run_stage_audio(
     state: JobState,
     queue: EventLog,
@@ -615,6 +625,10 @@ async def _run_stage_audio(
                 f"clip is {duration:.1f}s, max is {settings.max_video_duration_seconds}s"
             )
         audio.extract_audio(input_path, out_path)
+        # The voice-cloning reference keeps the full band: cloned from the
+        # 16 kHz recognition copy, XTTS speech scored PESQ 3.11 against 3.95
+        # (8 Oct 2026), and sounded muffled and scratchy.
+        audio.extract_audio(input_path, out_path.with_name(VOICE_REFERENCE), sample_rate=24_000)
         return {"path": out_path.name, "duration_seconds": duration}
 
     try:
@@ -848,7 +862,7 @@ async def _run_stage_tts(state: JobState, queue: EventLog) -> None:
 
     translation_path = storage.job_artifact_path(state.job_id, "translation.json")
     transcript_path = storage.job_artifact_path(state.job_id, "transcript.json")
-    reference_audio = storage.job_artifact_path(state.job_id, "audio.wav")
+    reference_audio = _voice_reference(state.job_id)
     out_path = storage.job_artifact_path(state.job_id, "translated_audio.wav")
     started = time.perf_counter()
 
@@ -1139,8 +1153,8 @@ async def _run_stage_stream(state: JobState, queue: EventLog, input_path: Path) 
             backend=backend, steps=(state.lipsync_quality or {}).get("num_inference_steps"),
             tts_backend=state.tts_backend, options=state.options, emit=emit,
             cancel=_cancel_signals.get(state.job_id))
-        return job.run(reference_audio=storage.job_artifact_path(state.job_id, "audio.wav"),
-                       original_audio=storage.job_artifact_path(state.job_id, "audio.wav"))
+        return job.run(reference_audio=_voice_reference(state.job_id),
+                       original_audio=_voice_reference(state.job_id))
 
     try:
         result = await blocking_call(_do)
