@@ -28,6 +28,8 @@ function when(iso: string | null): string {
 export function FinishedJobs({ refreshKey }: { refreshKey?: string }) {
   const [jobs, setJobs] = useState<JobRecord[]>([]);
   const [open, setOpen] = useState<string | null>(null);
+  const [showAll, setShowAll] = useState(false);
+  const SHOWN = 10;
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -59,7 +61,7 @@ export function FinishedJobs({ refreshKey }: { refreshKey?: string }) {
       {error && <p className="text-sm text-red-300">Could not load the list: {error}</p>}
       {!error && !jobs.length && <p className="text-sm text-ink-400">Nothing finished yet.</p>}
       <ul className="divide-y divide-ink-700 border border-ink-700 rounded">
-        {jobs.map(job => {
+        {(showAll ? jobs : jobs.slice(0, SHOWN)).map(job => {
           const lang = LANGUAGES.find(l => l.code === job.target_language);
           const base = `${stem(job.input_filename)} · ${job.target_language} · ${job.mode || "job"}`;
           const isAudioOnly = job.mode === "dub";
@@ -98,6 +100,11 @@ export function FinishedJobs({ refreshKey }: { refreshKey?: string }) {
           );
         })}
       </ul>
+      {jobs.length > SHOWN && (
+        <button className="mt-2 text-sm text-accent-soft underline" onClick={() => setShowAll(!showAll)}>
+          {showAll ? `Show the newest ${SHOWN}` : `Show all ${jobs.length}`}
+        </button>
+      )}
     </section>
   );
 }
