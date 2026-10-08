@@ -1,7 +1,12 @@
 "use client";
 
-import { useCallback } from "react";
-import { useDropzone } from "react-dropzone";
+import { useCallback, useState } from "react";
+import { useDropzone, type FileRejection } from "react-dropzone";
+
+// Mirrors MAX_VIDEO_SIZE_MB / MAX_VIDEO_DURATION_SECONDS on the backend, which
+// stays authoritative (it rejects oversize uploads and over-long clips).
+export const MAX_UPLOAD_MB = 4096;
+export const MAX_UPLOAD_MINUTES = 15;
 
 export function Uploader({
   file,
@@ -10,9 +15,21 @@ export function Uploader({
   file: File | null;
   onFile: (f: File | null) => void;
 }) {
+  const [rejected, setRejected] = useState<string | null>(null);
   const onDrop = useCallback(
-    (accepted: File[]) => {
-      if (accepted[0]) onFile(accepted[0]);
+    (accepted: File[], rejections: FileRejection[]) => {
+      if (accepted[0]) {
+        setRejected(null);
+        onFile(accepted[0]);
+      } else if (rejections[0]) {
+        const r = rejections[0];
+        const tooBig = r.errors.some(e => e.code === "file-too-large");
+        setRejected(
+          tooBig
+            ? `${r.file.name} is ${(r.file.size / (1024 * 1024)).toFixed(0)} MB; the limit is ${MAX_UPLOAD_MB} MB.`
+            : `${r.file.name}: ${r.errors.map(e => e.message).join("; ")}`
+        );
+      }
     },
     [onFile]
   );
@@ -26,7 +43,7 @@ export function Uploader({
       "video/x-matroska": [".mkv"],
     },
     multiple: false,
-    maxSize: 100 * 1024 * 1024,
+    maxSize: MAX_UPLOAD_MB * 1024 * 1024,
   });
 
   return (
@@ -61,8 +78,9 @@ export function Uploader({
         <div className="text-ink-300">
           <p className="font-medium">Drop a video here, or click to browse</p>
           <p className="text-sm text-ink-400 mt-1">
-            mp4 / mov / webm / mkv · up to 100 MB · ≤ 60 s
+            mp4 / mov / webm / mkv · up to {MAX_UPLOAD_MB / 1024} GB · ≤ {MAX_UPLOAD_MINUTES} min
           </p>
+          {rejected && <p className="text-sm text-red-400 mt-2">{rejected}</p>}
         </div>
       )}
     </div>
