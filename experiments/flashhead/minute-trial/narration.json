@@ -1,0 +1,10 @@
+{
+  "model": "XTTS-v2",
+  "seed": 42,
+  "reference": "original IMG_7228.MOV, 1.77 seconds",
+  "raw_duration": 66.011,
+  "tempo_ratio": 1.1188305084745762,
+  "duration": 60,
+  "generation_seconds": 29.46707664290443,
+  "new_script": "Good morning. Today I want to share a simple idea: video should help people understand each other, no matter which language they speak. Imagine recording a message once, then sharing it with friends and colleagues around the world in their own language. The goal is to preserve the meaning, the personality, and the feeling behind every sentence. Clear speech matters, but so do natural expressions and believable movement. This one minute demonstration was created from a short recording, using a new script and newly generated animation. As we develop the system, we are comparing different approaches, looking closely at the face, listening carefully to the voice, and checking that the words stay accurate. There is still work to do, and quality comes first. Thank you for watching, and I hope you have a wonderful day."
+}

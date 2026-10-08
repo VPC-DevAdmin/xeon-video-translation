@@ -1,0 +1,122 @@
+[
+  {
+    "file": "english-one-minute-flashhead.mp4",
+    "bytes": 17428973,
+    "sha256": "e0b6c6af098a9cd049b750ac75359882be0d90f1b31b7d7e96621e7679e2e73e",
+    "programs": [],
+    "stream_groups": [],
+    "streams": [
+      {
+        "codec_name": "h264",
+        "width": 512,
+        "height": 512,
+        "r_frame_rate": "25/1",
+        "nb_frames": "1488"
+      },
+      {
+        "codec_name": "aac",
+        "r_frame_rate": "0/0",
+        "nb_frames": "931"
+      }
+    ],
+    "format": {
+      "duration": "59.520000"
+    }
+  },
+  {
+    "file": "latent-10.mp4",
+    "bytes": 16385956,
+    "sha256": "47fe0f9c5eb8a0124346e60e4a834df1a2625147c119495b17da123be9620984",
+    "programs": [],
+    "stream_groups": [],
+    "streams": [
+      {
+        "codec_name": "h264",
+        "width": 1080,
+        "height": 1920,
+        "r_frame_rate": "25/1",
+        "nb_frames": "202"
+      },
+      {
+        "codec_name": "aac",
+        "r_frame_rate": "0/0",
+        "nb_frames": "126"
+      }
+    ],
+    "format": {
+      "duration": "8.080000"
+    }
+  },
+  {
+    "file": "latent-40.mp4",
+    "bytes": 16419636,
+    "sha256": "1c28e87f4619224054955e1eb28fac350bf4935b9281cc814c2d3fb16759054b",
+    "programs": [],
+    "stream_groups": [],
+    "streams": [
+      {
+        "codec_name": "h264",
+        "width": 1080,
+        "height": 1920,
+        "r_frame_rate": "25/1",
+        "nb_frames": "202"
+      },
+      {
+        "codec_name": "aac",
+        "r_frame_rate": "0/0",
+        "nb_frames": "126"
+      }
+    ],
+    "format": {
+      "duration": "8.080000"
+    }
+  },
+  {
+    "file": "muse-jaw.mp4",
+    "bytes": 14950821,
+    "sha256": "c472bfdd17ce35a1815aeb90df9b7201cfc8b48e8c1d60474393b04638c8f82b",
+    "programs": [],
+    "stream_groups": [],
+    "streams": [
+      {
+        "codec_name": "h264",
+        "width": 1080,
+        "height": 1920,
+        "r_frame_rate": "30/1",
+        "nb_frames": "240"
+      },
+      {
+        "codec_name": "aac",
+        "r_frame_rate": "0/0",
+        "nb_frames": "126"
+      }
+    ],
+    "format": {
+      "duration": "8.000000"
+    }
+  },
+  {
+    "file": "spanish-fast-full.mp4",
+    "bytes": 101891182,
+    "sha256": "440996ce211907f3d08fb1857859112924f0e4646875aa9a8a73f0dbf05959a0",
+    "programs": [],
+    "stream_groups": [],
+    "streams": [
+      {
+        "codec_name": "h264",
+        "width": 1080,
+        "height": 1920,
+        "r_frame_rate": "25/1",
+        "nb_frames": "1262"
+      },
+      {
+        "codec_name": "aac",
+        "r_frame_rate": "0/0",
+        "nb_frames": "789"
+      }
+    ],
+    "format": {
+      "duration": "50.480000"
+    }
+  }
+]

@@ -91,7 +91,8 @@ RUN pip install --upgrade pip wheel \
        "triton>=3.1,<3.2"
 
 COPY pyproject.toml ./
-RUN pip install -e .
+# `.[cpu]` pulls onnxruntime (CPU) + IPEX; the GPU image uses `.[gpu]`.
+RUN pip install -e ".[cpu]"
 
 # Clear the executable-stack marker from IPEX's native libs (see apt
 # patchelf note above). Targeted only at intel_extension_for_pytorch
@@ -101,6 +102,9 @@ RUN find /usr/local/lib/python3.11/site-packages/intel_extension_for_pytorch \
          /usr/local/lib/python3.11/site-packages/intel_openmp \
          -name "*.so*" 2>/dev/null \
     | xargs -r -n1 -I{} sh -c 'patchelf --clear-execstack "{}" 2>/dev/null || true'
+
+COPY --from=gpu_shared / /opt/gpu-shared
+RUN pip install --no-deps /opt/gpu-shared
 
 COPY app ./app
 COPY scripts ./scripts

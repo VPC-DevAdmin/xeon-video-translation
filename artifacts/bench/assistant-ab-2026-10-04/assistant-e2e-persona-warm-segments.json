@@ -1,0 +1,224 @@
+{
+  "session": "abaa083be09f448cbe48b05afad6ea26",
+  "connection": "connected",
+  "prepare_seconds": 0.87,
+  "ready_after_seconds": 6.14,
+  "server_prepare": {
+    "cached": {
+      "idle": true,
+      "ack": true
+    },
+    "renderer_open_seconds": 0.21,
+    "idle_seconds_ready": 12.32,
+    "ack_ready": true,
+    "chunk": {
+      "frames_per_chunk": 28,
+      "samples_per_chunk": 17920,
+      "seconds_per_chunk": 1.12
+    },
+    "total_seconds": 0.46
+  },
+  "endpoint_to_ack_audio_seconds": 0.17,
+  "endpoint_to_reply_scheduled_event_seconds": 4.412,
+  "endpoint_to_reply_speaking_seconds": 10.001,
+  "endpoint_to_reply_audio_seconds": 10.09,
+  "reply_video_fps": 25.01,
+  "reply_frames": 73,
+  "reply_mean_frame_change": 2.099,
+  "idle_before_turn": {
+    "frames": 86,
+    "median": 0.44,
+    "p99": 3.02,
+    "max": 5.04,
+    "snaps": 0,
+    "snap_threshold": 6.0,
+    "snap_times": []
+  },
+  "idle_after_reply": {
+    "frames": 475,
+    "median": 0.71,
+    "p99": 2.17,
+    "max": 2.67,
+    "snaps": 0,
+    "snap_threshold": 6.0,
+    "snap_times": []
+  },
+  "ack_ready_after_seconds": 0.0,
+  "event_times": [
+    [
+      "ready",
+      6.14
+    ],
+    [
+      "listening",
+      8.76
+    ],
+    [
+      "thinking",
+      10.1
+    ],
+    [
+      "acknowledging",
+      10.1
+    ],
+    [
+      "reply_scheduled",
+      14.51
+    ],
+    [
+      "speaking",
+      20.1
+    ],
+    [
+      "listening",
+      23.02
+    ]
+  ],
+  "released_after_seconds": null,
+  "channel_open_after_seconds": 6.13,
+  "interrupt_ack_seconds": null,
+  "last_audio_after_interrupt_seconds": null,
+  "server": {
+    "metrics": {
+      "turns": 1,
+      "interruptions": 1,
+      "renderer_errors": 0,
+      "prepare": {
+        "cached": {
+          "idle": true,
+          "ack": true
+        },
+        "renderer_open_seconds": 0.21,
+        "idle_seconds_ready": 12.32,
+        "ack_ready": true,
+        "chunk": {
+          "frames_per_chunk": 28,
+          "samples_per_chunk": 17920,
+          "seconds_per_chunk": 1.12
+        },
+        "total_seconds": 0.46
+      },
+      "ack_start_seconds": [
+        0.1
+      ],
+      "reply_start_seconds": [
+        10.0
+      ],
+      "head_start_seconds": [
+        2.8
+      ],
+      "reply_seconds": [
+        2.87
+      ],
+      "render_ratio": [
+        0.841
+      ],
+      "stalls": 0,
+      "portrait_enhanced": true
+    },
+    "history": [
+      {
+        "role": "user",
+        "content": "Where are the sprinklers?"
+      },
+      {
+        "role": "assistant",
+        "content": "They're above the kitchen sink and near the ceiling in the hallway."
+      }
+    ],
+    "generation": 1,
+    "timeline": {
+      "frames_sent": 924,
+      "frames_skipped": 3,
+      "idle_frames_sent": 778,
+      "scheduled_seconds": 5.84,
+      "now": 42.61
+    },
+    "idle": {
+      "seconds": 12.32,
+      "segments": 3
+    },
+    "acks": 3,
+    "renderer": {
+      "session": "36b55de67e944d1b80b917e8044d112a",
+      "ratio": 0.847,
+      "motion": "reply",
+      "first_chunk_seconds": 1.3417365869972855,
+      "chunk_seconds": [
+        1.342,
+        1.322,
+        1.302
+      ]
+    },
+    "rtc": {
+      "audio": {
+        "packets_lost": 0,
+        "fraction_lost": 0.0,
+        "jitter_ms": 0.7,
+        "rtt_ms": 0.3,
+        "packets_sent": 1846,
+        "bytes_sent": 64282
+      },
+      "video": {
+        "packets_lost": 0,
+        "fraction_lost": 0.0,
+        "jitter_ms": 0.7,
+        "rtt_ms": 0.3,
+        "packets_sent": 7928,
+        "bytes_sent": 8556404
+      }
+    }
+  },
+  "events": [
+    {
+      "type": "ready",
+      "idle_seconds": 12.3,
+      "acks": 3,
+      "cached": true,
+      "t": 6.154
+    },
+    {
+      "type": "listening",
+      "t": 8.779
+    },
+    {
+      "type": "thinking",
+      "t": 10.119
+    },
+    {
+      "type": "acknowledging",
+      "seconds": 2.96,
+      "text": "Sure, one moment while I think about it.",
+      "t": 10.12
+    },
+    {
+      "type": "transcript",
+      "text": "Where are the sprinklers?",
+      "t": 10.469
+    },
+    {
+      "type": "reply",
+      "text": "They're above the kitchen sink and near the ceiling in the hallway.",
+      "t": 10.583
+    },
+    {
+      "type": "reply_scheduled",
+      "start_in": 5.59,
+      "head_start": 10.0,
+      "required": 2.8,
+      "render_ratio": 0.841,
+      "reply_seconds": 2.87,
+      "t": 14.532
+    },
+    {
+      "type": "speaking",
+      "t": 20.12
+    },
+    {
+      "type": "listening",
+      "stalls": 0,
+      "frames_sent": 424,
+      "t": 23.038
+    }
+  ]
+}

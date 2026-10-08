@@ -1,0 +1,111 @@
+[
+  {
+    "file": "qwen-conversational.wav",
+    "silences": [
+      {
+        "end": 0.330542,
+        "duration": 0.330542
+      },
+      {
+        "end": 2.699292,
+        "duration": 1.086833
+      },
+      {
+        "end": 5.192333,
+        "duration": 0.91675
+      },
+      {
+        "end": 7.458583,
+        "duration": 0.423375
+      },
+      {
+        "end": 9.287125,
+        "duration": 0.608208
+      },
+      {
+        "end": 11.04,
+        "duration": 0.638375
+      }
+    ],
+    "programs": [],
+    "stream_groups": [],
+    "streams": [
+      {
+        "sample_rate": "24000"
+      }
+    ],
+    "format": {
+      "duration": "11.040000"
+    }
+  },
+  {
+    "file": "xtts-conversational-065.wav",
+    "silences": [
+      {
+        "end": 3.156,
+        "duration": 0.368708
+      },
+      {
+        "end": 6.853875,
+        "duration": 1.341583
+      },
+      {
+        "end": 7.563583,
+        "duration": 0.641542
+      },
+      {
+        "end": 10.677875,
+        "duration": 0.580833
+      },
+      {
+        "end": 12.931875,
+        "duration": 0.565083
+      },
+      {
+        "end": 13.616125,
+        "duration": 0.63175
+      }
+    ],
+    "programs": [],
+    "stream_groups": [],
+    "streams": [
+      {
+        "sample_rate": "24000"
+      }
+    ],
+    "format": {
+      "duration": "14.997333"
+    }
+  },
+  {
+    "file": "xtts-conversational-085.wav",
+    "silences": [
+      {
+        "end": 5.541125,
+        "duration": 1.270458
+      },
+      {
+        "end": 8.391208,
+        "duration": 0.495583
+      },
+      {
+        "end": 10.927042,
+        "duration": 0.982458
+      },
+      {
+        "end": 13.688417,
+        "duration": 1.298583
+      }
+    ],
+    "programs": [],
+    "stream_groups": [],
+    "streams": [
+      {
+        "sample_rate": "24000"
+      }
+    ],
+    "format": {
+      "duration": "13.834667"
+    }
+  }
+]

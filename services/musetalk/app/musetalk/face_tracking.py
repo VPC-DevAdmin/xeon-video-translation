@@ -65,20 +65,29 @@ def build_aligner(
     or identity clustering. Weights land in `MODEL_CACHE_DIR/insightface/` on
     first use (~285 MB for the buffalo_l pack).
     """
+    import onnxruntime as ort
     from insightface.app import FaceAnalysis
 
-    if device != "cpu":
-        log.warning("insightface aligner: only CPU is supported in this build")
-
-    providers = ["CPUExecutionProvider"]
+    available = ort.get_available_providers()
+    use_cuda = device.startswith("cuda") and "CUDAExecutionProvider" in available
+    if device.startswith("cuda") and not use_cuda:
+        raise RuntimeError(f"SCRFD requires CUDAExecutionProvider; available: {available}")
+    from gpu_runtime import ort_cuda_provider
+    providers = (
+        [ort_cuda_provider(), "CPUExecutionProvider"] if use_cuda else ["CPUExecutionProvider"]
+    )
     app = FaceAnalysis(
         name=model_name,
         root=str(_insightface_root()),
         providers=providers,
         allowed_modules=["detection"],
     )
-    # ctx_id=-1 selects the CPU execution provider.
-    app.prepare(ctx_id=-1, det_size=det_size)
+    # ctx_id: GPU ordinal for CUDA, -1 selects the CPU execution provider.
+    app.prepare(ctx_id=0 if use_cuda else -1, det_size=det_size)
+    if use_cuda:
+        from gpu_runtime import require_ort_cuda
+        require_ort_cuda(app)
+    log.info("insightface aligner providers=%s", providers)
     return app
 
 

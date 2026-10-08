@@ -102,7 +102,16 @@ else:
 
 # --- CodeFormer face restoration ------------------------------------------
 # Immutable GitHub release asset. ~376 MB.
-cf_dir = cache / "codeformer"
+# Lives beside (not inside) the musetalk cache: the runner and the
+# /weights check both resolve MODEL_CACHE_DIR/codeformer/codeformer.pth.
+# An earlier version of this script wrote it under musetalk/codeformer/,
+# which the service never looked at; migrate that location if present.
+cf_dir = cache.parent / "codeformer"
+legacy_cf = cache / "codeformer" / "codeformer.pth"
+if legacy_cf.exists() and not (cf_dir / "codeformer.pth").exists():
+    cf_dir.mkdir(parents=True, exist_ok=True)
+    legacy_cf.rename(cf_dir / "codeformer.pth")
+    print(f"==> Moved CodeFormer weights from {legacy_cf} to {cf_dir}")
 cf_dir.mkdir(parents=True, exist_ok=True)
 cf_weights = cf_dir / "codeformer.pth"
 if cf_weights.exists() and cf_weights.stat().st_size > 300_000_000:

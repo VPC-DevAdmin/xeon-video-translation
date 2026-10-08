@@ -1,0 +1,251 @@
+"""Timeline scheduling, idle loop, stall accounting and the head-start rule."""
+
+import sys
+from pathlib import Path
+
+import numpy as np
+
+sys.path.insert(0, str(Path(__file__).parents[1]))
+from app.timeline import Timeline, closest_anchor_end, head_start_required, idle_frame, idle_loop_frame, settle_frames, stable_idle_end  # noqa: E402
+
+
+def frames(n, value):
+    return np.full((n, 2, 2, 3), value, dtype=np.uint8)
+
+
+def test_future_clips_play_in_order_and_idle_fills_gaps():
+    tl = Timeline(fps=25, still=frames(1, 0)[0], idle_frames=frames(3, 9), transition_seconds=0, join_blend_frames=0)
+    gen = tl.generation
+    assert tl.schedule(1.0, np.ones(48000, np.int16), frames(25, 1), gen) == (1.0, 2.0)
+    assert tl.schedule(5.0, np.ones(24000, np.int16), frames(25, 2), gen) == (5.0, 6.0)   # frames outlast audio
+    assert tl.frame_at(0.5)[1] == "idle:front"
+    assert tl.frame_at(1.5)[0][0, 0, 0] == 1 and tl.frame_at(1.5)[1] == "clip"
+    assert tl.frame_at(3.0)[1] == "idle:front"
+    assert tl.frame_at(5.9)[0][0, 0, 0] == 2
+    # idle loop with a crossfaded wrap: 8 frames, 2 blended -> loop of 6; frame 0 leans on frame 6
+    seq = np.arange(8, dtype=np.uint8) * 10
+    tl2 = Timeline(fps=4, idle_frames=seq[:, None, None, None], transition_seconds=0, idle_crossfade_seconds=0.5)
+    assert tl2.idle_crossfade == 2
+    shown = [int(tl2.frame_at(t / 4)[0].reshape(-1)[0]) for t in range(8)]
+    assert shown[2:6] == [20, 30, 40, 50] and shown[6] == shown[0] and 0 < shown[0] < 60 and shown[0] > shown[1]
+
+
+def test_audio_packets_follow_clip_timing():
+    tl = Timeline(fps=25)
+    tl.schedule(1.0, np.full(48000, 7, np.int16), frames(25, 1), tl.generation)
+    assert tl.audio_packet(0.5, 960).sum() == 0
+    packet = tl.audio_packet(0.99, 960)            # straddles the clip start
+    assert packet[:480].sum() == 0 and packet[-100:].tolist() == [7] * 100
+    assert tl.audio_packet(1.5, 960).tolist() == [7] * 960
+
+
+def test_stale_generation_is_dropped_and_interrupt_clears_everything():
+    tl = Timeline(fps=25, still=frames(1, 0)[0])
+    gen = tl.generation
+    tl.schedule(0.0, np.ones(4800, np.int16), frames(3, 1), gen)
+    tl.promise(0.0, 10.0, gen)
+    tl.interrupt()
+    assert tl.schedule(0.0, np.ones(4800, np.int16), frames(3, 1), gen) is None
+    assert tl.clips == [] and tl.promises == []
+    assert tl.frame_at(0.05)[1] == "still" and tl.stalls == 0
+
+
+def test_stalls_count_only_inside_promised_windows_without_a_clip():
+    tl = Timeline(fps=25, still=frames(1, 0)[0])
+    gen = tl.generation
+    tl.promise(2.0, 4.0, gen)
+    tl.frame_at(1.0); tl.frame_at(2.5); tl.frame_at(3.0)
+    assert tl.stalls == 2
+    tl.schedule(2.0, np.ones(96000, np.int16), frames(50, 1), gen)   # the promise is fulfilled
+    assert tl.promises == []
+    tl.frame_at(2.5)
+    assert tl.stalls == 2
+
+
+def test_head_start_rule():
+    assert head_start_required(14.0, 0.87, 1.3) == 1.3 + 14 * 0.13 + 1.0
+    assert head_start_required(60.0, 1.2, 4.0) == 5.0                 # faster than real time: no deficit
+    assert head_start_required(60.0, 0.87, 1.3) > head_start_required(14.0, 0.87, 1.3)
+
+
+def test_idle_frame_wrap_is_a_dissolve_from_the_continuation():
+    seq = np.array([0, 10, 20, 30, 40, 50, 60, 70, 80, 90], dtype=np.uint8)[:, None, None, None]
+    k = 3                                   # loop plays 0..6, frames 7,8,9 fade into 0,1,2
+    assert int(idle_frame(seq, 6, k)[0, 0, 0]) == 60
+    first = int(idle_frame(seq, 7, k)[0, 0, 0])        # index 7 wraps to j=0
+    assert 50 < first <= 70 and int(idle_frame(seq, 1, k)[0, 0, 0]) < first
+    assert int(idle_frame(seq, 3, k)[0, 0, 0]) == 30
+    assert int(idle_frame(seq, 0, 0)[0, 0, 0]) == 0 and int(idle_frame(seq[:1], 5, 3)[0, 0, 0]) == 0
+
+
+def test_idle_loop_grows_without_moving_the_frame_on_screen():
+    """Appending footage while the loop plays must not jump."""
+    a = np.arange(10, dtype=np.uint8)[:, None, None, None] * 10               # one continuous recording
+    tl = Timeline(fps=4, idle_frames=a, transition_seconds=0, idle_crossfade_seconds=0.5)
+    shown = [int(tl.frame_at(t / 4)[0].reshape(-1)[0]) for t in range(5)]     # cursor at 4 (frame 40)
+    tl.add_idle(np.arange(10, 15, dtype=np.uint8)[:, None, None, None] * 10)
+    assert int(tl.frame_at(5 / 4)[0].reshape(-1)[0]) == 50                    # continues, no modulo jump
+    assert shown[2:] == [20, 30, 40] and 0 < shown[1] < shown[0] < 90      # head frames dissolve from the tail (80, 90)
+
+
+def test_idle_loop_dissolves_across_segments_and_the_wrap():
+    a = np.arange(0, 100, 10, dtype=np.uint8)[:, None, None, None]            # 10 frames, 0..90
+    b = np.full((8, 1, 1, 1), 200, np.uint8)
+    k = 2
+    # a plays 0..7 (8 frames), then b's head blended with a's continuation (80, 90)
+    assert int(idle_loop_frame([a, b], 7, k)[0, 0, 0]) == 70
+    first_of_b = int(idle_loop_frame([a, b], 8, k)[0, 0, 0])
+    assert 80 < first_of_b < 200 and first_of_b < int(idle_loop_frame([a, b], 9, k)[0, 0, 0]) < 200
+    assert int(idle_loop_frame([a, b], 10, k)[0, 0, 0]) == 200
+    wrapped = int(idle_loop_frame([a, b], 14, k)[0, 0, 0])
+    assert 0 < wrapped < 200 and int(idle_loop_frame([a, b], 16, k)[0, 0, 0]) == 20
+
+
+def test_switching_between_idle_and_a_clip_is_a_dissolve():
+    idle = np.zeros((4, 1, 1, 1), np.uint8)
+    tl = Timeline(fps=4, idle_frames=idle, transition_seconds=0.5)            # 2-frame dissolve
+    tl.schedule(1.0, np.ones(48000, np.int16), np.full((8, 1, 1, 1), 90, np.uint8), tl.generation)
+    assert int(tl.frame_at(0.0)[0].reshape(-1)[0]) == 0
+    assert int(tl.frame_at(0.25)[0].reshape(-1)[0]) == 0
+    first, second = (int(tl.frame_at(t)[0].reshape(-1)[0]) for t in (1.0, 1.25))
+    assert 0 < first < second < 90 and int(tl.frame_at(1.5)[0].reshape(-1)[0]) == 90
+    back = int(tl.frame_at(3.0)[0].reshape(-1)[0])                            # clip over: back to idle, dissolving from 90
+    assert tl.loop("front").cursor == 0                                        # the loop restarted at its anchor when the clip ended
+    assert 0 < back < 90 and int(tl.frame_at(3.75)[0].reshape(-1)[0]) == 0
+
+
+def test_idle_growth_waits_while_the_wrap_dissolve_is_on_screen():
+    a = np.arange(0, 100, 10, dtype=np.uint8)[:, None, None, None]            # k = 2, play region 8 frames
+    tl = Timeline(fps=4, idle_frames=a, transition_seconds=0, idle_crossfade_seconds=0.5)
+    for t in range(8):
+        tl.frame_at(t / 4)
+    tl.frame_at(8 / 4)                                                         # cursor 8 -> wraps to j=0: in the dissolve
+    tl.add_idle(np.full((6, 1, 1, 1), 200, np.uint8))
+    assert len(tl.idle_segments[0]) == 10 and tl.idle_frame_count == 16       # staged, counted, not yet visible
+    tl.frame_at(9 / 4)
+    assert len(tl.idle_segments[0]) == 10
+    tl.frame_at(10 / 4)                                                        # j=2: out of the dissolve, publish
+    assert len(tl.idle_segments[0]) == 16 and not tl.loop("front").pending
+
+
+def test_idle_loop_growth_after_a_wrap_does_not_jump():
+    a = np.arange(0, 100, 10, dtype=np.uint8)[:, None, None, None]            # loop of 8 (k = 2)
+    tl = Timeline(fps=4, idle_frames=a, transition_seconds=0, idle_crossfade_seconds=0.5)
+    for t in range(13):
+        tl.frame_at(t / 4)
+    assert int(tl.frame_at(13 / 4)[0].reshape(-1)[0]) == 50
+    tl.add_idle(np.full((20, 1, 1, 1), 200, np.uint8))                        # loop grows to 28
+    assert int(tl.frame_at(14 / 4)[0].reshape(-1)[0]) == 60                    # still the next frame, not 14 % 28
+    assert int(tl.frame_at(15 / 4)[0].reshape(-1)[0]) == 70
+
+
+def test_idle_modes_switch_at_scheduled_times_and_fall_back_to_front():
+    front = np.zeros((6, 1, 1, 1), np.uint8)
+    tl = Timeline(fps=4, idle_frames=front, transition_seconds=0, join_blend_frames=0)
+    tl.set_mode(1.0, "working", tl.generation)
+    assert tl.frame_at(0.5)[1] == "idle:front"
+    assert tl.frame_at(1.25)[1] == "idle:front"                                # no working footage yet: front
+    tl.add_idle(np.full((6, 1, 1, 1), 200, np.uint8), name="working")
+    image, source = tl.frame_at(1.5)
+    assert source == "idle:working" and int(image.reshape(-1)[0]) == 200
+    tl.set_mode(2.0, "front", tl.generation)
+    assert tl.frame_at(2.25)[1] == "idle:front"
+    tl.interrupt()
+    assert tl.mode_switches == [] and tl.mode_at(5.0) == "front"
+
+
+def test_truncate_cuts_tagged_clips_with_a_fade_and_keeps_the_reply():
+    tl = Timeline(fps=25, transition_seconds=0)
+    gen = tl.generation
+    tl.schedule(1.0, np.full(96000, 1000, np.int16), frames(50, 100), gen, tag="filler")    # 1.0 - 3.0
+    tl.schedule(3.5, np.full(48000, 1000, np.int16), frames(25, 1), gen, tag="filler")      # 3.5 - 4.5 dropped
+    tl.schedule(2.5, np.full(48000, 7, np.int16), frames(25, 2), gen)                        # the reply, untouched
+    assert tl.truncate(2.2, "filler") == (2, 2.2)
+    fillers = tl.clips_tagged("filler")
+    assert len(fillers) == 1 and fillers[0][1] == 2.2 and len(fillers[0][3]) == 30
+    audio = fillers[0][2]
+    assert len(audio) == 48000 * 12 // 10 and audio[-1] == 0 and audio[-3840] == 1000       # 80 ms fade to silence
+    assert tl.clips_tagged("reply")[0][1] == 3.5 and tl.audio_packet(2.6, 960)[0] == 7
+    affected, end = tl.truncate(2.0, "filler", settle_to=frames(1, 0)[0], settle_count=5)
+    clip = tl.clips_tagged("filler")[0]
+    assert (affected, end) == (1, 2.2) and len(clip[3]) == 30 and int(clip[3][-1][0, 0, 0]) == 0 and 0 < int(clip[3][26][0, 0, 0]) < 100
+    assert settle_frames(frames(1, 10)[0], frames(1, 0)[0], 2)[0][0, 0, 0] == 5
+
+
+def test_turn_clips_get_a_short_dissolve():
+    idle = np.zeros((8, 1, 1, 1), np.uint8)
+    tl = Timeline(fps=25, idle_frames=idle, transition_seconds=0.5)      # 12-frame dissolve for ordinary switches
+    tl.schedule(1.0, np.zeros(48000, np.int16), np.full((25, 1, 1, 1), 200, np.uint8), tl.generation, tag="turn")
+    tl.frame_at(0.9)
+    values = [int(tl.frame_at(1.0 + i / 25)[0].reshape(-1)[0]) for i in range(6)]
+    assert tl.frame_at(1.0)[1] == "clip:turn"
+    assert values[0] < values[3] and values[4] == 200 and values[5] == 200                   # fully there after 4 frames
+
+
+def test_finalized_loop_cuts_at_the_frame_closest_to_its_start():
+    # a take that drifts away and comes back near its first frame at index 9, then drifts again
+    values = [0, 10, 20, 30, 40, 30, 20, 10, 5, 1, 30, 50, 70]
+    a = np.array(values, dtype=np.uint8)[:, None, None, None]
+    tl = Timeline(fps=4, idle_frames=a, transition_seconds=0, idle_crossfade_seconds=0.5)
+    loop = tl.loop("front")
+    assert loop.effective_crossfade() == 2
+    assert loop.finalize(min_seconds=1.5, fps=4)                              # candidates from index 6 on: index 9 (value 1) wins
+    assert loop.finalized and len(loop.frames) == 9 and loop.effective_crossfade() == 0
+    shown = [int(tl.frame_at(t / 4)[0].reshape(-1)[0]) for t in range(11)]
+    assert shown[2:7] == [20, 30, 40, 30, 20] and shown[8:11] == [5, 0, 10]   # 5 -> 0 stands in for 5 -> 1: no held frame
+    assert not Timeline(fps=4, idle_frames=a[:3]).loop("front").finalize(1.5, 4)      # too short to cut
+    loop.restart()
+    assert not loop.ready and loop.frame_count == 0
+
+
+def test_joins_cut_when_frames_match_and_blend_briefly_when_they_do_not():
+    tl = Timeline(fps=25, idle_frames=frames(20, 0))
+    assert tl.idle_crossfade == 0 and tl.transition_frames == 0
+    tl.schedule(1.0, np.full(48000, 10, np.int16), frames(25, 2), tl.generation, tag="filler")     # nearly the same pose: cut
+    tl.schedule(3.0, np.full(48000, 10, np.int16), frames(25, 90), tl.generation, tag="filler")    # far apart: 3-frame blend
+    assert int(tl.frame_at(0.96)[0][0, 0, 0]) == 0
+    assert int(tl.frame_at(1.0)[0][0, 0, 0]) == 2
+    assert int(tl.frame_at(2.0)[0][0, 0, 0]) == 0                                                # back to idle: cut
+    blended = [int(tl.frame_at(3.0 + i / 25)[0][0, 0, 0]) for i in range(4)]
+    assert 0 < blended[0] < blended[1] < blended[2] < 90 and blended[3] == 90
+
+
+def test_overlapping_reply_takes_video_priority_at_the_same_time_as_audio():
+    tl = Timeline(fps=25)
+    tl.schedule(1.0, np.full(48000, 10, np.int16), frames(25, 10), tl.generation, tag="filler")
+    tl.schedule(1.5, np.full(48000, 90, np.int16), frames(25, 90), tl.generation, tag="reply")
+    assert int(tl.frame_at(1.48)[0][0, 0, 0]) == 10
+    assert int(tl.frame_at(1.5)[0][0, 0, 0]) == 90
+    assert tl.audio_packet(1.5, 960)[0] == 90
+
+
+def test_silent_tail_selects_an_actual_rest_like_frame():
+    tail = np.array([50, 40, 10, 0, 5, 30], dtype=np.uint8)[:, None, None, None]
+    end = closest_anchor_end(tail, np.zeros((1, 1, 1), np.uint8), first=2)
+    assert end == 4 and int(tail[end - 1][0, 0, 0]) == 0
+
+
+def test_neutral_idle_stops_before_a_large_pose_drift():
+    values = np.array([0] * 4 + [1, 2, 3, 2, 3, 4, 7, 10, 12, 10, 2], np.uint8)[:, None, None, None]
+    assert stable_idle_end(values, fps=4, max_delta=6, min_seconds=2) == 9
+    assert stable_idle_end(values[:10], fps=4, max_delta=6, min_seconds=2) == 10
+
+
+def test_finalizing_idle_does_not_move_the_current_playback_cursor():
+    values = np.array([0, 10, 20, 10, 1, 30, 40, 50, 2, 60], dtype=np.uint8)[:, None, None, None]
+    tl = Timeline(fps=4, idle_frames=values)
+    for i in range(7):
+        tl.frame_at(i / 4)
+    loop = tl.loop("front")
+    assert loop.cursor == 6
+    assert loop.finalize(min_seconds=1, fps=4)
+    assert loop.cursor == 6 and len(loop.frames) == 8                        # cut before index 8 (value 2), the frame most like 0
+    assert int(tl.frame_at(7 / 4)[0][0, 0, 0]) == 50
+
+
+def test_truncate_drops_a_clip_that_barely_started():
+    tl = Timeline(fps=25, transition_seconds=0)
+    tl.schedule(1.0, np.full(48000, 1000, np.int16), frames(25, 1), tl.generation, tag="filler")
+    assert tl.truncate(1.3, "filler") == (1, 1.3) and tl.clips_tagged("filler") == []       # 0.3 s in: dropped, not cut
+    tl.schedule(2.0, np.full(48000, 1000, np.int16), frames(25, 1), tl.generation, tag="filler")
+    assert tl.truncate(2.7, "filler") == (1, 2.7) and tl.clips_tagged("filler")[0][1] == 2.7   # 0.7 s in: cut

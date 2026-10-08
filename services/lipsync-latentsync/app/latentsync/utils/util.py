@@ -44,41 +44,41 @@ def read_json(filepath: str):
 
 
 def read_video(video_path: str, change_fps=True, use_decord=True):
-    if change_fps:
-        temp_dir = "temp"
-        if os.path.exists(temp_dir):
-            shutil.rmtree(temp_dir)
-        os.makedirs(temp_dir, exist_ok=True)
-
-        # CPU patch — diagnostic env var to force a mathematically
-        # lossless re-encode at this step. Upstream uses `-crf 18`
-        # (visually lossless) which still produces I/P-frame decode
-        # artifacts and ~0.1 px landmark noise that feeds the
-        # SVD-derived affine and amplifies into output jitter. When
-        # LATENTSYNC_LOSSLESS_READ=1, swap to `-qp 0` for a truly
-        # bit-identical intermediate. Quality is unchanged downstream;
-        # file size balloons (~4-8x) but the temp file is short-lived.
-        # See scripts/latentsync_debug/DEBUG_PLAN.md final-jitter step.
+    from gpu_runtime import required
+    if required():
         if os.environ.get("LATENTSYNC_LOSSLESS_READ", "0") == "1":
-            # -qp 0 = true lossless; -preset veryslow keeps x264 from
-            # making bad decisions that could still alter pixels.
-            enc_args = "-c:v libx264 -qp 0 -preset veryslow -pix_fmt yuv420p"
-            print("LATENTSYNC_LOSSLESS_READ=1: using -qp 0 for read_video re-encode")
+            raise RuntimeError("LATENTSYNC_LOSSLESS_READ is a CPU-only diagnostic")
+        from gpu_runtime.media import read_frames
+        frames, _ = read_frames(video_path,
+            int(os.environ.get("LATENTSYNC_FRAME_BUDGET_MB", "8192"))*1024*1024,
+            fps=25 if change_fps else None)
+        return np.stack(frames)
+    def decode(path):
+        return read_video_decord(path) if use_decord else read_video_cv2(path)
+    if not change_fps:
+        return decode(video_path)
+    import tempfile
+    from gpu_runtime import require_encoder, required, span
+    encoder = os.environ.get("LATENTSYNC_VIDEO_ENCODER", "h264_nvenc" if required() else "libx264").lower()
+    require_encoder(encoder)
+    lossless = os.environ.get("LATENTSYNC_LOSSLESS_READ", "0") == "1"
+    if lossless and required():
+        raise RuntimeError("LATENTSYNC_LOSSLESS_READ requires the explicit CPU deployment")
+    with tempfile.TemporaryDirectory(prefix="latentsync-read-") as root, span("latentsync.resample", encoder=encoder):
+        target = str(Path(root) / "video.mp4")
+        command = ["ffmpeg", "-loglevel", "error", "-y", "-nostdin"]
+        if encoder == "h264_nvenc":
+            command += ["-hwaccel", "cuda"]
+        command += ["-i", str(video_path), "-an", "-r", "25", "-c:v", encoder]
+        if encoder == "h264_nvenc":
+            command += ["-preset", "p4", "-rc", "vbr", "-cq", "18", "-b:v", "0"]
         else:
-            enc_args = "-crf 18"
-        command = (
-            f"ffmpeg -loglevel error -y -nostdin -i {video_path} "
-            f"-r 25 {enc_args} {os.path.join(temp_dir, 'video.mp4')}"
-        )
-        subprocess.run(command, shell=True)
-        target_video_path = os.path.join(temp_dir, "video.mp4")
-    else:
-        target_video_path = video_path
-
-    if use_decord:
-        return read_video_decord(target_video_path)
-    else:
-        return read_video_cv2(target_video_path)
+            command += ["-qp", "0", "-preset", "veryslow"] if lossless else ["-crf", "18"]
+        command += ["-pix_fmt", "yuv420p", target]
+        result = subprocess.run(command, capture_output=True, timeout=600)
+        if result.returncode:
+            raise RuntimeError("LatentSync resample failed: " + result.stderr.decode(errors="replace")[-1000:])
+        return decode(target)
 
 
 def read_video_decord(video_path: str):
@@ -141,6 +141,49 @@ def write_video(video_output_path: str, video_frames: np.ndarray, fps: int):
     ) as writer:
         for video_frame in video_frames:
             writer.append_data(video_frame)
+
+
+def write_video_with_audio(
+    video_output_path: str,
+    video_frames: np.ndarray,
+    fps: float,
+    audio_wav_path: str,
+    encoder: str | None = None,
+) -> None:
+    """Encode RGB frames + mux the wav in one ffmpeg pass over a pipe.
+
+    Replaces imageio's libx264 crf 13 intermediate plus a second libx264
+    crf 18 re-encode (two CPU encodes of every frame). NVENC is used when
+    `encoder`/LATENTSYNC_VIDEO_ENCODER says so; failures are propagated.
+    """
+    encoder = (encoder or os.environ.get("LATENTSYNC_VIDEO_ENCODER", "libx264")).lower()
+    from gpu_runtime import require_encoder
+    require_encoder(encoder)
+    height, width = video_frames[0].shape[:2]
+
+    def _run(enc: str) -> tuple[int, str]:
+        cmd = [
+            "ffmpeg", "-y", "-loglevel", "error", "-nostdin",
+            "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{width}x{height}", "-r", f"{fps:.6f}", "-i", "pipe:0",
+            "-i", audio_wav_path, "-map", "0:v:0", "-map", "1:a:0",
+        ]
+        if enc == "h264_nvenc":
+            cmd += ["-c:v", "h264_nvenc", "-preset", "p4", "-rc", "vbr", "-cq", "18", "-b:v", "0"]
+        else:
+            cmd += ["-c:v", "libx264", "-crf", "18"]
+        cmd += ["-pix_fmt", "yuv420p", "-c:a", "aac", "-q:a", "0", video_output_path]
+        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            for f in video_frames:
+                proc.stdin.write(np.ascontiguousarray(f).tobytes())
+        except BrokenPipeError:
+            pass
+        _, err = proc.communicate(timeout=1800)
+        return proc.returncode, err.decode(errors="replace")[-800:]
+
+    rc, err = _run(encoder)
+    if rc != 0:
+        raise RuntimeError(f"ffmpeg encode/mux failed: {err}")
 
 
 def write_video_cv2(video_output_path: str, video_frames: np.ndarray, fps: int):

@@ -65,6 +65,9 @@ RUN pip install --upgrade pip wheel \
     # handles its absence gracefully; we'd rather ship a working image.
     && echo "F5-TTS install step complete"
 
+COPY --from=gpu_shared / /opt/gpu-shared
+RUN pip install --no-deps /opt/gpu-shared
+
 COPY app ./app
 COPY tests ./tests
 

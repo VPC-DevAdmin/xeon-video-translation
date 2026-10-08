@@ -1,0 +1,197 @@
+{
+  "session": "7e5e7bdd95114551b3eab8cebdc1740f",
+  "connection": "connected",
+  "prepare_seconds": 6.32,
+  "server_prepare": {
+    "renderer_open_seconds": 0.21,
+    "idle_seconds": 2.83,
+    "ack_tts_seconds": 0.4,
+    "ack_render_seconds": 2.65,
+    "ack_audio_seconds": 1.67,
+    "ack_frames": 42,
+    "idle_frames": 56,
+    "chunk": {
+      "frames_per_chunk": 28,
+      "samples_per_chunk": 17920,
+      "seconds_per_chunk": 1.12
+    },
+    "total_seconds": 6.1
+  },
+  "endpoint_to_ack_audio_seconds": 0.193,
+  "endpoint_to_reply_scheduled_event_seconds": 3.814,
+  "endpoint_to_reply_speaking_seconds": 27.376,
+  "endpoint_to_reply_audio_seconds": 27.474,
+  "reply_video_fps": null,
+  "reply_frames": 0,
+  "reply_mean_frame_change": 2.205,
+  "interrupt_ack_seconds": 0.0011256919242441654,
+  "last_audio_after_interrupt_seconds": 0.08756176801398396,
+  "server": {
+    "metrics": {
+      "turns": 2,
+      "interruptions": 3,
+      "renderer_errors": 0,
+      "prepare": {
+        "renderer_open_seconds": 0.21,
+        "idle_seconds": 2.83,
+        "ack_tts_seconds": 0.4,
+        "ack_render_seconds": 2.65,
+        "ack_audio_seconds": 1.67,
+        "ack_frames": 42,
+        "idle_frames": 56,
+        "chunk": {
+          "frames_per_chunk": 28,
+          "samples_per_chunk": 17920,
+          "seconds_per_chunk": 1.12
+        },
+        "total_seconds": 6.1
+      },
+      "ack_start_seconds": [
+        0.1,
+        0.1
+      ],
+      "reply_start_seconds": [
+        10.0,
+        10.0
+      ],
+      "head_start_seconds": [
+        3.08,
+        3.0
+      ],
+      "reply_seconds": [
+        3.3,
+        3.15
+      ],
+      "render_ratio": [
+        0.826,
+        0.843
+      ],
+      "stalls": 0
+    },
+    "history": [
+      {
+        "role": "user",
+        "content": "Good morning, everyone, and thank you for joining today."
+      },
+      {
+        "role": "assistant",
+        "content": "Good morning! It's great to see you all here. Let\u2019s get started."
+      },
+      {
+        "role": "user",
+        "content": "Good morning everyone and thank you for joining today."
+      },
+      {
+        "role": "assistant",
+        "content": "Good morning! Thanks for being here. Ready to dive in?"
+      }
+    ],
+    "generation": 3,
+    "timeline": {
+      "frames_sent": 922,
+      "frames_skipped": 3,
+      "idle_frames_sent": 703,
+      "scheduled_seconds": 9.84,
+      "now": 48.24
+    },
+    "renderer": {
+      "session": "cce9e8677a0d4729af4ca8d7ede58ed0",
+      "ratio": 0.843,
+      "first_chunk_seconds": 1.5035531709436327,
+      "chunk_seconds": [
+        1.327,
+        1.308,
+        1.344,
+        1.336,
+        1.324,
+        1.346,
+        1.329,
+        1.316
+      ]
+    }
+  },
+  "events": [
+    {
+      "type": "listening",
+      "t": 14.495
+    },
+    {
+      "type": "thinking",
+      "t": 16.996
+    },
+    {
+      "type": "acknowledging",
+      "seconds": 1.68,
+      "t": 16.996
+    },
+    {
+      "type": "transcript",
+      "text": "Good morning, everyone, and thank you for joining today.",
+      "t": 17.426
+    },
+    {
+      "type": "reply",
+      "text": "Good morning! It's great to see you all here. Let\u2019s get started.",
+      "t": 17.581
+    },
+    {
+      "type": "reply_scheduled",
+      "start_in": 6.19,
+      "head_start": 10.0,
+      "required": 3.08,
+      "render_ratio": 0.826,
+      "reply_seconds": 3.3,
+      "t": 20.81
+    },
+    {
+      "type": "speaking",
+      "t": 26.995
+    },
+    {
+      "type": "listening",
+      "stalls": 0,
+      "frames_sent": 470,
+      "t": 30.351
+    },
+    {
+      "type": "listening",
+      "t": 31.916
+    },
+    {
+      "type": "thinking",
+      "t": 34.373
+    },
+    {
+      "type": "acknowledging",
+      "seconds": 1.68,
+      "t": 34.373
+    },
+    {
+      "type": "transcript",
+      "text": "Good morning everyone and thank you for joining today.",
+      "t": 34.794
+    },
+    {
+      "type": "reply",
+      "text": "Good morning! Thanks for being here. Ready to dive in?",
+      "t": 34.921
+    },
+    {
+      "type": "reply_scheduled",
+      "start_in": 6.34,
+      "head_start": 10.0,
+      "required": 3.0,
+      "render_ratio": 0.843,
+      "reply_seconds": 3.15,
+      "t": 38.031
+    },
+    {
+      "type": "speaking",
+      "t": 44.372
+    },
+    {
+      "type": "listening",
+      "t": 46.463
+    }
+  ]
+}

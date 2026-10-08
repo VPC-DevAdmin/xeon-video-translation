@@ -75,7 +75,7 @@ if tts_backend in ("f5tts", "all"):
     try:
         from f5_tts.api import F5TTS
         # Constructor downloads the default checkpoint on first use.
-        F5TTS(model=os.environ.get("F5TTS_MODEL", "F5-TTS_v1"), device="cpu")
+        F5TTS(model=os.environ.get("F5TTS_MODEL", "F5TTS_v1_Base"), device="cpu")
     except ImportError:
         print(
             "  warning: f5-tts not installed in this image — rebuild with "

@@ -1,0 +1,320 @@
+{
+ "label": "ls10-14s-cold",
+ "design": "latentsync-persona",
+ "request": {
+  "video_path": "/jobs/ab/inputs/persona20s-25fps.mp4",
+  "audio_path": "/jobs/ab/inputs/reply14-16k.wav",
+  "output_path": "/jobs/ab/out/ls10-14s-cold.mp4",
+  "num_inference_steps": 10,
+  "seed": 42,
+  "persona_key": "persona20",
+  "face_track_source": "/jobs/ab/inputs/persona20s-25fps.mp4",
+  "face_track_offset_frames": 0
+ },
+ "response": {
+  "status": "ok",
+  "output_path": "/jobs/ab/out/ls10-14s-cold.mp4",
+  "frames_processed": -1,
+  "duration_ms": 86552,
+  "detail": "num_inference_steps=10 guidance_scale=1.50 dry_run=False"
+ },
+ "wall_seconds": 86.56,
+ "prepare_seconds": null,
+ "prepare_response": null,
+ "events": {
+  "latentsync_face_prep": [
+   {
+    "event": "latentsync_face_prep",
+    "frames": 340,
+    "detect_seconds": 0.0,
+    "warp_seconds": 3.05,
+    "shared_track": true
+   }
+  ],
+  "latentsync_stages": [
+   {
+    "persona_key": "persona20",
+    "prepared_ahead": false,
+    "decode_audio_face_seconds": 12.65,
+    "conditioning_seconds": 0.82,
+    "wait_for_worker_seconds": 10.8,
+    "collect_and_paste_seconds": 0.44,
+    "event": "latentsync_stages",
+    "frames": 340,
+    "steps": 10,
+    "workers": 8,
+    "prefetch": 1
+   }
+  ],
+  "latentsync_restore_overlapped": [
+   {
+    "event": "latentsync_restore_overlapped",
+    "frames": 340,
+    "restore_seconds_on_side_thread": 12.31
+   }
+  ],
+  "latentsync_chunks": [
+   {
+    "event": "latentsync_chunks",
+    "t0_wall": 1791129040.134,
+    "num_frames": 16,
+    "fps": 25,
+    "frames": 340,
+    "persona_key": "persona20",
+    "chunks": [
+     {
+      "chunk": 0,
+      "submit": 12.666,
+      "result": 17.027,
+      "worker_received": 13.16,
+      "worker_done": 17.002,
+      "device": 0,
+      "persona_cached": false,
+      "restored": 18.114
+     },
+     {
+      "chunk": 1,
+      "submit": 13.154,
+      "result": 17.216,
+      "worker_received": 13.224,
+      "worker_done": 17.195,
+      "device": 1,
+      "persona_cached": false,
+      "restored": 18.92
+     },
+     {
+      "chunk": 2,
+      "submit": 13.19,
+      "result": 17.315,
+      "worker_received": 13.255,
+      "worker_done": 17.111,
+      "device": 2,
+      "persona_cached": false,
+      "restored": 19.736
+     },
+     {
+      "chunk": 3,
+      "submit": 13.234,
+      "result": 17.377,
+      "worker_received": 13.313,
+      "worker_done": 17.2,
+      "device": 3,
+      "persona_cached": false,
+      "restored": 20.546
+     },
+     {
+      "chunk": 4,
+      "submit": 13.285,
+      "result": 17.443,
+      "worker_received": 13.396,
+      "worker_done": 17.304,
+      "device": 4,
+      "persona_cached": false,
+      "restored": 21.251
+     },
+     {
+      "chunk": 5,
+      "submit": 13.321,
+      "result": 17.514,
+      "worker_received": 13.418,
+      "worker_done": 17.314,
+      "device": 5,
+      "persona_cached": false,
+      "restored": 22.122
+     },
+     {
+      "chunk": 6,
+      "submit": 13.395,
+      "result": 17.583,
+      "worker_received": 13.465,
+      "worker_done": 17.342,
+      "device": 6,
+      "persona_cached": false,
+      "restored": 22.91
+     },
+     {
+      "chunk": 7,
+      "submit": 13.43,
+      "result": 17.658,
+      "worker_received": 13.479,
+      "worker_done": 17.315,
+      "device": 7,
+      "persona_cached": false,
+      "restored": 23.709
+     },
+     {
+      "chunk": 8,
+      "submit": 17.079,
+      "result": 21.078,
+      "worker_received": 17.153,
+      "worker_done": 21.054,
+      "device": 0,
+      "persona_cached": false,
+      "restored": 24.515
+     },
+     {
+      "chunk": 9,
+      "submit": 17.299,
+      "result": 21.133,
+      "worker_received": 17.374,
+      "worker_done": 20.868,
+      "device": 1,
+      "persona_cached": false,
+      "restored": 25.238
+     },
+     {
+      "chunk": 10,
+      "submit": 17.366,
+      "result": 21.272,
+      "worker_received": 17.433,
+      "worker_done": 20.913,
+      "device": 2,
+      "persona_cached": false,
+      "restored": 25.604
+     },
+     {
+      "chunk": 11,
+      "submit": 17.429,
+      "result": 21.339,
+      "worker_received": 17.498,
+      "worker_done": 20.978,
+      "device": 3,
+      "persona_cached": false,
+      "restored": 25.955
+     },
+     {
+      "chunk": 12,
+      "submit": 17.499,
+      "result": 21.412,
+      "worker_received": 17.575,
+      "worker_done": 21.056,
+      "device": 4,
+      "persona_cached": false,
+      "restored": 26.315
+     },
+     {
+      "chunk": 13,
+      "submit": 17.571,
+      "result": 21.475,
+      "worker_received": 17.636,
+      "worker_done": 21.122,
+      "device": 5,
+      "persona_cached": false,
+      "restored": 26.678
+     },
+     {
+      "chunk": 14,
+      "submit": 17.64,
+      "result": 21.53,
+      "worker_received": 17.725,
+      "worker_done": 21.226,
+      "device": 6,
+      "persona_cached": false,
+      "restored": 27.055
+     },
+     {
+      "chunk": 15,
+      "submit": 17.72,
+      "result": 21.554,
+      "worker_received": 17.797,
+      "worker_done": 21.283,
+      "device": 7,
+      "persona_cached": false,
+      "restored": 27.408
+     },
+     {
+      "chunk": 16,
+      "submit": 21.123,
+      "result": 25.119,
+      "worker_received": 21.196,
+      "worker_done": 25.095,
+      "device": 0,
+      "persona_cached": false,
+      "restored": 27.765
+     },
+     {
+      "chunk": 17,
+      "submit": 21.247,
+      "result": 25.133,
+      "worker_received": 21.319,
+      "worker_done": 24.805,
+      "device": 1,
+      "persona_cached": false,
+      "restored": 28.139
+     },
+     {
+      "chunk": 18,
+      "submit": 21.323,
+      "result": 25.148,
+      "worker_received": 21.397,
+      "worker_done": 24.875,
+      "device": 2,
+      "persona_cached": false,
+      "restored": 28.501
+     },
+     {
+      "chunk": 19,
+      "submit": 21.396,
+      "result": 25.223,
+      "worker_received": 21.471,
+      "worker_done": 24.95,
+      "device": 3,
+      "persona_cached": false,
+      "restored": 28.858
+     },
+     {
+      "chunk": 20,
+      "submit": 21.464,
+      "result": 25.255,
+      "worker_received": 21.539,
+      "worker_done": 25.017,
+      "device": 4,
+      "persona_cached": false,
+      "restored": 29.208
+     },
+     {
+      "chunk": 21,
+      "submit": 21.515,
+      "result": 25.264,
+      "worker_received": 21.552,
+      "worker_done": 22.607,
+      "device": 5,
+      "persona_cached": false,
+      "restored": 29.35
+     }
+    ],
+    "first_chunk_restored_seconds": 18.114,
+    "last_chunk_restored_seconds": 29.35,
+    "min_head_start_seconds": 19.478,
+    "restored_fps_aggregate": 20.38,
+    "persona_cache_hits": 0
+   }
+  ],
+  "latentsync_finish": [
+   {
+    "event": "latentsync_finish",
+    "frames": 340,
+    "restore_seconds": 0.01,
+    "write_seconds": 2.52
+   }
+  ]
+ },
+ "output": "/jobs/ab/out/ls10-14s-cold.mp4",
+ "output_master_audio": "/jobs/ab/out/ls10-14s-cold-master.mp4",
+ "probe": {
+  "programs": [],
+  "streams": [
+   {
+    "width": 1080,
+    "height": 1920,
+    "r_frame_rate": "25/1",
+    "nb_read_frames": "340"
+   }
+  ],
+  "format": {
+   "duration": "13.600000"
+  }
+ },
+ "t0_wall": 1791128986.279778,
+ "gpu_samples": "/home/user/ab-results/ls10-14s-cold.gpu.jsonl"
+}

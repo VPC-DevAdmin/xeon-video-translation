@@ -68,24 +68,8 @@ dependencies = [
   # face-alignment is used by the eval/training path and kept here
   # because removing it would need a code-level patch to upstream.
   "insightface==0.7.3",
-  "onnxruntime>=1.17,<2.0",
   "mediapipe==0.10.11",
   "face-alignment==1.4.1",
-
-  # --- Performance stack (added in the 1c perf follow-up) ----------- #
-  #
-  # Intel Extension for PyTorch. Must track the torch major.minor — we
-  # bumped both together to 2.6.x in a follow-up because IPEX 2.5.x
-  # was yanked from PyPI and the only un-yanked wheels are 2.6+,
-  # which require torch 2.6. See the Dockerfile comment above the
-  # torch install for the full note. On Xeon Sapphire Rapids+ this
-  # gives a meaningful speedup to the SD 1.5 UNet via optimized
-  # conv/linear kernels and (opt-in) bf16 autocast. Same pattern as
-  # lipsync-musetalk.
-  "intel-extension-for-pytorch>=2.6,<2.7",
-  # Intel's OpenMP runtime, preferred over libgomp for math-heavy
-  # loops. Preloaded via the Dockerfile entrypoint.
-  "intel-openmp>=2024.0",
 
   # DeepCache: caches early denoising-step tensors and reuses them on
   # later steps, cutting UNet calls by ~30%. Upstream LatentSync uses
@@ -93,6 +77,30 @@ dependencies = [
   # dep surface and are bringing it back here. Safe to disable via
   # LATENTSYNC_ENABLE_DEEPCACHE=0 if it ever misbehaves.
   "DeepCache==0.1.1",
+]
+
+# The ONNX runtime and the CPU accelerator are per-target extras. The
+# Dockerfile installs `.[cpu]`, Dockerfile.gpu installs `.[gpu]`. Never
+# install both onnxruntime wheels into one env.
+[project.optional-dependencies]
+cpu = [
+  "onnxruntime>=1.17,<2.0",
+  # Intel Extension for PyTorch. Must track the torch major.minor — we
+  # bumped both together to 2.6.x because IPEX 2.5.x was yanked from
+  # PyPI. On Xeon Sapphire Rapids+ this gives a meaningful speedup to
+  # the SD 1.5 UNet via optimized conv/linear kernels and (opt-in)
+  # bf16 autocast. Same pattern as lipsync-musetalk.
+  "intel-extension-for-pytorch>=2.6,<2.7",
+  # Intel's OpenMP runtime, preferred over libgomp for math-heavy
+  # loops. Preloaded via the Dockerfile entrypoint.
+  "intel-openmp>=2024.0",
+]
+gpu = [
+  # CUDA 12 build; gives insightface's SCRFD the CUDAExecutionProvider.
+  # <1.23: later wheels link CUDA 13 (libcublasLt.so.13) and the CUDA
+  # provider silently fails to load in a CUDA 12.8 image, so detection
+  # falls back to CPU (~0.9 s/frame on the XE7740).
+  "onnxruntime-gpu>=1.19,<1.23",
 ]
 
 [build-system]

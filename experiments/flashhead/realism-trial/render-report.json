@@ -1,0 +1,131 @@
+{
+  "source_revision": "9bc03de06bb0de82cd6bc477804512ae06144bf2",
+  "model_revisions": [
+    {
+      "model": "Soul-AILab/SoulX-FlashHead-1_3B",
+      "revision": "59119b6c681230c3eeee157e224ae1941746711e",
+      "path": "/experiment-models/SoulX-FlashHead-1_3B"
+    },
+    {
+      "model": "facebook/wav2vec2-base-960h",
+      "revision": "22aad52d435eb6dbaf354bdad9b0da84ce7d6156",
+      "path": "/experiment-models/wav2vec2-base-960h"
+    }
+  ],
+  "input_sha256": {
+    "/experiment/quality-v3/input/master.wav": "ad1377fc5b8075da6cb82c481eb7556a60726009f0b68c211a7313cad799b96b",
+    "/experiment/portrait-minute.png": "bb03f3ec6625d382b871cd766e5e0b110f0fe2db1df7deb4434d918dd603f41e",
+    "/experiment/quality-v3/input/conditioning-16k.wav": "c936567f320068bf0660560be00f96b33340fe3d2c37d79b437713a4970a51dd"
+  },
+  "audio_contract": {
+    "conditioning": {
+      "sample_rate": 16000,
+      "channels": 1,
+      "sample_width": 2,
+      "frames": 224999,
+      "duration": 14.0624375
+    },
+    "playback": {
+      "sample_rate": 24000,
+      "channels": 1,
+      "sample_width": 2,
+      "frames": 337498,
+      "duration": 14.062416666666667
+    },
+    "playback_path": "/experiment/quality-v3/input/master.wav"
+  },
+  "seed": 42,
+  "implementation": "FlashHead pro",
+  "device": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+  "capability": [
+    12,
+    0
+  ],
+  "attention": "torch SDPA (no FlashAttention or Sage installed)",
+  "compile": false,
+  "load_and_prepare_seconds": 2.4161893879063427,
+  "chunks": [
+    {
+      "chunk": 0,
+      "frames": 28,
+      "seconds": 1.8844110409263521,
+      "fps": 14.858753951173817
+    },
+    {
+      "chunk": 1,
+      "frames": 28,
+      "seconds": 1.5433289390057325,
+      "fps": 18.142600253474544
+    },
+    {
+      "chunk": 2,
+      "frames": 28,
+      "seconds": 1.5415029779542238,
+      "fps": 18.16409076105689
+    },
+    {
+      "chunk": 3,
+      "frames": 28,
+      "seconds": 1.542078104102984,
+      "fps": 18.157316367764267
+    },
+    {
+      "chunk": 4,
+      "frames": 28,
+      "seconds": 1.5421596080996096,
+      "fps": 18.156356743452882
+    },
+    {
+      "chunk": 5,
+      "frames": 28,
+      "seconds": 1.5427563767880201,
+      "fps": 18.149333505459424
+    },
+    {
+      "chunk": 6,
+      "frames": 28,
+      "seconds": 1.5419983761385083,
+      "fps": 18.158255179306966
+    },
+    {
+      "chunk": 7,
+      "frames": 28,
+      "seconds": 1.5426279560197145,
+      "fps": 18.150844402071865
+    },
+    {
+      "chunk": 8,
+      "frames": 28,
+      "seconds": 1.5424792170524597,
+      "fps": 18.152594660889825
+    },
+    {
+      "chunk": 9,
+      "frames": 28,
+      "seconds": 1.5428148179780692,
+      "fps": 18.14864601617925
+    },
+    {
+      "chunk": 10,
+      "frames": 28,
+      "seconds": 1.542673357995227,
+      "fps": 18.15031020979532
+    },
+    {
+      "chunk": 11,
+      "frames": 28,
+      "seconds": 1.5439474929589778,
+      "fps": 18.135331756870794
+    },
+    {
+      "chunk": 12,
+      "frames": 28,
+      "seconds": 1.5427170328330249,
+      "fps": 18.149796368411888
+    }
+  ],
+  "frames": 352,
+  "peak_torch_allocated_bytes": 6518369792,
+  "quality_status": "unreviewed",
+  "scope": "model chunk generation; not WebRTC or full voice-assistant latency"
+}

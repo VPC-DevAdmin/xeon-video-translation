@@ -19,8 +19,8 @@ XTTS processing pipeline (per request):
    when word timestamps aren't available or no ≥3 s clean span exists.
 2. Per-segment synthesis when the transcript has multiple segments —
    preserves the source clip's pause structure. Single-shot otherwise.
-3. Optional formant-preserving time-stretch (rubberband) if assembled
-   audio overshoots the source video's available window.
+3. Lines that must be faster are re-spoken at XTTS's own speed; what is
+   left is sped up with ffmpeg atempo.
 4. Prepend silence to align the first spoken frame with the source.
 5. Loudness normalization (EBU R128 / −16 LUFS) so dialog lands at a
    consistent broadcast level regardless of the XTTS take.
@@ -43,7 +43,6 @@ import json
 import logging
 import os
 import subprocess
-import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
@@ -57,9 +56,21 @@ log = logging.getLogger(__name__)
 # BCP-47 -> XTTS-v2 language codes. XTTS supports these; our NLLB language
 # picker is a superset, so some translations may not be synthesizable.
 XTTS_LANG_CODES: dict[str, str] = {
-    "en": "en", "es": "es", "fr": "fr", "de": "de", "it": "it",
-    "pt": "pt", "pl": "pl", "tr": "tr", "ru": "ru", "nl": "nl",
-    "cs": "cs", "ar": "ar", "hu": "hu", "ko": "ko", "ja": "ja",
+    "en": "en",
+    "es": "es",
+    "fr": "fr",
+    "de": "de",
+    "it": "it",
+    "pt": "pt",
+    "pl": "pl",
+    "tr": "tr",
+    "ru": "ru",
+    "nl": "nl",
+    "cs": "cs",
+    "ar": "ar",
+    "hu": "hu",
+    "ko": "ko",
+    "ja": "ja",
     "hi": "hi",
     "zh": "zh-cn",  # XTTS uses the regional tag
 }
@@ -81,17 +92,17 @@ F5TTS_BASE_LANGS: set[str] = {"en", "zh"}
 # it can pick the right phoneme set; the values match what AI4Bharat's
 # inference code expects (see their HF model card).
 INDICF5_LANG_CODES: dict[str, str] = {
-    "hi": "hi",   # Hindi
-    "bn": "bn",   # Bengali
-    "ta": "ta",   # Tamil
-    "te": "te",   # Telugu
-    "mr": "mr",   # Marathi
-    "gu": "gu",   # Gujarati
-    "kn": "kn",   # Kannada
-    "ml": "ml",   # Malayalam
-    "pa": "pa",   # Punjabi
-    "or": "or",   # Odia / Oriya
-    "as": "as",   # Assamese
+    "hi": "hi",  # Hindi
+    "bn": "bn",  # Bengali
+    "ta": "ta",  # Tamil
+    "te": "te",  # Telugu
+    "mr": "mr",  # Marathi
+    "gu": "gu",  # Gujarati
+    "kn": "kn",  # Kannada
+    "ml": "ml",  # Malayalam
+    "pa": "pa",  # Punjabi
+    "or": "or",  # Odia / Oriya
+    "as": "as",  # Assamese
 }
 
 
@@ -181,7 +192,9 @@ def _select_tts_backend_for_language(lang: str) -> tuple[str, list[str]]:
 
 
 def _warn_if_suboptimal_backend(
-    lang: str, chosen: str, preferences: list[str],
+    lang: str,
+    chosen: str,
+    preferences: list[str],
 ) -> None:
     """If `chosen` isn't the first preference for `lang`, log one
     WARNING explaining what would be better and why it isn't available.
@@ -197,7 +210,11 @@ def _warn_if_suboptimal_backend(
         "backend is not yet integrated (expected in %s). Falling back "
         "to %r — quality may be degraded. Set tts_backend=%s explicitly "
         "to silence this warning.",
-        lang, ideal, pr_note, chosen, chosen,
+        lang,
+        ideal,
+        pr_note,
+        chosen,
+        chosen,
     )
 
 
@@ -241,6 +258,7 @@ def synthesize(
     source_duration_seconds: float | None = None,
     transcript_segments: list[dict] | None = None,
     backend: str | None = None,
+    options: dict | None = None,
 ) -> TTSResult:
     """Generate speech for `translation` using `reference_audio` as the voice.
 
@@ -256,8 +274,7 @@ def synthesize(
     first spoken frame — otherwise a 1 s "speaker pauses then talks" clip
     becomes a "speaker starts talking immediately" clip.
 
-    `source_duration_seconds` enables formant-preserving time-stretch
-    (rubberband) when the post-trim TTS is still a bit longer than the
+    `source_duration_seconds` enables a time-stretch (atempo) when the post-trim TTS is still a bit longer than the
     remaining source video. Stretching is skipped when the ratio would be
     aggressive — we'd rather freeze-pad video than produce chipmunk audio.
 
@@ -269,10 +286,7 @@ def synthesize(
     """
     chosen = (backend or settings.tts_backend).lower()
     if chosen not in ("xtts", "f5tts", "indicf5", "auto"):
-        raise TTSError(
-            f"unknown tts backend: {chosen!r}. "
-            f"Supported: xtts, f5tts, indicf5, auto"
-        )
+        raise TTSError(f"unknown tts backend: {chosen!r}. Supported: xtts, f5tts, indicf5, auto")
 
     tgt = translation.get("target_language", "").lower()
 
@@ -283,7 +297,9 @@ def synthesize(
         chosen, prefs = _select_tts_backend_for_language(tgt)
         _warn_if_suboptimal_backend(tgt, chosen, prefs)
         log.info(
-            "TTS auto-selected %r for target_language=%r", chosen, tgt,
+            "TTS auto-selected %r for target_language=%r",
+            chosen,
+            tgt,
         )
 
     # Up-front validation, ordered so the clearest error surfaces first:
@@ -320,81 +336,62 @@ def synthesize(
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    if chosen == "xtts":
+    segments = translation.get("segments") or []
+    if segments and transcript_segments:
+        count = _synthesize_per_segment(
+            segments,
+            segments,
+            reference_audio,
+            XTTS_LANG_CODES.get(tgt, tgt),
+            output_path,
+            backend=chosen,
+            target_language=tgt,
+            reference_segments=transcript_segments,
+            options=options,
+            source_duration_seconds=source_duration_seconds,
+        )
+        result = TTSResult(
+            backend=chosen,
+            language=tgt,
+            reference_audio=reference_audio.name,
+            output_path=output_path.name,
+            per_segment=True,
+            segments_synthesized=count,
+        )
+        first_speech_seconds = float(segments[0]["start"])
+    elif chosen == "xtts":
         result = _synthesize_xtts_full(
-            translation=translation,
-            text=text,
-            target_language=tgt,
-            reference_audio=reference_audio,
-            output_path=output_path,
-            transcript_segments=transcript_segments,
+            translation,
+            text,
+            tgt,
+            reference_audio,
+            output_path,
+            transcript_segments,
         )
-    elif chosen == "indicf5":
-        result = _synthesize_indicf5_single_shot(
-            text=text,
-            target_language=tgt,
-            reference_audio=reference_audio,
-            output_path=output_path,
-            transcript_segments=transcript_segments,
+    else:
+        generate = (
+            _synthesize_indicf5_single_shot
+            if chosen == "indicf5"
+            else _synthesize_f5tts_single_shot
         )
-    else:  # f5tts (already validated above)
-        result = _synthesize_f5tts_single_shot(
-            text=text,
-            target_language=tgt,
-            reference_audio=reference_audio,
-            output_path=output_path,
-            transcript_segments=transcript_segments,
-        )
+        result = generate(text, tgt, reference_audio, output_path, transcript_segments)
 
     if not output_path.exists() or output_path.stat().st_size == 0:
         raise TTSError(f"{chosen} produced no output")
 
-    # --- Shared post-processing (both backends) --------------------------- #
-    # Whisper-based tail trim. On short utterances XTTS tends to keep
-    # generating past the real translation — hallucinated phonemes /
-    # repeated syllables at speech level, which `silencedetect` can't
-    # catch because it *is* speech energy. Running the expected text
-    # through faster-whisper on the TTS output gives us word-level
-    # timestamps we can align against; everything past the last real
-    # word is tail we can safely remove. Hard-truncate at source
-    # duration below is the backstop if this doesn't fire.
-    try:
-        _trim_tail_via_whisper(
-            output_path,
-            target_language=tgt,
-            expected_text=text,
-            # Source duration powers Tier 3's "don't cut below
-            # source × 0.5" sanity floor — catches the Hindi case
-            # where word-alignment matches one token and bails,
-            # truncating 8s of real speech to 0.24s on a 19s source.
-            source_duration_seconds=source_duration_seconds,
-        )
-    except Exception as e:
-        log.warning("whisper tail-trim failed (%s); continuing", e)
-
-    # Optional speed-up: fit assembled audio into remaining source window.
-    if source_duration_seconds is not None:
-        target = source_duration_seconds - (first_speech_seconds or 0.0)
-        if target > 0:
-            try:
-                _maybe_time_stretch(output_path, target_duration=target)
-            except Exception as e:
-                log.warning("time-stretch failed (%s); keeping untouched TTS", e)
-
-        # Hard safety net: if even after tail-trim + (optional) stretch
-        # the audio is still longer than the source video window, cut it.
-        # Better to crop a final syllable than to let `loop_video` fire.
-        try:
-            _hard_truncate(output_path, max_duration=source_duration_seconds)
-        except Exception as e:
-            log.warning("hard-truncate failed (%s); loop_video may fire", e)
+    if chosen == "xtts" and not result.per_segment:
+        verified = _trim_tail_via_whisper(output_path, tgt, text)
+        if verified is False:
+            raise TTSError("generated speech does not match the complete translation")
+        if verified is not True:
+            _trim_to_speech(output_path)
 
     # Align to source: prepend silence so TTS first-frame lines up.
     if first_speech_seconds and first_speech_seconds > 0.01:
         try:
             _prepend_silence(output_path, seconds=first_speech_seconds)
         except Exception as e:
-            log.warning("silence-prepend failed (%s); keeping un-aligned TTS", e)
+            raise TTSError(f"speech alignment failed: {e}") from e
 
     # Loudness normalization to -16 LUFS.
     try:
@@ -436,7 +433,7 @@ def _get_xtts():
         model = TTS(
             "tts_models/multilingual/multi-dataset/xtts_v2",
             progress_bar=False,
-        ).to("cpu")
+        ).to(settings.resolved_device)
         _xtts = model
         return _xtts
 
@@ -537,14 +534,16 @@ def _get_f5tts():
                 "Original error: " + str(e),
             ) from e
 
-        # device="cpu" forces the CPU path; F5-TTS auto-picks CUDA otherwise.
-        model = F5TTS(model=settings.f5tts_model, device="cpu")
+        # Pass the device explicitly; F5-TTS would otherwise auto-pick CUDA
+        # even on the CPU build.
+        model = F5TTS(model=settings.f5tts_model, device=settings.resolved_device)
         _f5tts = model
         return _f5tts
 
 
 def _f5tts_reference_text(
-    reference_audio: Path, transcript_segments: list[dict] | None,
+    reference_audio: Path,
+    transcript_segments: list[dict] | None,
 ) -> str:
     """Build the F5-TTS reference text.
 
@@ -559,9 +558,7 @@ def _f5tts_reference_text(
       3. "" (F5-TTS falls back to its own whisper-based ref inference)
     """
     if transcript_segments:
-        chunks = [
-            (s.get("text") or "").strip() for s in transcript_segments
-        ]
+        chunks = [(s.get("text") or "").strip() for s in transcript_segments]
         joined = " ".join(c for c in chunks if c).strip()
         if joined:
             return joined
@@ -634,13 +631,11 @@ def _get_indicf5():
         # IndicF5 is gated. Authenticate before any hub call so the
         # download doesn't 401. See PR #76 for the multi-spelling
         # token-discovery rationale.
-        token = (
-            os.environ.get("HF_TOKEN")
-            or os.environ.get("HUGGING_FACE_HUB_TOKEN")
-        )
+        token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
         if token:
             try:
                 from huggingface_hub import login as _hf_login
+
                 _hf_login(token=token, add_to_git_credential=False)
             except Exception as _login_err:
                 log.warning(
@@ -655,11 +650,13 @@ def _get_indicf5():
         # test newer revisions.
         repo = os.environ.get("INDICF5_MODEL", "ai4bharat/IndicF5")
         revision = os.environ.get(
-            "INDICF5_REVISION", "ba85abedf18dc479a447eaa0eccbd76ab78a47d5",
+            "INDICF5_REVISION",
+            "ba85abedf18dc479a447eaa0eccbd76ab78a47d5",
         )
         log.info(
             "loading IndicF5 from %s@%s (first call: ~1.5 GB download)",
-            repo, revision[:8],
+            repo,
+            revision[:8],
         )
 
         try:
@@ -667,16 +664,19 @@ def _get_indicf5():
         except ImportError as e:
             raise TTSError(
                 "huggingface_hub is required for IndicF5 but isn't "
-                "importable. Rebuild the backend image. Original error: "
-                + str(e),
+                "importable. Rebuild the backend image. Original error: " + str(e),
             ) from e
 
         try:
             ckpt_path = hf_hub_download(
-                repo_id=repo, filename="model.safetensors", revision=revision,
+                repo_id=repo,
+                filename="model.safetensors",
+                revision=revision,
             )
             vocab_path = hf_hub_download(
-                repo_id=repo, filename="checkpoints/vocab.txt", revision=revision,
+                repo_id=repo,
+                filename="checkpoints/vocab.txt",
+                revision=revision,
             )
         except Exception as e:
             err_str = str(e)
@@ -693,9 +693,9 @@ def _get_indicf5():
                     "https://huggingface.co/ai4bharat/IndicF5)"
                     if token_set
                     else "no HF_TOKEN found in this container's env. "
-                         "Set HF_TOKEN=hf_... in .env (and "
-                         "`docker compose up -d --force-recreate backend` "
-                         "to pick it up)."
+                    "Set HF_TOKEN=hf_... in .env (and "
+                    "`docker compose up -d --force-recreate backend` "
+                    "to pick it up)."
                 )
                 raise TTSError(
                     f"IndicF5 weights are gated on HuggingFace and the "
@@ -730,28 +730,26 @@ def _get_indicf5():
             from safetensors.torch import load_file, save_file
         except ImportError as e:
             raise TTSError(
-                "safetensors is required for IndicF5 weight repack: "
-                + str(e),
+                "safetensors is required for IndicF5 weight repack: " + str(e),
             ) from e
 
         clean_ckpt_path = ckpt_path.replace(
-            "model.safetensors", "model.f5tts_ready.safetensors",
+            "model.safetensors",
+            "model.f5tts_ready.safetensors",
         )
         if not os.path.exists(clean_ckpt_path):
-            log.info(
-                "repacking IndicF5 safetensors → F5-TTS-compatible layout"
-            )
+            log.info("repacking IndicF5 safetensors → F5-TTS-compatible layout")
             raw = load_file(ckpt_path)
             ema_state = {}
             for k, v in raw.items():
                 # Keep only ema_model weights, strip both prefixes.
                 # vocoder weights are loaded separately via load_vocoder.
                 if k.startswith("ema_model._orig_mod."):
-                    new_k = k[len("ema_model._orig_mod."):]
+                    new_k = k[len("ema_model._orig_mod.") :]
                     ema_state[new_k] = v
                 elif k.startswith("ema_model."):
                     # Defensive: in case a future revision drops torch.compile
-                    new_k = k[len("ema_model."):]
+                    new_k = k[len("ema_model.") :]
                     ema_state[new_k] = v
             if not ema_state:
                 raise TTSError(
@@ -763,7 +761,8 @@ def _get_indicf5():
             save_file(ema_state, clean_ckpt_path)
             log.info(
                 "wrote %d ema_model weights to %s",
-                len(ema_state), clean_ckpt_path,
+                len(ema_state),
+                clean_ckpt_path,
             )
 
         # Now build the model + vocoder via F5-TTS's APIs directly —
@@ -775,8 +774,7 @@ def _get_indicf5():
             raise TTSError(
                 "f5-tts package is required for IndicF5 but isn't "
                 "importable. Rebuild the backend image (Dockerfile "
-                "installs f5-tts with --no-deps). Original error: "
-                + str(e),
+                "installs f5-tts with --no-deps). Original error: " + str(e),
             ) from e
 
         try:
@@ -785,15 +783,16 @@ def _get_indicf5():
             # state-dict loader sees the keys it expects.
             ema_model = load_model(
                 DiT,
-                dict(dim=1024, depth=22, heads=16, ff_mult=2,
-                     text_dim=512, conv_layers=4),
+                dict(dim=1024, depth=22, heads=16, ff_mult=2, text_dim=512, conv_layers=4),
                 ckpt_path=clean_ckpt_path,
                 mel_spec_type="vocos",
                 vocab_file=vocab_path,
-                device="cpu",
+                device=settings.resolved_device,
             )
             vocoder = load_vocoder(
-                vocoder_name="vocos", is_local=False, device="cpu",
+                vocoder_name="vocos",
+                is_local=False,
+                device=settings.resolved_device,
             )
         except Exception as e:
             raise TTSError(
@@ -835,7 +834,11 @@ def _synthesize_indicf5_single_shot(
     users can override by supplying a native-language reference clip.
     """
     components = _get_indicf5()
-    ref_text = _f5tts_reference_text(reference_audio, transcript_segments)
+    picked = _select_f5_reference(reference_audio, transcript_segments, output_path.parent)
+    if picked is not None:
+        reference_audio, ref_text = picked
+    else:
+        ref_text = _f5tts_reference_text(reference_audio, transcript_segments)
     if not ref_text:
         raise TTSError(
             "IndicF5 requires a reference transcript but none was found. "
@@ -856,10 +859,12 @@ def _synthesize_indicf5_single_shot(
 
     try:
         import torch as _torch
+
         # Preprocess (normalize loudness, trim silence, etc.). Returns
         # the cleaned reference + transcript.
         ref_audio_clean, ref_text_clean = preprocess_ref_audio_text(
-            str(reference_audio), ref_text,
+            str(reference_audio),
+            ref_text,
         )
         with _torch.no_grad():
             audio, sr_candidate, _ = infer_process(
@@ -870,7 +875,7 @@ def _synthesize_indicf5_single_shot(
                 components["vocoder"],
                 mel_spec_type="vocos",
                 speed=1.0,
-                device="cpu",
+                device=settings.resolved_device,
             )
     except TypeError as e:
         raise TTSError(
@@ -885,11 +890,12 @@ def _synthesize_indicf5_single_shot(
     # is the sample rate it reports. Fall back to IndicF5's documented
     # 24 kHz if the value looks bogus.
     import numpy as _np
+
     try:
         sr = int(sr_candidate) if sr_candidate else 24000
     except Exception:
         sr = 24000
-    if hasattr(audio, "detach"):   # torch tensor
+    if hasattr(audio, "detach"):  # torch tensor
         audio = audio.detach().cpu().numpy()
     audio = _np.asarray(audio, dtype=_np.float32)
     # Drop leading batch / channel dim if 2-D with a unit axis.
@@ -924,7 +930,8 @@ def _synthesize_indicf5_single_shot(
         _trim_to_speech(output_path)
     except Exception as e:
         log.warning(
-            "silence trim failed (%s); keeping untrimmed IndicF5 output", e,
+            "silence trim failed (%s); keeping untrimmed IndicF5 output",
+            e,
         )
 
     return TTSResult(
@@ -946,11 +953,16 @@ def _synthesize_f5tts_single_shot(
 ) -> TTSResult:
     """Single-shot F5-TTS synthesis. Per-segment path is a follow-up."""
     f5tts = _get_f5tts()
-    ref_text = _f5tts_reference_text(reference_audio, transcript_segments)
+    picked = _select_f5_reference(reference_audio, transcript_segments, output_path.parent)
+    if picked is not None:
+        ref_path, ref_text = picked
+    else:
+        ref_path = reference_audio
+        ref_text = _f5tts_reference_text(reference_audio, transcript_segments)
 
     # F5-TTS's Python API writes directly to `file_wave`.
     f5tts.infer(
-        ref_file=str(reference_audio),
+        ref_file=str(ref_path),
         ref_text=ref_text,
         gen_text=text,
         file_wave=str(output_path),
@@ -983,9 +995,9 @@ def _synthesize_f5tts_single_shot(
 # them, then trim the source WAV to that span.
 # --------------------------------------------------------------------------- #
 
-_REF_GAP_SECONDS = 0.30          # word-to-word gap threshold for "contiguous"
-_REF_MIN_SPAN_SECONDS = 3.0      # XTTS's documented minimum reference length
-_REF_MAX_SPAN_SECONDS = 12.0     # longer doesn't help; cap to keep loads fast
+_REF_GAP_SECONDS = 0.30  # word-to-word gap threshold for "contiguous"
+_REF_MIN_SPAN_SECONDS = 3.0  # XTTS's documented minimum reference length
+_REF_MAX_SPAN_SECONDS = 12.0  # longer doesn't help; cap to keep loads fast
 
 
 def _select_reference(
@@ -1005,7 +1017,7 @@ def _select_reference(
     # Flatten all words across segments.
     words: list[dict] = []
     for seg in transcript_segments:
-        for w in (seg.get("words") or []):
+        for w in seg.get("words") or []:
             if w.get("start") is not None and w.get("end") is not None:
                 words.append(w)
     if len(words) < 3:
@@ -1018,8 +1030,7 @@ def _select_reference(
     span_len = span_end - span_start
     if span_len < _REF_MIN_SPAN_SECONDS:
         log.info(
-            "longest clean speech span is only %.2fs — using whole source "
-            "as XTTS reference",
+            "longest clean speech span is only %.2fs — using whole source as XTTS reference",
             span_len,
         )
         return reference_audio, reference_audio.name
@@ -1037,13 +1048,84 @@ def _select_reference(
         return reference_audio, reference_audio.name
     log.info(
         "selected XTTS reference: %.2fs span (%.2f–%.2fs of original)",
-        span_len, span_start, span_end,
+        span_len,
+        span_start,
+        span_end,
     )
     return trimmed, f"trimmed {span_len:.2f}s"
 
 
+_F5_REF_MAX_SPAN_SECONDS = 10.0  # F5 clips refs at ~12 s internally; stay under
+
+
+def _word_text(w: dict) -> str:
+    return str(w.get("text") or w.get("word") or "").strip()
+
+
+def _select_f5_reference(
+    reference_audio: Path,
+    transcript_segments: list[dict] | None,
+    work_dir: Path,
+) -> tuple[Path, str] | None:
+    """Pick a short reference clip *and the text spoken in it* for F5-TTS.
+
+    F5-style models size the generated audio from the reference: roughly
+    ref_seconds / len(ref_text) * len(gen_text). They also clip the
+    reference audio to ~12 s internally. Feeding the whole 52 s source
+    plus its full transcript therefore gave a per-character duration 4-5x
+    too small and the output came out compressed to 9 s on the XE7740.
+    The reference text must describe exactly the audio span passed.
+
+    Returns None when word timestamps are missing, so callers can fall
+    back to the whole-clip behaviour.
+    """
+    if not transcript_segments:
+        return None
+    words: list[dict] = []
+    for seg in transcript_segments:
+        for w in seg.get("words") or []:
+            # transcribe.py serialises each word as {start, end, text}.
+            if w.get("start") is not None and w.get("end") is not None and _word_text(w):
+                words.append(w)
+    if len(words) < 3:
+        return None
+    span = _longest_contiguous_word_span(words, max_gap=_REF_GAP_SECONDS)
+    if span is None:
+        return None
+    span_start, span_end = span
+    if span_end - span_start < _REF_MIN_SPAN_SECONDS:
+        return None
+    span_end = min(span_end, span_start + _F5_REF_MAX_SPAN_SECONDS)
+    # Only words fully inside the (possibly capped) span.
+    in_span = [
+        w
+        for w in sorted(words, key=lambda w: float(w["start"]))
+        if float(w["start"]) >= span_start - 1e-3 and float(w["end"]) <= span_end + 1e-3
+    ]
+    if len(in_span) < 3:
+        return None
+    # Cut on the last whole word so the text matches the audio exactly.
+    span_end = float(in_span[-1]["end"])
+    ref_text = " ".join(_word_text(w) for w in in_span).strip()
+    trimmed = work_dir / "f5_reference.wav"
+    try:
+        _ffmpeg_atrim(reference_audio, trimmed, span_start, span_end)
+    except Exception as e:
+        log.warning("failed to cut F5 reference audio (%s); using whole clip", e)
+        return None
+    log.info(
+        "selected F5 reference: %.2fs span (%.2f–%.2fs), %d words",
+        span_end - span_start,
+        span_start,
+        span_end,
+        len(in_span),
+    )
+    return trimmed, ref_text
+
+
 def _longest_contiguous_word_span(
-    words: list[dict], max_gap: float,
+    words: list[dict],
+    max_gap: float,
 ) -> tuple[float, float] | None:
     """Find the longest window of consecutive words where no pair is
     separated by > `max_gap` seconds. Returns (start, end) in seconds.
@@ -1088,144 +1170,472 @@ def _synthesize_per_segment(
     reference_audio: Path,
     language: str,
     output_path: Path,
+    *,
+    backend: str = "xtts",
+    target_language: str | None = None,
+    reference_segments: list[dict] | None = None,
+    options: dict | None = None,
+    source_duration_seconds: float | None = None,
 ) -> int:
-    """Synthesize each translation segment and splice into a single WAV.
+    """Render every utterance, fit its slot, and preserve original onset times.
 
-    Returns the number of segments that were actually synthesized (some
-    may be dropped for being too short or failing XTTS).
+    Fail explicitly if content cannot fit without excessive speeding up.
+    Never replace missing or failed speech with silence.
     """
-    work_dir = output_path.parent / f"_tts_work_{uuid.uuid4().hex[:8]}"
-    work_dir.mkdir(parents=True, exist_ok=True)
+    import tempfile
 
-    try:
-        seg_paths: list[Path | None] = []
-        for i, (tr_seg, src_seg) in enumerate(
-            zip(translation_segments, transcript_segments)
-        ):
-            text = (tr_seg.get("text") or "").strip()
-            if len(text) < _MIN_SEG_TEXT_LEN:
-                log.info("segment %d skipped (text %r too short)", i, text)
-                seg_paths.append(None)
-                continue
+    options = options or {}
+    target_language = target_language or language
+    reference_segments = reference_segments or transcript_segments
+    if not translation_segments:
+        raise TTSError("no translation segments")
+    generate = (
+        _synthesize_indicf5_single_shot if backend == "indicf5" else _synthesize_f5tts_single_shot
+    )
+    timings = []
+    cache = output_path.parent / "segments"
+    cache.mkdir(exist_ok=True)
+    from ..checkpoints import digest
 
-            seg_path = work_dir / f"seg_{i:03d}.wav"
-            try:
-                _xtts_to_file(text, reference_audio, language, seg_path)
-            except Exception as e:
-                log.warning("segment %d XTTS failed (%s); skipping", i, e)
-                seg_paths.append(None)
-                continue
+    reference_hash = digest(reference_audio) if reference_audio.exists() else "missing"
+    with tempfile.TemporaryDirectory(prefix="tts-", dir=output_path.parent) as temp:
+        work = Path(temp)
+        ref = reference_audio
+        if backend == "xtts":
+            selected = _select_reference(reference_audio, reference_segments, work)
+            if selected is not None:
+                ref = selected[0]
+        paths = []
+        retakes = []  # per segment: (re-speak at a given XTTS speed, speed of the kept take)
+        for i, segment in enumerate(translation_segments):
+            text = str(segment.get("text", "")).strip()
+            if not text:
+                raise TTSError(f"segment {i + 1} has no translation")
+            import hashlib
 
-            try:
-                _trim_to_speech(seg_path)
-            except Exception:
-                pass  # keep untrimmed — better than dropping the segment
+            voice = options.get("speaker_voices", {}).get(segment.get("speaker")) or options.get(
+                "voice"
+            )
+            cache_key = hashlib.sha256(
+                json.dumps(
+                    {
+                        "text": text,
+                        "voice": voice,
+                        "speaker": segment.get("speaker"),
+                        "backend": backend,
+                        "language": language,
+                        "reference": reference_hash,
+                        "reference_segments": reference_segments,
+                        "revision": settings.model_revision,
+                        "tts_model": settings.f5tts_model,
+                        "cache_format": "raw-take-v2",
+                    },
+                    sort_keys=True,
+                ).encode()
+            ).hexdigest()
+            if voice and backend != "xtts":
+                raise TTSError("Bundled voice selection requires the XTTS backend")
+            speaker_segments = [
+                s
+                for s in reference_segments
+                if not segment.get("speaker") or s.get("speaker") == segment.get("speaker")
+            ]
+            selected = (
+                _select_reference(reference_audio, speaker_segments, work)
+                if backend == "xtts" and segment.get("speaker") and not voice
+                else None
+            )
+            segment_ref = selected[0] if selected else ref
 
-            seg_paths.append(seg_path)
+            # XTTS native speed for retries of an overrunning segment; "take"
+            # and "best" are the speeds the current and the best take were made at.
+            take_speed = {"value": None, "take": 1.0, "best": 1.0}
 
-        # Fall back gracefully if nothing got synthesized.
-        if not any(seg_paths):
-            raise TTSError("no segments produced any TTS output")
+            def generate_take(value):
+                if backend == "xtts":
+                    extra = {"voice": voice} if voice else {}
+                    if take_speed["value"]:
+                        extra["speed"] = take_speed["value"]
+                    _xtts_to_file(value, segment_ref, language, path, **extra)
+                    take_speed["take"] = take_speed["value"] or 1.0
+                else:
+                    generate(value, target_language, reference_audio, path, reference_segments)
 
-        _assemble_timeline(
-            seg_paths=seg_paths,
-            transcript_segments=transcript_segments,
-            output_path=output_path,
+            cached = cache / (cache_key + ".wav")
+            checksum = cached.with_suffix(".sha256")
+            if cached.exists() and (
+                not checksum.exists() or checksum.read_text() != digest(cached)
+            ):
+                cached.unlink()
+                checksum.unlink(missing_ok=True)
+            path = work / f"segment-{i}.wav"
+            if cached.exists():
+                import shutil
+
+                shutil.copyfile(cached, path)
+            for attempt in range(settings.tts_segment_retries + 1):
+                try:
+                    if path.exists():
+                        break
+                    generate_take(text)
+                    if not path.exists() or not path.stat().st_size:
+                        raise TTSError("empty synthesized audio")
+                    break
+                except Exception as exc:
+                    path.unlink(missing_ok=True)
+                    if attempt == settings.tts_segment_retries:
+                        raise TTSError(
+                            f"segment {i + 1} failed after {attempt + 1} attempts: {exc}"
+                        ) from exc
+            if not cached.exists():
+                import shutil
+
+                shutil.copyfile(path, cached)
+                checksum.write_text(digest(cached))
+            start, end = float(segment["start"]), float(segment["end"])
+            # Borrow the following pause, but never overlap the next sentence.
+            if i + 1 < len(translation_segments):
+                end = float(translation_segments[i + 1]["start"])
+            elif source_duration_seconds is not None:
+                # The final utterance may use the source's trailing silence,
+                # just as earlier utterances may use the pause before the next.
+                import math
+
+                if not math.isfinite(source_duration_seconds) or source_duration_seconds <= 0:
+                    raise TTSError("invalid source duration for speech timing")
+                end = float(source_duration_seconds)
+            available = end - start
+            if available <= 0:
+                raise TTSError(f"segment {i + 1} has invalid or overlapping timestamps")
+            # Short slots get a higher ceiling: at a conversational turn there is
+            # no pause to borrow, and Spanish runs longer than English.
+            ceiling = (settings.tts_max_speed_short if available < settings.tts_short_slot_seconds
+                       else settings.tts_max_speed_hard)
+            # A full expected-text match can distinguish clicks/repeated tails
+            # from short words. Never discard content based on span duration alone.
+            # XTTS takes vary a lot in length for the same sentence; a take that
+            # overruns the preferred speed earns extra attempts, and the shortest
+            # verified take is the one kept.
+            import shutil
+
+            best_take = work / f"segment-{i}.take.wav"
+            best_take_duration = None
+            attempts = settings.tts_segment_retries + 1
+            cleanup_attempt = 0
+            while True:
+                verified = (
+                    _trim_tail_via_whisper(path, target_language, text)
+                    if backend == "xtts" or _probe_duration(path) > available
+                    else None
+                )
+                if verified is not False:
+                    # Also for whisper-verified takes: XTTS leaves up to a second
+                    # of silence after the last word, and fitting the take to
+                    # its slot would stretch that silence too, so the speech
+                    # ended early and the source mouth showed through at the end.
+                    _trim_to_speech(path)
+                    _compress_pauses(path)
+                duration = _probe_duration(path)
+                if verified is not False and (best_take_duration is None or duration < best_take_duration):
+                    shutil.copyfile(path, best_take)
+                    best_take_duration = duration
+                    take_speed["best"] = take_speed["take"]
+                if verified is not False and duration <= available * settings.tts_max_speed:
+                    break
+                if verified is not False and duration > available * settings.tts_max_speed:
+                    # Best of N: XTTS take lengths for one sentence ranged from
+                    # 8.6 to 22 s on 5 Oct 2026 at every temperature, but the
+                    # shortest of five always fitted. Extra attempts, granted
+                    # once; the loop stops as soon as a take fits.
+                    attempts = max(attempts, settings.tts_segment_retries + 1 + settings.tts_overrun_retries)
+                    # Retries speak faster inside the model (more natural than
+                    # stretching the waveform afterwards).
+                    if backend == "xtts" and settings.tts_retry_speed > 1.0:
+                        take_speed["value"] = settings.tts_retry_speed
+                cleanup_attempt += 1
+                if cleanup_attempt >= attempts:
+                    if verified is False and best_take_duration is None:
+                        raise TTSError(
+                            f"segment {i + 1}: generated speech does not match the complete translation"
+                        )
+                    break
+                # Retry the same words before asking an LLM to shorten them.
+                generate_take(text)
+            if best_take_duration is not None and best_take_duration < duration:
+                shutil.copyfile(best_take, path)
+                duration = best_take_duration
+                take_speed["take"] = take_speed["best"]
+            best_take.unlink(missing_ok=True)
+            if duration > available:
+                speed = duration / available
+                if speed > settings.tts_max_speed and (
+                    options.get("rewrite_overruns", settings.rewrite_overruns)
+                ):
+                    from .quality import rewrite
+
+                    # Rewrites are a gamble: the LLM may not shorten the text, and a
+                    # shorter text can still come back as a slower take. Keep the
+                    # shortest verified take so a failed gamble never replaces a
+                    # usable one with a worse one.
+                    best = work / f"segment-{i}.best.wav"
+                    best_duration, best_text = duration, text
+                    take_speed["best"] = take_speed["take"]
+                    import shutil
+
+                    shutil.copyfile(path, best)
+                    for fit_attempt in range(settings.tts_fit_retries):
+                        try:
+                            text = rewrite(
+                                text,
+                                segment.get("source_text", text),
+                                target_language,
+                                available,
+                                options.get("glossary"),
+                            )
+                        except ValueError as exc:
+                            log.warning(
+                                "segment %d: no faithful rewrite for its %.2fs slot (%s); "
+                                "keeping the %.2fs take",
+                                i + 1,
+                                available,
+                                exc,
+                                best_duration,
+                            )
+                            break
+                        generate_take(text)
+                        verified = (
+                            _trim_tail_via_whisper(path, target_language, text)
+                            if backend == "xtts" or _probe_duration(path) > available
+                            else None
+                        )
+                        if verified is False:
+                            continue
+                        _trim_to_speech(path)
+                        _compress_pauses(path)
+                        duration = _probe_duration(path)
+                        speed = duration / available
+                        if duration < best_duration:
+                            shutil.copyfile(path, best)
+                            best_duration, best_text = duration, text
+                            take_speed["best"] = take_speed["take"]
+                        if speed <= settings.tts_max_speed:
+                            break
+                    # The best take is a verified (or ambiguous) one from before the
+                    # rewrites; a rejected rewrite never replaces it.
+                    shutil.copyfile(best, path)
+                    best.unlink()
+                    duration, text = best_duration, best_text
+                    take_speed["take"] = take_speed["best"]
+                    speed = duration / available
+                    if text != segment["text"]:
+                        segment["original_text"] = segment.get("original_text", segment["text"])
+                        segment["text"] = text
+            # Fitting is decided for all segments together below: a line that
+            # overruns its own slot may borrow from the pauses that follow it.
+            kept = work / f"segment-{i}.kept.wav"
+            shutil.copyfile(path, kept)
+            paths.append(kept)
+            if backend == "xtts":
+                def retake(out, speed, text=text, segment_ref=segment_ref, voice=voice):
+                    _xtts_to_file(text, segment_ref, language, out, speed=speed,
+                                  **({"voice": voice} if voice else {}))
+                    if _trim_tail_via_whisper(out, target_language, text) is False:
+                        return None
+                    _trim_to_speech(out)
+                    _compress_pauses(out)
+                    return _probe_duration(out)
+
+                retakes.append((retake, take_speed["take"]))
+            else:
+                retakes.append(None)
+            timings.append(
+                {
+                    "segment": i,
+                    "start": start,
+                    "slot_end": end,
+                    "speech_seconds": duration,
+                    "natural_seconds": duration,
+                    "ceiling": ceiling,
+                    "text": text,
+                }
+            )
+        plan_args = (
+            [t["start"] for t in timings],
+            [t["natural_seconds"] for t in timings],
+            [t["slot_end"] for t in timings],
         )
-        return sum(1 for p in seg_paths if p is not None)
-    finally:
-        # Clean up temp dir. Best-effort — if this fails we just leave it.
+        plan = _plan_timeline(*plan_args, [t["ceiling"] for t in timings], timings[-1]["slot_end"],
+                              max_drift=settings.tts_max_drift_seconds)
+        tail = float(options.get("tail_overlap_seconds") or 0.0)
+        if plan is None and tail > 0:
+            # At a turn the next speaker starts at once. Let this one finish
+            # over the next span's first moments, as people do in conversation.
+            plan = _plan_timeline(*plan_args, [t["ceiling"] for t in timings], timings[-1]["slot_end"] + tail,
+                                  max_drift=settings.tts_max_drift_seconds)
+            if plan is not None:
+                timings[-1]["tail_overlap"] = True
+        if plan is None and settings.tts_max_speed_last_resort > max(t["ceiling"] for t in timings):
+            # Faster than we like, but one line must not fail an hour-long job.
+            # Every line above its ceiling is marked in the timing file.
+            plan = _plan_timeline(*plan_args, [settings.tts_max_speed_last_resort] * len(timings),
+                                  timings[-1]["slot_end"] + tail, max_drift=settings.tts_max_drift_seconds)
+            if plan is not None:
+                for t in timings:
+                    t["normal_ceiling"], t["ceiling"] = t["ceiling"], settings.tts_max_speed_last_resort
+        if plan is None:
+            worst = max(timings, key=lambda t: t["natural_seconds"] / max(t["slot_end"] - t["start"], 1e-3))
+            raise TTSError(
+                f"segment {worst['segment'] + 1} needs {worst['natural_seconds']:.2f}s in a "
+                f"{worst['slot_end'] - worst['start']:.2f}s slot and the following pauses cannot absorb it; "
+                "shorten the translation or use a faster TTS voice. No speech was discarded."
+            )
+        placements, factors = plan
+        placed_segments = []
+        for t, path, placed, factor, segment, redo in zip(timings, paths, placements, factors,
+                                                           translation_segments, retakes):
+            if factor > 1.0 + 1e-6:
+                if factor > settings.tts_max_speed:
+                    log.warning("segment %d: %.2fx (above the preferred %.2fx)", t["segment"] + 1, factor,
+                                settings.tts_max_speed)
+                target = round(t["natural_seconds"] / factor, 3)
+                if redo is not None and factor >= settings.tts_native_speed_min:
+                    native = _respeak_faster(path, target, factor, *redo)
+                    if native:
+                        t["native_speed"] = native
+                _maybe_time_stretch(path, target_duration=target, max_speed=t["ceiling"])
+                t["speech_seconds"] = _probe_duration(path)
+            t["placed_start"] = round(placed, 3)
+            t["speed"] = round(factor, 3)
+            if factor > t.get("normal_ceiling", t["ceiling"]) + 1e-6:
+                t["last_resort"] = True
+                log.warning("segment %d spoken at %.2fx (last resort): %s", t["segment"] + 1, factor, t["text"][:80])
+            t["drift_seconds"] = round(placed - t["start"], 3)
+            placed_segments.append({**segment, "start": placed})
+        drifted = [t for t in timings if t["drift_seconds"] > 0.05]
+        if drifted:
+            log.info("timeline: %d of %d segments start later than the source (max %.2fs) to absorb overruns",
+                     len(drifted), len(timings), max(t["drift_seconds"] for t in drifted))
+        _assemble_timeline(paths, placed_segments, output_path)
+    output_path.with_suffix(".timing.json").write_text(
+        json.dumps(timings, ensure_ascii=False, indent=2)
+    )
+    return len(paths)
+
+
+def _respeak_faster(path: Path, target: float, factor: float, retake, base_speed: float) -> float | None:
+    """Re-speak a line at XTTS's own speed instead of stretching the waveform.
+
+    The model speaks faster with natural articulation; a stretch of the
+    waveform smears it (PESQ 4.1 vs 3.9 at 1.1x and 3.8 vs 3.6 at 1.25x
+    against atempo, 8 Oct 2026). Up to `tts_native_speed_takes` verified
+    takes; the shortest one that beats the current take replaces it, and the
+    caller's stretch covers whatever is still over `target`. Returns the
+    XTTS speed of the take kept, or None when the original take stays."""
+    speed = min(2.0, round(base_speed * factor, 3))
+    current = _probe_duration(path)
+    kept = None
+    for n in range(settings.tts_native_speed_takes):
+        candidate = path.with_name(f"{path.stem}.native{n}.wav")
         try:
-            import shutil as _sh
-            _sh.rmtree(work_dir, ignore_errors=True)
-        except Exception:
-            pass
-
-
-def _assemble_timeline(
-    seg_paths: list[Path | None],
-    transcript_segments: list[dict],
-    output_path: Path,
-) -> None:
-    """Concat segment WAVs with inter-segment silences derived from the
-    source transcript's between-segment gaps. Writes to `output_path`.
-    """
-    # Build the ffmpeg filter graph in three lists:
-    #   inputs_list:  -i file.wav for each segment that exists
-    #   filter_parts: labeled audio streams ready for concat
-    inputs: list[Path] = []
-    filter_parts: list[str] = []
-    concat_labels: list[str] = []
-
-    # First usable segment carries the "start of output"; no leading silence
-    # (the caller adds first_speech_seconds later if needed).
-    first_real = next(
-        (i for i, p in enumerate(seg_paths) if p is not None), None,
-    )
-    if first_real is None:
-        raise TTSError("no segments to assemble")
-
-    last_src_end: float | None = None
-    for i, seg_path in enumerate(seg_paths):
-        if seg_path is None:
-            # If this segment was dropped, we still want a silence gap
-            # representing its source duration so later segments stay
-            # anchored to their source start times. Use the source seg
-            # duration as the gap length.
-            src_dur = float(transcript_segments[i].get("end", 0.0)) \
-                      - float(transcript_segments[i].get("start", 0.0))
-            if src_dur > 0.05:
-                label = f"gap_skip_{i}"
-                filter_parts.append(
-                    f"anullsrc=r=24000:cl=mono,atrim=duration={src_dur:.3f},"
-                    f"asetpts=PTS-STARTPTS[{label}]"
-                )
-                concat_labels.append(label)
-            last_src_end = float(transcript_segments[i].get("end", last_src_end or 0.0))
+            duration = retake(candidate, speed)
+        except Exception as exc:
+            log.warning("native-speed retake of %s failed: %s", path.name, exc)
+            duration = None
+        if duration is None or duration >= current:
+            candidate.unlink(missing_ok=True)
             continue
+        candidate.replace(path)
+        current, kept = duration, speed
+        if current <= target + 0.05:
+            break
+    return kept
 
-        if i != first_real and last_src_end is not None:
-            src_start = float(transcript_segments[i].get("start", last_src_end))
-            gap = src_start - last_src_end
-            if gap > 0.05:
-                label = f"gap_{i}"
-                filter_parts.append(
-                    f"anullsrc=r=24000:cl=mono,atrim=duration={gap:.3f},"
-                    f"asetpts=PTS-STARTPTS[{label}]"
-                )
-                concat_labels.append(label)
 
-        # Convert each segment to the target 24 kHz mono to keep concat happy,
-        # regardless of XTTS's sample rate. `aformat` emits a fresh label.
-        input_idx = len(inputs)
-        inputs.append(seg_path)
-        label = f"seg_{i}"
-        filter_parts.append(
-            f"[{input_idx}:a]aformat=sample_rates=24000:channel_layouts=mono[{label}]"
-        )
-        concat_labels.append(label)
-        last_src_end = float(transcript_segments[i].get("end", last_src_end or 0.0))
+def _plan_timeline(starts, durations, slot_ends, ceilings, end_limit, *, max_drift=1.5,
+                   preferred=None, tolerance=1e-6):
+    """Where each utterance starts and how much it is sped up, decided for the
+    whole run of segments instead of one slot at a time.
 
-    concat_chain = "".join(f"[{lbl}]" for lbl in concat_labels)
-    filter_parts.append(
-        f"{concat_chain}concat=n={len(concat_labels)}:v=0:a=1[out]"
-    )
-    filter_complex = ";".join(filter_parts)
+    Each utterance starts at its source onset or right after the previous one,
+    whichever is later, and is sped up only as much as it needs for its own slot,
+    but at most `g`. The smallest `g` (up to each segment's ceiling) for which
+    every start stays within `max_drift` of the source and the last utterance
+    ends by `end_limit` wins. So a line that overruns borrows the pauses after
+    it, and the overrun is shared out before anything is sped up hard. The lip
+    sync follows the audio, so a start that drifts by a second only shifts the
+    speech against the speaker's gestures.
 
+    Returns (placements, speed factors), or None when nothing fits."""
+    preferred = settings.tts_max_speed if preferred is None else preferred
+    n = len(starts)
+    if n == 0:
+        return [], []
+
+    def layout(g):
+        placements, factors, cursor = [], [], None
+        for s, d, e, cap in zip(starts, durations, slot_ends, ceilings):
+            own = d / max(e - s, 1e-3)
+            f = min(cap, max(1.0, min(own, g)))
+            p = s if cursor is None else max(s, cursor)
+            if p - s > max_drift + 1e-9:
+                return None
+            placements.append(p)
+            factors.append(f)
+            cursor = p + d / f
+        if cursor > end_limit + tolerance:
+            return None
+        return placements, factors
+
+    top = max(ceilings)
+    if layout(top) is None:
+        return None
+    unhurried = layout(1.0)
+    if unhurried is not None:
+        return unhurried
+    # Prefer staying at or under the preferred speed when that fits.
+    low = 1.0
+    if layout(min(preferred, top)) is not None:
+        high = min(preferred, top)
+    else:
+        low, high = min(preferred, top), top
+    for _ in range(30):
+        mid = (low + high) / 2
+        if layout(mid) is None:
+            low = mid
+        else:
+            high = mid
+    return layout(high)
+
+
+def _assemble_timeline(seg_paths, transcript_segments, output_path):
+    """Place complete utterances at their original offsets, without overlap."""
+    if (
+        not seg_paths
+        or len(seg_paths) != len(transcript_segments)
+        or any(p is None for p in seg_paths)
+    ):
+        raise TTSError("all translated segments must have audio")
+    origin = float(transcript_segments[0]["start"])
+    filters = []
     cmd = ["ffmpeg", "-v", "error", "-y"]
-    for p in inputs:
-        cmd.extend(["-i", str(p)])
-    cmd.extend([
-        "-filter_complex", filter_complex,
-        "-map", "[out]",
-        str(output_path),
-    ])
-
-    proc = subprocess.run(cmd, capture_output=True, timeout=300)
-    if proc.returncode != 0:
-        raise TTSError(
-            f"ffmpeg assemble failed: {proc.stderr.decode(errors='replace')[-1200:]}"
+    for i, (path, segment) in enumerate(zip(seg_paths, transcript_segments)):
+        delay = round((float(segment["start"]) - origin) * 1000)
+        if delay < 0:
+            raise TTSError("segments must be in chronological order")
+        cmd.extend(["-i", str(path)])
+        filters.append(
+            f"[{i}:a]aresample=24000,aformat=channel_layouts=mono,adelay={delay}:all=1[a{i}]"
         )
+    labels = "".join(f"[a{i}]" for i in range(len(seg_paths)))
+    duration = float(transcript_segments[-1]["end"]) - origin
+    filters.append(
+        f"{labels}amix=inputs={len(seg_paths)}:normalize=0:duration=longest,"
+        f"apad=whole_dur={duration:.6f}[out]"
+    )
+    cmd.extend(["-filter_complex", ";".join(filters), "-map", "[out]", str(output_path)])
+    proc = subprocess.run(cmd, capture_output=True, timeout=300)
+    if proc.returncode:
+        raise TTSError(f"timeline assembly failed: {proc.stderr.decode(errors='replace')[-1000:]}")
 
 
 # --------------------------------------------------------------------------- #
@@ -1234,22 +1644,31 @@ def _assemble_timeline(
 
 
 def _xtts_to_file(
-    text: str, reference_audio: Path, language: str, output: Path,
+    text: str,
+    reference_audio: Path,
+    language: str,
+    output: Path,
+    voice: str | None = None,
+    speed: float | None = None,
 ) -> None:
     """Single XTTS call that writes to `output`."""
     tts = _get_xtts()
     tts.tts_to_file(
         text=text,
-        speaker_wav=str(reference_audio),
+        **({"speaker": voice} if voice else {"speaker_wav": str(reference_audio)}),
         language=language,
         file_path=str(output),
+        **({"speed": float(speed)} if speed else {}),
     )
     if not output.exists() or output.stat().st_size == 0:
         raise TTSError(f"XTTS produced no output at {output}")
 
 
 def _synthesize_whole(
-    text: str, reference_audio: Path, language: str, output_path: Path,
+    text: str,
+    reference_audio: Path,
+    language: str,
+    output_path: Path,
 ) -> None:
     """Legacy single-shot path. One XTTS call for the entire translation."""
     _xtts_to_file(text, reference_audio, language, output_path)
@@ -1259,58 +1678,36 @@ def _synthesize_whole(
 # Silence trimming
 # --------------------------------------------------------------------------- #
 
-_SILENCE_THRESHOLD_DB = -25.0   # XTTS background-noise floor sits around -30 dBFS
-_MIN_SILENCE_SECONDS = 0.10     # how long a quiet stretch needs to be to count
-_HEADROOM_SECONDS = 0.05        # pad on either side of the kept span
-_MIN_SPEECH_SECONDS = 0.30      # below this, assume detection failed and skip
-
-# Whisper-based tail trim. XTTS on short inputs tends to over-generate —
-# finishing the real translation and then continuing with hallucinated
-# phonemes / repeated syllables / mumbling at roughly speech level.
-# `silencedetect`-based trimming can't spot this because the tail IS
-# speech-energy; only a transcription can. We reuse the faster-whisper
-# singleton from the transcribe stage, align its word output against
-# the expected translation text, and cut after the last real word.
-_WHISPER_TRIM_HEADROOM = 0.08   # keep a little of the word's decay
-_WHISPER_TRIM_MIN_GAIN = 0.10   # don't bother if we'd save less than this
-
-# Confidence floor for the word-by-word alignment in
-# `_find_last_real_word_end`. Below this fraction-of-expected-tokens
-# matched, we treat the alignment as untrustworthy (almost certainly
-# the case for non-Latin-script targets like Hindi where Whisper's
-# tokenization disagrees with NLLB's translation tokenization). When
-# the floor isn't met we fall back to Whisper's VAD-based last-segment
-# end, then to no-trim, rather than cutting off real speech mid-word.
-_WHISPER_TRIM_MIN_MATCH_RATIO = 0.5
-
-# When the source video duration is known, refuse trims that cut the
-# audio below this fraction of source duration. The translation is a
-# *dub* — output should be roughly the same length as the source clip.
-# A trim that drops audio to 5% of source is almost always an
-# alignment failure, not a real "we discovered the speech ended early"
-# signal. Caught the Hindi case where the trim truncated 8 s of real
-# Hindi to 0.24 s on a 19 s source clip.
-_WHISPER_TRIM_MIN_RATIO_OF_SOURCE = 0.5
+_SILENCE_THRESHOLD_DB = -40.0  # retain quiet words; text alignment handles edge artifacts
+_MIN_SILENCE_SECONDS = 0.10  # how long a quiet stretch needs to be to count
+_HEADROOM_SECONDS = 0.10  # pad on either side of the kept span
+_MIN_SPEECH_SECONDS = 0.30  # below this, assume detection failed and skip
 
 
 def _trim_to_speech(audio_path: Path) -> None:
-    """Trim `audio_path` in place to the longest non-silent span.
+    """Trim `audio_path` in place to [first speech span, last speech span].
 
     XTTS tends to emit a short click at the start, a long pause, the actual
     speech, more silence, and a trailing blip. `silenceremove` can't handle
     that shape because the click is above any reasonable threshold.
 
     Instead: find silence boundaries via ffmpeg `silencedetect`, derive the
-    non-silent spans, pick the longest one (the real speech), and copy that
-    range into the original path via `ffmpeg -af atrim=...`.
+    non-silent spans and keep everything from the first span to the last.
+    Even short edge spans may contain a word and must be preserved.
+
+    This used to keep only the *longest* span. That silently deleted every
+    sentence but one whenever the synthesised text had sentence pauses
+    longer than the silence threshold — F5-TTS produced 4.5 s of audio for
+    nine sentences on the XE7740 before this was caught.
     """
     spans = _non_silent_spans(audio_path)
-    speech = [(s, e) for s, e in spans if (e - s) >= _MIN_SPEECH_SECONDS]
+    speech = [(s, e) for s, e in spans if e > s]  # Preserve short edge words too.
     if not speech:
         log.info("no speech span detected; leaving %s untouched", audio_path.name)
         return
 
-    start, end = max(speech, key=lambda se: se[1] - se[0])
+    start = min(s for s, _ in speech)
+    end = max(e for _, e in speech)
     total = _probe_duration(audio_path)
     start = max(0.0, start - _HEADROOM_SECONDS)
     end = min(total, end + _HEADROOM_SECONDS)
@@ -1318,8 +1715,50 @@ def _trim_to_speech(audio_path: Path) -> None:
     _ffmpeg_atrim(audio_path, audio_path, start, end)
     log.info(
         "trimmed %s: %.2fs -> %.2fs (kept %.2f-%.2f)",
-        audio_path.name, total, end - start, start, end,
+        audio_path.name,
+        total,
+        end - start,
+        start,
+        end,
     )
+
+
+def _compress_pauses(audio_path: Path, max_gap: float | None = None) -> float:
+    """Cap every pause inside `audio_path` at `max_gap` seconds, in place.
+
+    XTTS copies the reference speaker's rhythm and on 5 Oct 2026 produced
+    takes with 8-9 s of silence inside 17-26 s of audio (single gaps of 3-5 s)
+    for a sentence that takes 10 s to say. Fitting such a take to its slot
+    would have to speed the words up to pay for the silence, so the pauses are
+    shortened instead; the words are untouched. Returns the seconds removed."""
+    import numpy as np
+    import soundfile as sf
+
+    max_gap = settings.tts_max_pause_seconds if max_gap is None else max_gap
+    if max_gap <= 0:
+        return 0.0
+    spans = _non_silent_spans(audio_path)
+    if len(spans) < 2:
+        return 0.0
+    data, rate = sf.read(str(audio_path), dtype="float32", always_2d=False)
+    if data.ndim > 1:
+        data = data.mean(axis=1)
+    keep = np.ones(len(data), dtype=bool)
+    removed = 0.0
+    for (_, end), (start, _) in zip(spans, spans[1:]):
+        gap = start - end
+        if gap <= max_gap:
+            continue
+        cut0 = int((end + max_gap / 2) * rate)
+        cut1 = int((start - max_gap / 2) * rate)
+        if cut1 > cut0:
+            keep[cut0:cut1] = False
+            removed += (cut1 - cut0) / rate
+    if removed <= 0.0:
+        return 0.0
+    sf.write(str(audio_path), data[keep], rate)
+    log.info("compressed pauses in %s: removed %.2fs (gaps capped at %.2fs)", audio_path.name, removed, max_gap)
+    return removed
 
 
 def _ffmpeg_atrim(src: Path, dst: Path, start: float, end: float) -> None:
@@ -1329,9 +1768,14 @@ def _ffmpeg_atrim(src: Path, dst: Path, start: float, end: float) -> None:
     # refuses because .trim isn't a known format.
     tmp = dst.parent / f"{dst.stem}.trim{dst.suffix}"
     cmd = [
-        "ffmpeg", "-v", "error", "-y",
-        "-i", str(src),
-        "-af", f"atrim=start={start:.3f}:end={end:.3f},asetpts=PTS-STARTPTS",
+        "ffmpeg",
+        "-v",
+        "error",
+        "-y",
+        "-i",
+        str(src),
+        "-af",
+        f"atrim=start={start:.3f}:end={end:.3f},asetpts=PTS-STARTPTS",
         str(tmp),
     ]
     proc = subprocess.run(cmd, capture_output=True, timeout=60)
@@ -1342,9 +1786,16 @@ def _ffmpeg_atrim(src: Path, dst: Path, start: float, end: float) -> None:
 
 def _probe_duration(path: Path) -> float:
     out = subprocess.check_output(
-        ["ffprobe", "-v", "error",
-         "-show_entries", "format=duration",
-         "-of", "default=nw=1:nk=1", str(path)],
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=nw=1:nk=1",
+            str(path),
+        ],
         timeout=30,
     )
     return float(out.decode().strip())
@@ -1354,10 +1805,20 @@ def _non_silent_spans(path: Path) -> list[tuple[float, float]]:
     """Return [(start, end), ...] of non-silent spans inside `path`."""
     duration = _probe_duration(path)
     proc = subprocess.run(
-        ["ffmpeg", "-hide_banner", "-i", str(path),
-         "-af", f"silencedetect=noise={_SILENCE_THRESHOLD_DB}dB:duration={_MIN_SILENCE_SECONDS}",
-         "-f", "null", "-"],
-        capture_output=True, text=True, timeout=60,
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-i",
+            str(path),
+            "-af",
+            f"silencedetect=noise={_SILENCE_THRESHOLD_DB}dB:duration={_MIN_SILENCE_SECONDS}",
+            "-f",
+            "null",
+            "-",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
     )
     silences: list[tuple[float, float]] = []
     start: float | None = None
@@ -1369,18 +1830,9 @@ def _non_silent_spans(path: Path) -> list[tuple[float, float]]:
             silences.append((start, float(end_token)))
             start = None
 
-    # Merge silences < 150ms apart so brief speech bumps don't create
-    # noise-sized "speech" spans between two real pauses.
-    merged: list[tuple[float, float]] = []
-    for s, e in silences:
-        if merged and s - merged[-1][1] < 0.15:
-            merged[-1] = (merged[-1][0], e)
-        else:
-            merged.append((s, e))
-
     spans: list[tuple[float, float]] = []
     cursor = 0.0
-    for s, e in merged:
+    for s, e in silences:
         if s > cursor:
             spans.append((cursor, s))
         cursor = e
@@ -1395,7 +1847,8 @@ def _normalize_word(s: str) -> str:
 
 
 def _find_last_real_word_end(
-    expected_text: str, transcribed_words: list[tuple[float, str]],
+    expected_text: str,
+    transcribed_words: list[tuple[float, str]],
 ) -> tuple[float | None, int, int]:
     """Walk Whisper's transcribed word stream against the expected
     translation text. Return the `end` timestamp of the last word we
@@ -1432,7 +1885,7 @@ def _find_last_real_word_end(
     if not expected_tokens or not transcribed_words:
         return None, 0, len(expected_tokens)
 
-    ei = 0                      # index into expected
+    ei = 0  # index into expected
     matched_count = 0
     consecutive_misses = 0
     last_matched_end: float | None = None
@@ -1466,232 +1919,165 @@ def _find_last_real_word_end(
     return last_matched_end, matched_count, len(expected_tokens)
 
 
+_PERCENT_WORDS = {"es": "por ciento", "pt": "por cento", "it": "percento", "fr": "pour cent",
+                  "de": "prozent", "en": "percent", "nl": "procent", "pl": "procent"}
+
+
+def _spell_numbers(text: str, language: str | None) -> str:
+    """Digits and % as words in `language`, so "88" in the text matches a spoken
+    "ochenta y ocho" that the recognizer may write either way."""
+    import re
+
+    lang = (language or "").lower()
+    text = text.replace("%", f" {_PERCENT_WORDS[lang]} " if lang in _PERCENT_WORDS else " ")
+    try:
+        from num2words import num2words
+    except ImportError:
+        return text
+
+    def spell(match):
+        raw = match.group(0)
+        try:
+            value = float(raw.replace(",", ".")) if re.search(r"[.,]\d", raw) else int(raw)
+            return f" {num2words(value, lang=lang or 'en')} "
+        except Exception:
+            return raw
+
+    return re.sub(r"\d+(?:[.,]\d+)?", spell, text)
+
+
+def _near_match(expected: str, heard: str, threshold: float = 0.92) -> bool | None:
+    """A recognition that differs only slightly from the text (an accent, a
+    split compound, a number read differently) is ambiguous, not different
+    speech: keep the take whole (None) instead of rejecting it (False)."""
+    from difflib import SequenceMatcher
+
+    if not expected or not heard:
+        return False
+    return None if SequenceMatcher(None, expected, heard).ratio() >= threshold else False
+
+
 def _trim_tail_via_whisper(
     audio_path: Path,
     target_language: str,
     expected_text: str,
     source_duration_seconds: float | None = None,
-) -> None:
-    """Trim audio past the last real translated word — tiered approach.
+) -> bool | None:
+    """Trim only after complete, confident text alignment.
 
-    XTTS on short utterances tends to over-generate, producing
-    hallucinated phonemes / repeated syllables / mumbling past the
-    actual translation. `silencedetect` can't catch this because the
-    tail IS speech energy. Whisper transcription can — for languages
-    where its tokenization aligns with our translator's.
-
-    Three tiers, falling back when each fails. None of them ever
-    produces a trim_to value we can't justify:
-
-    Tier 1 (preferred) — sequential word alignment of Whisper's output
-        against `expected_text`. Confidence = matched / expected. If
-        confidence ≥ `_WHISPER_TRIM_MIN_MATCH_RATIO` (default 0.5),
-        accept the timestamp of the last matched word. Strong on
-        Spanish/English/etc.
-
-    Tier 2 (fallback) — Whisper's last VAD-detected speech-segment
-        end. Doesn't depend on word identity, so works for any
-        language. Misses the case where hallucinated speech is
-        contiguous with real speech (no VAD-level silence between
-        them), but combined with Tier 3 still produces safe behavior.
-
-    Tier 3 (sanity floor) — if `source_duration_seconds` is known,
-        refuse trims that cut below `source × _WHISPER_TRIM_MIN_RATIO_OF_SOURCE`
-        (default 0.5). The pipeline is dubbing — output should be
-        roughly the same duration as the source clip. A trim to 5%
-        is almost always an alignment failure (the Hindi case that
-        motivated this PR).
-
-    If all tiers fail/refuse, no trim. `_hard_truncate(source_duration)`
-    downstream is the structural backstop against `loop_video`.
+    True: all expected text recognized; False: confidently recognized different
+    text; None: unavailable/ambiguous, leave audio intact. No duration fallback.
+    Whitespace/punctuation differences are ignored, but words and repetitions
+    must match exactly. This intentionally declines fuzzy ASR matches.
     """
-    if not expected_text.strip():
-        return
+    import unicodedata
 
+    def normalize(text):
+        text = _spell_numbers(unicodedata.normalize("NFKC", text), target_language)
+        return "".join(c for c in text.casefold() if c.isalnum())
+
+    expected = normalize(expected_text)
+    if not expected:
+        return None
     try:
         from .transcribe import _get_model
-        model = _get_model()
-    except Exception as e:
-        log.warning("whisper-trim: model load failed (%s); skipping", e)
-        return
 
-    try:
-        segments_iter, _info = model.transcribe(
+        segments, _ = _get_model().transcribe(
             str(audio_path),
             language=target_language or None,
-            beam_size=1,   # speed > accuracy for a tail-find job
+            beam_size=1,
             word_timestamps=True,
-            vad_filter=True,
-            # 300 ms splits real speech from hallucinated tail more
-            # reliably than the 500 ms we use on source transcription.
-            vad_parameters={"min_silence_duration_ms": 300},
-            # Seed Whisper's decoder with the expected text — it biases
-            # the model toward transcribing what we actually generated
-            # and makes hallucinated tails easier to distinguish.
-            initial_prompt=expected_text,
+            vad_filter=False,
+            condition_on_previous_text=False,
         )
-        # Materialize segments once; we need both word stream (Tier 1)
-        # and segment-end (Tier 2) from the same iteration.
-        segments = list(segments_iter)
-        transcribed: list[tuple[float, str]] = []
-        for seg in segments:
-            for w in getattr(seg, "words", None) or []:
-                if w.end is None:
-                    continue
-                transcribed.append((float(w.end), str(w.word)))
-    except Exception as e:
-        log.warning("whisper-trim: transcribe failed (%s); skipping", e)
-        return
-
-    if not transcribed:
-        log.info("whisper-trim: no words detected; skipping")
-        return
-
-    # ---- Tier 1: word-by-word alignment with confidence floor -------- #
-    word_end, matched, expected_n = _find_last_real_word_end(
-        expected_text, transcribed,
-    )
-    confidence = matched / max(1, expected_n)
-    tier1_end: float | None = None
-    if word_end is not None and confidence >= _WHISPER_TRIM_MIN_MATCH_RATIO:
-        tier1_end = word_end
-
-    # ---- Tier 2: VAD-based last-segment end (any language) ----------- #
-    tier2_end: float | None = None
-    valid_seg_ends = [
-        float(s.end) for s in segments
-        if getattr(s, "end", None) is not None
-    ]
-    if valid_seg_ends:
-        tier2_end = max(valid_seg_ends)
-
-    # Pick the latest available endpoint (most generous; a smaller
-    # candidate would risk cutting real speech).
-    candidates = [t for t in (tier1_end, tier2_end) if t is not None]
-    if not candidates:
-        log.info(
-            "whisper-trim: no usable endpoint (alignment confidence=%.2f, "
-            "expected=%d, no VAD segments); skipping",
-            confidence, expected_n,
-        )
-        return
-    chosen_end = max(candidates)
-    chosen_tier = "word-align" if chosen_end == tier1_end else "vad-segment"
-
-    current = _probe_duration(audio_path)
-    trim_to = min(current, chosen_end + _WHISPER_TRIM_HEADROOM)
-
-    # ---- Tier 3: source-duration sanity floor ------------------------ #
-    if source_duration_seconds is not None and source_duration_seconds > 0:
-        floor = source_duration_seconds * _WHISPER_TRIM_MIN_RATIO_OF_SOURCE
-        if trim_to < floor:
-            log.warning(
-                "whisper-trim %s: would cut %.2fs -> %.2fs but source is "
-                "%.2fs (floor %.2fs at ratio %.2f). Likely alignment failure "
-                "(tier=%s, word-align confidence=%.2f); skipping. "
-                "Hard-truncate will still cap at source duration.",
-                audio_path.name, current, trim_to,
-                source_duration_seconds, floor,
-                _WHISPER_TRIM_MIN_RATIO_OF_SOURCE,
-                chosen_tier, confidence,
-            )
-            return
-
-    if current - trim_to < _WHISPER_TRIM_MIN_GAIN:
-        log.info(
-            "whisper-trim %s: chosen end %.2fs already close to current "
-            "%.2fs (tier=%s, confidence=%.2f); skipping",
-            audio_path.name, chosen_end, current, chosen_tier, confidence,
-        )
-        return
-
-    _ffmpeg_atrim(audio_path, audio_path, 0.0, trim_to)
-    log.info(
-        "whisper-trim %s: %.2fs -> %.2fs (tier=%s, end=%.2fs, "
-        "confidence=%.2f, cut %.2fs of tail)",
-        audio_path.name, current, trim_to, chosen_tier,
-        chosen_end, confidence, current - trim_to,
-    )
+        words = [
+            w for seg in segments for w in (getattr(seg, "words", None) or []) if normalize(w.word)
+        ]
+    except Exception as exc:
+        log.warning("speech validation unavailable; retaining full audio: %s", exc)
+        return None
+    if not words or any(
+        w.start is None or w.end is None or getattr(w, "probability", 0) < 0.8 for w in words
+    ):
+        return None
+    matched = ""
+    last = None
+    for i, word in enumerate(words):
+        matched += normalize(word.word)
+        if not expected.startswith(matched):
+            return _near_match(expected, "".join(normalize(w.word) for w in words))
+        if matched == expected:
+            last = i
+            break
+    if last is None:
+        return _near_match(expected, matched)
+    total = _probe_duration(audio_path)
+    start, end = 0.0, total
+    # Only remove a leading isolated click when every expected word is accounted
+    # for after it; a short recognized first word is always retained.
+    first = float(words[0].start)
+    spans = _non_silent_spans(audio_path)
+    if spans:
+        # Recognized quiet edge words can fall below the energy threshold.
+        start = max(0.0, min(first, spans[0][0]) - 0.08)
+        end = min(total, max(float(words[last].end), spans[-1][1]) + 0.08)
+    if spans and 0 < spans[0][1] - spans[0][0] <= 0.08 and first - spans[0][1] >= 0.2:
+        start = max(0.0, first - 0.08)
+    if last + 1 < len(words):
+        # Timestamp overlap is ambiguous; keep it rather than slicing a word.
+        boundary = float(words[last].end)
+        if float(words[last + 1].start) >= boundary + 0.08:
+            end = min(total, boundary + 0.08)
+        else:
+            return False  # resynthesize rather than cutting overlapping words
+    if start > 0 or total - end >= 0.1:
+        _ffmpeg_atrim(audio_path, audio_path, start, end)
+    return True
 
 
-def _hard_truncate(audio_path: Path, max_duration: float) -> None:
-    """Last-resort truncate `audio_path` to `max_duration` seconds.
-
-    Used as a safety net when `_trim_to_speech` + `_trim_tail_via_whisper`
-    + `_maybe_time_stretch` still leave the audio longer than the source
-    video. Without this, LatentSync's `loop_video` reverses frames to
-    cover the gap and introduces a visible jitter spike.
-
-    A hard cut at max_duration risks cropping the very last syllable —
-    worse than ideal but strictly better than a reversed-frame boom at
-    the end of every generated clip.
-    """
-    current = _probe_duration(audio_path)
-    if current <= max_duration + 0.02:
-        return
-    log.warning(
-        "hard-truncating %s: %.2fs -> %.2fs (fits source; prevents loop_video)",
-        audio_path.name, current, max_duration,
-    )
-    _ffmpeg_atrim(audio_path, audio_path, 0.0, max_duration)
-
-
-# --------------------------------------------------------------------------- #
-# Time-stretch (rubberband)
-# --------------------------------------------------------------------------- #
-
-# Don't stretch beyond this — below ~0.85x speed real-time the formants
-# start bunching up and the result sounds "fast-chipmunky". The user
-# experience is worse than freeze-padding the video, which we fall back to.
-_MIN_TIME_RATIO = 0.85
-
-
-def _maybe_time_stretch(audio_path: Path, target_duration: float) -> None:
-    """Run rubberband to shorten `audio_path` to ~`target_duration` seconds.
+def _maybe_time_stretch(
+    audio_path: Path, target_duration: float, max_speed: float | None = None
+) -> None:
+    """Speed `audio_path` up to ~`target_duration` seconds with ffmpeg's atempo.
 
     No-op when the current duration is already within the target or when
-    the required ratio is too aggressive. Requires `rubberband-cli` on
-    PATH — which the backend Docker image installs via apt.
+    the required ratio is too aggressive. atempo replaced rubberband on
+    8 Oct 2026: on the same XTTS line rubberband (R2 --formant, and R3)
+    scored PESQ 1.8 at 1.1x and 1.4-1.5 at 1.25x, heard as static and
+    scratchiness, where atempo scored 3.9 and 3.6.
     """
-    import shutil as _shutil
-
-    if _shutil.which("rubberband") is None:
-        log.info("rubberband-cli not installed; skipping time-stretch")
-        return
-
     current = _probe_duration(audio_path)
     if current <= target_duration + 0.05:
         # Already at or under the target — nothing to do.
         return
 
+    max_speed = max_speed or settings.tts_max_speed
     ratio = target_duration / current
-    if ratio < _MIN_TIME_RATIO:
+    if ratio < 1.0 / max_speed:
         log.info(
-            "time-stretch would need %.2fx (< min %.2fx); will let mux freeze-pad instead",
-            ratio, _MIN_TIME_RATIO,
+            "time-stretch would need %.2fx (< min %.2fx); retaining complete audio for caller to handle",
+            ratio,
+            1.0 / max_speed,
         )
         return
 
     tmp = audio_path.parent / f"{audio_path.stem}.stretch{audio_path.suffix}"
-    cmd = [
-        "rubberband",
-        "--time", f"{ratio:.4f}",
-        # `--formant` preserves formant frequencies during the stretch so
-        # the speaker still sounds like themselves.
-        "--formant",
-        str(audio_path),
-        str(tmp),
-    ]
-    proc = subprocess.run(cmd, capture_output=True, timeout=120)
+    proc = subprocess.run(
+        ["ffmpeg", "-v", "error", "-y", "-i", str(audio_path),
+         "-filter:a", f"atempo={1.0 / ratio:.4f}", str(tmp)],
+        capture_output=True, timeout=120,
+    )
     if proc.returncode != 0:
         raise RuntimeError(
-            f"rubberband exit {proc.returncode}: "
-            f"{proc.stderr.decode(errors='replace')[-500:]}"
+            f"atempo exit {proc.returncode}: {proc.stderr.decode(errors='replace')[-500:]}"
         )
     tmp.replace(audio_path)
     log.info(
         "time-stretched %s: %.2fs -> %.2fs (ratio %.3f)",
-        audio_path.name, current, target_duration, ratio,
+        audio_path.name,
+        current,
+        target_duration,
+        ratio,
     )
 
 
@@ -1703,7 +2089,7 @@ def _maybe_time_stretch(audio_path: Path, target_duration: float) -> None:
 def _prepend_silence(audio_path: Path, seconds: float) -> None:
     """Prepend `seconds` of silence to `audio_path` (in place) via ffmpeg.
 
-    Matches sample rate and channel layout of the input. The result is an
+    Keeps the input's sample rate, channels and 16-bit depth. The result is an
     audio file whose first spoken frame sits at `seconds` — aligning the
     TTS with the source clip's pre-speech silence.
     """
@@ -1711,31 +2097,42 @@ def _prepend_silence(audio_path: Path, seconds: float) -> None:
         return
 
     probe = subprocess.run(
-        ["ffprobe", "-v", "error",
-         "-select_streams", "a:0",
-         "-show_entries", "stream=sample_rate,channels",
-         "-of", "default=nw=1",
-         str(audio_path)],
-        capture_output=True, timeout=30,
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "a:0",
+            "-show_entries",
+            "stream=sample_rate",
+            "-of",
+            "default=nw=1",
+            str(audio_path),
+        ],
+        capture_output=True,
+        timeout=30,
     )
-    sr, ch = 24000, 1
+    sr = 24000
     for line in probe.stdout.decode(errors="replace").splitlines():
-        if "=" in line:
-            k, v = line.split("=", 1)
-            if k == "sample_rate":
-                sr = int(v)
-            elif k == "channels":
-                ch = int(v)
+        if line.startswith("sample_rate="):
+            sr = int(line.split("=", 1)[1])
 
     tmp = audio_path.parent / f"{audio_path.stem}.pad{audio_path.suffix}"
-    channel_layout = "mono" if ch == 1 else "stereo"
+    # adelay on the speech itself. This used to concat an anullsrc lead in
+    # front of it, and ffmpeg negotiated that graph to unsigned 8-bit: every
+    # span with a pause before its first word was quantized to 256 levels,
+    # heard as static (PESQ 3.86 -> 3.26, found 8 Oct 2026).
     cmd = [
-        "ffmpeg", "-v", "error", "-y",
-        "-f", "lavfi", "-i", f"anullsrc=r={sr}:cl={channel_layout}",
-        "-i", str(audio_path),
-        "-filter_complex",
-        f"[0:a]atrim=duration={seconds:.3f}[lead];[lead][1:a]concat=n=2:v=0:a=1[out]",
-        "-map", "[out]",
+        "ffmpeg",
+        "-v",
+        "error",
+        "-y",
+        "-i",
+        str(audio_path),
+        "-af",
+        f"adelay=delays={round(seconds * sr)}S:all=1",
+        "-c:a",
+        "pcm_s16le",
         str(tmp),
     ]
     proc = subprocess.run(cmd, capture_output=True, timeout=120)
@@ -1756,26 +2153,27 @@ def _prepend_silence(audio_path: Path, seconds: float) -> None:
 # this short.
 # --------------------------------------------------------------------------- #
 
-_LOUDNORM_TARGET_I = -16.0       # LUFS integrated
-_LOUDNORM_TARGET_TP = -1.5       # dBTP true-peak ceiling
-_LOUDNORM_TARGET_LRA = 11.0      # loudness range
+_LOUDNORM_TARGET_I = -16.0  # LUFS integrated
+_LOUDNORM_TARGET_TP = -1.5  # dBTP true-peak ceiling
+_LOUDNORM_TARGET_LRA = 11.0  # loudness range
 
 
 def _loudnorm(audio_path: Path) -> None:
     """Apply EBU R128 loudnorm to `audio_path` in place."""
     tmp = audio_path.parent / f"{audio_path.stem}.lnorm{audio_path.suffix}"
     cmd = [
-        "ffmpeg", "-v", "error", "-y",
-        "-i", str(audio_path),
+        "ffmpeg",
+        "-v",
+        "error",
+        "-y",
+        "-i",
+        str(audio_path),
         "-af",
-        f"loudnorm=I={_LOUDNORM_TARGET_I}:TP={_LOUDNORM_TARGET_TP}:"
-        f"LRA={_LOUDNORM_TARGET_LRA}",
+        f"loudnorm=I={_LOUDNORM_TARGET_I}:TP={_LOUDNORM_TARGET_TP}:LRA={_LOUDNORM_TARGET_LRA}",
         str(tmp),
     ]
     proc = subprocess.run(cmd, capture_output=True, timeout=120)
     if proc.returncode != 0:
-        raise RuntimeError(
-            f"ffmpeg loudnorm failed: {proc.stderr.decode(errors='replace')[-500:]}"
-        )
+        raise RuntimeError(f"ffmpeg loudnorm failed: {proc.stderr.decode(errors='replace')[-500:]}")
     tmp.replace(audio_path)
     log.info("loudness-normalized %s to %.1f LUFS", audio_path.name, _LOUDNORM_TARGET_I)

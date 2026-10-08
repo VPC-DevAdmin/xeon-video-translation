@@ -14,6 +14,9 @@ Each job gets a directory: {JOB_ARTIFACTS_DIR}/{job_id}/
 from __future__ import annotations
 
 import json
+import re
+import os
+import tempfile
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,9 +31,9 @@ def new_job_id() -> str:
 
 
 def job_dir(job_id: str) -> Path:
-    d = settings.job_artifacts_dir / job_id
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+    if not re.fullmatch(r"[a-f0-9]{32}", job_id):
+        raise ValueError("invalid job id")
+    return settings.job_artifacts_dir / job_id
 
 
 def job_artifact_path(job_id: str, name: str) -> Path:
@@ -42,15 +45,33 @@ def job_artifact_path(job_id: str, name: str) -> Path:
 
 def write_meta(job_id: str, meta: dict[str, Any]) -> None:
     path = job_dir(job_id) / "meta.json"
+    from .state_store import save
+    save(job_id, meta)
     payload = json.dumps(meta, indent=2, default=_json_default)
-    path.write_text(payload, encoding="utf-8")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=".meta-")
+    try:
+        with os.fdopen(fd, "w") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
 
 
 def read_meta(job_id: str) -> dict[str, Any] | None:
+    job_dir(job_id)  # validate before querying the registry
+    from .state_store import read, save
+    found = read(job_id)
+    if found is not None:
+        return found
     path = job_dir(job_id) / "meta.json"
     if not path.exists():
         return None
-    return json.loads(path.read_text(encoding="utf-8"))
+    meta = json.loads(path.read_text(encoding="utf-8"))
+    save(job_id, meta)
+    return meta
 
 
 def now_iso() -> str:

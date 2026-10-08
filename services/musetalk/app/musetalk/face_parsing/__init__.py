@@ -73,48 +73,107 @@ class FaceParsing:
     def __call__(self, image, size: tuple[int, int] = (512, 512), mode: str = "raw") -> Image.Image:
         if isinstance(image, (str, Path)):
             image = Image.open(str(image))
-        width, height = image.size
         with torch.no_grad():
             resized = image.resize(size, Image.BILINEAR)
             img = self.preprocess(resized).unsqueeze(0).to(self.device)
             out = self.net(img)[0]
-            parsing = out.squeeze(0).cpu().numpy().argmax(0)
+            # argmax on the device: moving the (19, 512, 512) logits to the
+            # host and reducing in numpy was ~100 ms/frame on the GPU box.
+            parsing = out.squeeze(0).argmax(0).to(torch.uint8).cpu().numpy()
+        return self._postprocess(parsing, mode)
 
-            if mode == "neck":
-                parsing[np.isin(parsing, [1, 11, 12, 13, 14])] = 255
-                parsing[parsing != 255] = 0
-            elif mode == "jaw":
-                face_region = (np.isin(parsing, [1]) * 255).astype(np.uint8)
-                original_dilated = cv2.dilate(face_region, self.kernel, iterations=1)
-                eroded = cv2.erode(original_dilated, self.cheek_kernel, iterations=2)
-                face_region = cv2.bitwise_and(eroded, self.cheek_mask)
-                face_region = cv2.bitwise_or(
-                    face_region, cv2.bitwise_and(original_dilated, ~self.cheek_mask)
-                )
-                parsing[(face_region == 255) & (~np.isin(parsing, [10]))] = 255
-                parsing[np.isin(parsing, [11, 12, 13])] = 255
-                parsing[parsing != 255] = 0
-            elif mode == "mouth":
-                # Tightest option: only upper lip, lower lip, and mouth/teeth.
-                # Intentionally excludes any skin (class 1) so stubble around
-                # the mouth survives.
-                #
-                # The naïve version of this mask produces a "ghost mouth" at
-                # composite time: the downstream Gaussian feather has a
-                # kernel wider than the mask itself, so even the center of
-                # the lips gets blended at ~50% alpha with the original.
-                # Dilating by ~7 px here gives the mask an opaque core large
-                # enough that a modest feather doesn't erode the center.
-                # The dilated ring bleeds slightly into the skin immediately
-                # surrounding the lips — acceptable for the ghost fix; the
-                # bulk of the beard/cheek stubble is still outside this.
-                mask = (np.isin(parsing, [11, 12, 13]) * 255).astype(np.uint8)
-                dilate_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
-                mask = cv2.dilate(mask, dilate_kernel, iterations=1)
-                parsing[:] = 0
-                parsing[mask == 255] = 255
-            else:
-                parsing[np.isin(parsing, [1, 11, 12, 13])] = 255
-                parsing[parsing != 255] = 0
+    def parse_batch(
+        self,
+        images: list[Image.Image],
+        mode: str = "raw",
+        size: tuple[int, int] = (512, 512),
+        batch_size: int = 32,
+    ) -> list[Image.Image]:
+        """`__call__` for many crops at once: one BiSeNet forward per
+        `batch_size` images, argmax on the device, then the per-mode mask
+        post-processing on the host. ~5-10x faster per frame than the
+        single-image path on the GPU box, where the per-call overhead
+        dominated a 512x512 network.
+        """
+        masks: list[Image.Image] = []
+        with torch.no_grad():
+            for start in range(0, len(images), batch_size):
+                chunk = images[start:start + batch_size]
+                batch = torch.stack([
+                    self.preprocess(im.resize(size, Image.BILINEAR)) for im in chunk
+                ]).to(self.device)
+                out = self.net(batch)[0]  # (B, 19, H, W)
+                parsing = out.argmax(1).to(torch.uint8).cpu().numpy()  # (B, H, W)
+                for p in parsing:
+                    masks.append(self._postprocess(p, mode))
+        return masks
+
+    def parse_batch_np(
+        self,
+        crops_rgb: list[np.ndarray],
+        mode: str = "raw",
+        size: tuple[int, int] = (512, 512),
+        batch_size: int = 32,
+    ) -> list[np.ndarray]:
+        """`parse_batch` for numpy RGB crops, returning uint8 0/255 masks.
+
+        Resizing uses cv2 and normalisation happens on the device after a
+        single uint8 upload per batch, so the host does no per-image float
+        work. This is the path `inference.py` uses.
+        """
+        mean = torch.tensor([0.485, 0.456, 0.406], device=self.device).view(1, 3, 1, 1)
+        std = torch.tensor([0.229, 0.224, 0.225], device=self.device).view(1, 3, 1, 1)
+        masks: list[np.ndarray] = []
+        with torch.no_grad():
+            for start in range(0, len(crops_rgb), batch_size):
+                chunk = [cv2.resize(c, size, interpolation=cv2.INTER_LINEAR) for c in crops_rgb[start:start + batch_size]]
+                x = torch.from_numpy(np.stack(chunk)).to(self.device)  # (B,H,W,3) uint8
+                x = x.permute(0, 3, 1, 2).float().div_(255.0)
+                x = (x - mean) / std
+                out = self.net(x)[0]
+                parsing = out.argmax(1).to(torch.uint8).cpu().numpy()
+                for p in parsing:
+                    masks.append(np.asarray(self._postprocess(p, mode), dtype=np.uint8))
+        return masks
+
+    def _postprocess(self, parsing: np.ndarray, mode: str) -> Image.Image:
+        """Turn a (H, W) class map into the 0/255 mask for `mode`."""
+        parsing = parsing.copy()
+        if mode == "neck":
+            parsing[np.isin(parsing, [1, 11, 12, 13, 14])] = 255
+            parsing[parsing != 255] = 0
+        elif mode == "jaw":
+            face_region = (np.isin(parsing, [1]) * 255).astype(np.uint8)
+            original_dilated = cv2.dilate(face_region, self.kernel, iterations=1)
+            eroded = cv2.erode(original_dilated, self.cheek_kernel, iterations=2)
+            face_region = cv2.bitwise_and(eroded, self.cheek_mask)
+            face_region = cv2.bitwise_or(
+                face_region, cv2.bitwise_and(original_dilated, ~self.cheek_mask)
+            )
+            parsing[(face_region == 255) & (~np.isin(parsing, [10]))] = 255
+            parsing[np.isin(parsing, [11, 12, 13])] = 255
+            parsing[parsing != 255] = 0
+        elif mode == "mouth":
+            # Tightest option: only upper lip, lower lip, and mouth/teeth.
+            # Intentionally excludes any skin (class 1) so stubble around
+            # the mouth survives.
+            #
+            # The naïve version of this mask produces a "ghost mouth" at
+            # composite time: the downstream Gaussian feather has a
+            # kernel wider than the mask itself, so even the center of
+            # the lips gets blended at ~50% alpha with the original.
+            # Dilating by ~7 px here gives the mask an opaque core large
+            # enough that a modest feather doesn't erode the center.
+            # The dilated ring bleeds slightly into the skin immediately
+            # surrounding the lips — acceptable for the ghost fix; the
+            # bulk of the beard/cheek stubble is still outside this.
+            mask = (np.isin(parsing, [11, 12, 13]) * 255).astype(np.uint8)
+            dilate_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
+            mask = cv2.dilate(mask, dilate_kernel, iterations=1)
+            parsing[:] = 0
+            parsing[mask == 255] = 255
+        else:
+            parsing[np.isin(parsing, [1, 11, 12, 13])] = 255
+            parsing[parsing != 255] = 0
 
         return Image.fromarray(parsing.astype(np.uint8))

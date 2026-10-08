@@ -40,10 +40,23 @@ dependencies = [
   "scipy>=1.11",
   "numpy<2",
   "opencv-python-headless>=4.9",
-  "insightface>=0.7.3",
-  "onnxruntime>=1.17,<2.0",
+  # Pinned: insightface 2.x pulls CPU onnxruntime as a hard dep, which
+  # shadows onnxruntime-gpu in the GPU image. 0.7.3 is what LatentSync
+  # pins too.
+  "insightface==0.7.3",
   "imageio[ffmpeg]>=2.33",
 
+  # Google Drive fetch for the BiSeNet face-parse weights. The weights don't
+  # have an official HF mirror, unfortunately; see docs/lipsync.md.
+  "gdown>=5.1",
+]
+
+# The ONNX runtime and the CPU accelerator are per-target extras. The
+# Dockerfile installs `.[cpu]`, Dockerfile.gpu installs `.[gpu]`. Installing
+# both onnxruntime wheels into one env is undefined, so never mix them.
+[project.optional-dependencies]
+cpu = [
+  "onnxruntime>=1.17,<2.0",
   # Intel Extension for PyTorch. Must track the torch major.minor. On
   # Xeon with AMX (Sapphire Rapids and newer) gives a meaningful speedup
   # to Whisper encoder, VAE, and the MuseTalk UNet via optimized conv/
@@ -51,10 +64,13 @@ dependencies = [
   "intel-extension-for-pytorch>=2.6,<2.7",
   # Intel's OpenMP runtime, preferred over libgomp for math-heavy loops.
   "intel-openmp>=2024.0",
-
-  # Google Drive fetch for the BiSeNet face-parse weights. The weights don't
-  # have an official HF mirror, unfortunately; see docs/lipsync.md.
-  "gdown>=5.1",
+]
+gpu = [
+  # CUDA 12 build; gives insightface's SCRFD the CUDAExecutionProvider.
+  # <1.23: later wheels link CUDA 13 (libcublasLt.so.13) and the CUDA
+  # provider silently fails to load in a CUDA 12.8 image, so detection
+  # falls back to CPU (~0.9 s/frame on the XE7740).
+  "onnxruntime-gpu>=1.19,<1.23",
 ]
 
 [build-system]

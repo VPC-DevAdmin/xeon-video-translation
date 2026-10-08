@@ -1,0 +1,61 @@
+# LatentSync lipsync microservice — CUDA image (GPU track, docs/gpu/README.md).
+#
+# Base is the official PyTorch runtime image: torch 2.7 cu128 (Blackwell
+# needs >= 2.7) preinstalled on Python 3.11 in a conda env. Chosen over a
+# bare CUDA base because this service's pins (mediapipe 0.10.11, decord
+# 0.6.0, kornia 0.8.0) are known-good on 3.11 and untested on 3.12.
+#
+# Differences from the CPU Dockerfile: no IPEX, no triton pin (torch
+# cu128 brings the triton it was built against), no tcmalloc / Intel
+# OpenMP preloads, `.[gpu]` extra (onnxruntime-gpu) instead of `.[cpu]`.
+FROM pytorch/pytorch:2.7.1-cuda12.8-cudnn9-runtime AS base
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1 \
+    DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ffmpeg \
+      ca-certificates \
+      curl \
+      git \
+      build-essential \
+      libgl1 \
+      libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY constraints-gpu.txt /app/constraints-gpu.txt
+ENV PIP_CONSTRAINT=/app/constraints-gpu.txt
+
+# setuptools 81 dropped pkg_resources; insightface + onnx still import it.
+# torchvision must match the preinstalled torch 2.7.1.
+RUN pip install --upgrade pip wheel \
+    && pip install "setuptools>=68,<81" \
+    && pip install --index-url https://download.pytorch.org/whl/cu128 "torchvision==0.22.1"
+
+COPY pyproject.toml ./
+# Transitive deps drag in opencv-python and opencv-contrib-python next to the
+# headless wheel; three copies of cv2/ and their bundled codecs overwrite each
+# other in site-packages. Keep exactly one.
+RUN pip install -e ".[gpu]" \
+    && pip uninstall -y opencv-python opencv-contrib-python opencv-python-headless \
+    && pip install --no-deps "opencv-python-headless==4.11.0.86"
+
+# The pytorch image ships CUDA runtime libs as pip packages under
+# site-packages/nvidia/*/lib, not on the system loader path. onnxruntime's
+# CUDA provider dlopens libcublasLt/libcudnn by soname and otherwise falls
+# back to CPU with only a warning, so put those dirs on LD_LIBRARY_PATH.
+ENV LD_LIBRARY_PATH="/opt/conda/lib/python3.11/site-packages/nvidia/cublas/lib:/opt/conda/lib/python3.11/site-packages/nvidia/cudnn/lib:/opt/conda/lib/python3.11/site-packages/nvidia/cuda_runtime/lib:/opt/conda/lib/python3.11/site-packages/nvidia/cufft/lib:/opt/conda/lib/python3.11/site-packages/nvidia/curand/lib:/opt/conda/lib/python3.11/site-packages/nvidia/cuda_nvrtc/lib:${LD_LIBRARY_PATH}"
+
+COPY --from=gpu_shared / /opt/gpu-shared
+RUN pip install --no-deps /opt/gpu-shared
+
+COPY app ./app
+COPY scripts ./scripts
+
+EXPOSE 8000
+
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

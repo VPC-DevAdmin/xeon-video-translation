@@ -1,0 +1,17 @@
+[
+  {
+    "repo": "Wan-AI/Wan2.1-I2V-14B-480P",
+    "revision": "6b73f84e66371cdfe870c72acd6826e1d61cf279",
+    "local_dir": "/quality-models/Wan2.1-I2V-14B-480P"
+  },
+  {
+    "repo": "TencentGameMate/chinese-wav2vec2-base",
+    "revision": "3991242c806928916fff4a8c0e4f76acf661b743",
+    "local_dir": "/quality-models/chinese-wav2vec2-base"
+  },
+  {
+    "repo": "MeiGen-AI/InfiniteTalk",
+    "revision": "d59847ebdacf19245bfca3fb23311c0cada8378a",
+    "local_dir": "/quality-models/InfiniteTalk"
+  }
+]

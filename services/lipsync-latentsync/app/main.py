@@ -29,6 +29,7 @@ from __future__ import annotations
 import importlib
 import logging
 import os
+import threading
 from pathlib import Path
 from typing import Literal
 
@@ -45,6 +46,7 @@ VERSION = "0.3.0"
 # Flipped True in PR-LS-1c. /lipsync now dispatches to the real
 # LatentSync pipeline under app/latentsync_driver/inference.py.
 INFERENCE_IMPLEMENTED = True
+_INFERENCE_LOCK = threading.RLock()
 # Phase string surfaced in /health so operators can tell at a glance
 # which staged PR built the image they're poking at.
 PHASE = "PR-LS-1c (inference live)"
@@ -64,12 +66,34 @@ app = FastAPI(
 )
 
 
+_WARMUP_STATE: dict = {"status": "disabled"}
+
+
 @app.on_event("startup")
 def _log_startup() -> None:
     log.info(
         "lipsync-latentsync %s starting — inference_implemented=%s",
         VERSION, INFERENCE_IMPLEMENTED,
     )
+    if os.environ.get("LATENTSYNC_WARMUP", "0") == "1":
+        _WARMUP_STATE["status"] = "running"
+
+        def _warm():
+            try:
+                from .latentsync_driver.inference import WeightPaths, warmup
+
+                weight_paths = WeightPaths.from_cache(MODEL_CACHE_DIR)
+                if weight_paths.missing():
+                    _WARMUP_STATE.update(status="skipped", reason="weights missing")
+                    return
+                seconds = warmup(weight_paths)
+                _WARMUP_STATE.update(status="done", seconds=round(seconds, 1))
+                log.info("warm-up complete in %.1fs (pipeline, pool, detector sessions)", seconds)
+            except Exception as exc:  # the first request will retry and surface the error
+                _WARMUP_STATE.update(status="failed", error=f"{type(exc).__name__}: {exc}")
+                log.exception("warm-up failed")
+
+        threading.Thread(target=_warm, name="latentsync-warmup", daemon=True).start()
 
 
 # --------------------------------------------------------------------------- #
@@ -115,6 +139,45 @@ class LipsyncRequest(BaseModel):
         None,
         description="Diffusion seed for reproducibility. Omit for random.",
     )
+    # Shared face track across render windows (see latentsync_driver/face_track.py).
+    face_track_source: str | None = Field(
+        None,
+        description=(
+            "Full source clip this video_path was cut from (shared /jobs volume). "
+            "Its landmark track is built once per content hash and sliced per window."
+        ),
+    )
+    face_track_offset_frames: int | None = Field(
+        None, ge=0,
+        description="First frame of this window on the source's 25 fps grid.",
+    )
+    face_track_identity: int | None = Field(
+        None, ge=0, le=15,
+        description=(
+            "Render on this person's face track (POST /faces/identities numbers "
+            "the people in face_track_source left to right). Omit for the largest face."
+        ),
+    )
+    persona_key: str | None = Field(
+        None, max_length=128, pattern=r"^[A-Za-z0-9._-]+$",
+        description=(
+            "Stable name for a fixed persona clip. Workers keep that clip's "
+            "audio-independent conditioning resident so repeated replies skip "
+            "the per-chunk VAE encodes."
+        ),
+    )
+
+
+class PrepareRequest(BaseModel):
+    video_path: str
+    audio_path: str
+    face_track_source: str | None = None
+    face_track_offset_frames: int | None = Field(None, ge=0)
+    face_track_identity: int | None = Field(None, ge=0, le=15)
+
+
+class IdentitiesRequest(BaseModel):
+    video_path: str
 
 
 class LipsyncResponse(BaseModel):
@@ -158,19 +221,23 @@ _REQUIRED_MODULES = (
     "scenedetect",
     "kornia",
     "face_alignment",
-    # Performance stack (PR-LS-1c perf follow-up). IPEX is the big win
-    # on Xeon; DeepCache is a smaller stacking speedup. Both are
-    # treated as required for a healthy /ready now that they're part
-    # of the default inference path. If either import fails, that's
-    # a Dockerfile regression worth surfacing loudly.
-    "intel_extension_for_pytorch",
-    "DeepCache",
 )
+
+# CPU-only accelerators. On CUDA the UNet runs fp16 on the native kernels,
+# sharded across GPUs; IPEX and DeepCache are not installed in the GPU
+# image and must not make /ready report "degraded" there.
+_CPU_ONLY_MODULES = ("intel_extension_for_pytorch", "DeepCache")
+
+
+def _required_modules() -> tuple[str, ...]:
+    if os.environ.get("DEVICE", "cpu").lower().startswith("cuda"):
+        return _REQUIRED_MODULES
+    return _REQUIRED_MODULES + _CPU_ONLY_MODULES
 
 
 def _dep_status() -> dict[str, dict]:
     status: dict[str, dict] = {}
-    for name in _REQUIRED_MODULES:
+    for name in _required_modules():
         try:
             mod = importlib.import_module(name)
         except Exception as e:
@@ -251,7 +318,14 @@ def health() -> dict:
         # Performance knobs surfaced for debugging: operators can curl
         # /health to confirm the container is running the configuration
         # they intended without having to docker exec and grep env.
-        "ipex_dtype": os.environ.get("LATENTSYNC_IPEX_DTYPE", "bf16"),
+        "device": os.environ.get("DEVICE", "cpu"),
+        "dtype": os.environ.get("LATENTSYNC_DTYPE")
+        or os.environ.get("LATENTSYNC_IPEX_DTYPE", "fp16 on cuda / fp32 on cpu"),
+        "shard_mode": os.environ.get("LATENTSYNC_SHARD_MODE", "process"),
+        "warmup": _WARMUP_STATE,
+        "video_encoder": os.environ.get("LATENTSYNC_VIDEO_ENCODER", "h264_nvenc on cuda / libx264 on cpu"),
+        # CPU-only accelerators; reported so a CPU operator can confirm them.
+        "ipex_dtype": os.environ.get("LATENTSYNC_IPEX_DTYPE", "fp32"),
         "deepcache_enabled": os.environ.get("LATENTSYNC_ENABLE_DEEPCACHE", "1"),
         "ld_preload": os.environ.get("LD_PRELOAD", ""),
     }
@@ -259,10 +333,13 @@ def health() -> dict:
 
 @app.get("/ready")
 def ready() -> dict:
+    from gpu_runtime import capabilities
+    runtime = capabilities()
     deps = _dep_status()
     missing = [name for name, info in deps.items() if not info["ok"]]
     return {
-        "status": "ok" if not missing else "degraded",
+        "status": "ok" if not missing and runtime["ready"] else "degraded",
+        "runtime": runtime,
         "deps": deps,
         "missing_or_broken": missing,
         "note": (
@@ -296,8 +373,77 @@ def weights() -> dict:
     }
 
 
+@app.post("/lipsync/prepare")
+def lipsync_prepare(req: PrepareRequest) -> dict:
+    """Prepare a window (decode, warp, audio features) ahead of its /lipsync
+    call. Does not take the inference lock, so it overlaps the window that is
+    denoising. Best effort: a failure here only means the later /lipsync
+    computes the inputs itself."""
+    import time
+
+    root = Path(os.environ.get("JOB_ARTIFACTS_DIR", "/jobs")).resolve()
+    for value in (req.video_path, req.audio_path, req.face_track_source):
+        if value is None:
+            continue
+        candidate = Path(value).resolve()
+        if not candidate.is_relative_to(root) or candidate == root:
+            raise HTTPException(400, "media paths must be inside JOB_ARTIFACTS_DIR")
+        if not candidate.exists():
+            raise HTTPException(400, f"not visible to this service: {value}")
+    from .latentsync_driver.inference import WeightPaths, prepare
+
+    weight_paths = WeightPaths.from_cache(MODEL_CACHE_DIR)
+    if weight_paths.missing():
+        raise HTTPException(503, {"phase": "weights-missing"})
+    started = time.perf_counter()
+    try:
+        result = prepare(
+            req.video_path, req.audio_path, weight_paths,
+            face_track_source=req.face_track_source,
+            face_track_offset_frames=req.face_track_offset_frames or 0,
+            face_track_identity=req.face_track_identity,
+        )
+    except Exception as e:
+        log.exception("prepare failed")
+        raise HTTPException(500, {"phase": "prepare", "error": f"{type(e).__name__}: {e}"})
+    return {"status": "ok", **result, "duration_ms": int((time.perf_counter() - started) * 1000)}
+
+
+@app.post("/faces/identities")
+def faces_identities(req: IdentitiesRequest) -> dict:
+    """The people in a clip: presence, mean position and per-frame mouth opening
+    on the 25 fps grid. Builds the per-person face tracks (cached by content)
+    that /lipsync uses with face_track_identity. Takes the inference lock: on a
+    long clip this is minutes of detection."""
+    root = Path(os.environ.get("JOB_ARTIFACTS_DIR", "/jobs")).resolve()
+    candidate = Path(req.video_path).resolve()
+    if not candidate.is_relative_to(root) or candidate == root:
+        raise HTTPException(400, "media paths must be inside JOB_ARTIFACTS_DIR")
+    if not candidate.exists():
+        raise HTTPException(400, f"not visible to this service: {req.video_path}")
+    from .latentsync_driver.inference import WeightPaths, identities
+
+    weight_paths = WeightPaths.from_cache(MODEL_CACHE_DIR)
+    if weight_paths.missing():
+        raise HTTPException(503, {"phase": "weights-missing"})
+    try:
+        with _INFERENCE_LOCK:
+            return {"status": "ok", **identities(candidate, weight_paths)}
+    except FileNotFoundError as e:
+        raise HTTPException(503, {"phase": "identities", "error": str(e)})
+    except Exception as e:
+        log.exception("identities failed")
+        raise HTTPException(500, {"phase": "identities", "error": f"{type(e).__name__}: {e}"})
+
+
 @app.post("/lipsync", response_model=LipsyncResponse)
 def lipsync(req: LipsyncRequest) -> LipsyncResponse:
+    from gpu_runtime import span
+    with _INFERENCE_LOCK, span("renderer.lipsync", service=app.title):
+        return _lipsync_locked(req)
+
+
+def _lipsync_locked(req: LipsyncRequest) -> LipsyncResponse:
     """Run LatentSync inference end-to-end.
 
     Error translation mirrors lipsync-musetalk's conventions so the
@@ -311,6 +457,15 @@ def lipsync(req: LipsyncRequest) -> LipsyncResponse:
     """
     import time
 
+    root = Path(os.environ.get("JOB_ARTIFACTS_DIR", "/jobs")).resolve()
+    for value in (req.video_path, req.audio_path, req.output_path, req.face_track_source):
+        if value is None:
+            continue
+        candidate = Path(value).resolve()
+        if not candidate.is_relative_to(root) or candidate == root:
+            raise HTTPException(400, "media paths must be inside JOB_ARTIFACTS_DIR")
+    if req.face_track_source and not Path(req.face_track_source).exists():
+        raise HTTPException(400, f"face_track_source not visible: {req.face_track_source}")
     video = Path(req.video_path)
     audio = Path(req.audio_path)
 
@@ -357,6 +512,10 @@ def lipsync(req: LipsyncRequest) -> LipsyncResponse:
             num_inference_steps=req.num_inference_steps,
             guidance_scale=req.guidance_scale,
             seed=req.seed,
+            face_track_source=req.face_track_source,
+            face_track_offset_frames=req.face_track_offset_frames or 0,
+            face_track_identity=req.face_track_identity,
+            persona_key=req.persona_key,
         )
     except FileNotFoundError as e:
         # Raised by the driver when an expected weight/config isn't on
@@ -389,3 +548,10 @@ def lipsync(req: LipsyncRequest) -> LipsyncResponse:
             f"dry_run={result.dry_run}"
         ),
     )
+
+
+@app.on_event("shutdown")
+def stop_workers():
+    from .latentsync_driver.inference import shutdown_workers
+    with _INFERENCE_LOCK:
+        shutdown_workers()

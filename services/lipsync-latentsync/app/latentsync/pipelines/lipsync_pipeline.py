@@ -6,6 +6,10 @@ import os
 import shutil
 from typing import Callable, List, Optional, Union
 import subprocess
+import queue
+import threading
+import time
+import json
 
 import numpy as np
 import torch
@@ -31,7 +35,7 @@ from einops import rearrange
 import cv2
 
 from ..models.unet import UNet3DConditionModel
-from ..utils.util import read_video, read_audio, write_video, check_ffmpeg_installed
+from ..utils.util import read_video, read_audio, write_video, write_video_with_audio, check_ffmpeg_installed
 from ..utils.image_processor import ImageProcessor, load_fixed_mask
 from ..whisper.audio2feature import Audio2Feature
 import tqdm
@@ -312,6 +316,34 @@ def _fill_missing_landmarks(
     return filled, missing_indices
 
 
+def chunk_timeline_report(chunk_times: dict, num_frames: int, fps: float, t0_wall: float,
+                          total_frames: int, persona_key=None) -> dict:
+    """Streaming margin of a chunked render, from per-chunk timestamps.
+
+    For playout at ``fps`` that starts ``H`` seconds after the render began,
+    chunk ``i`` is due at ``H + i * num_frames / fps``. The smallest ``H`` with
+    no stall is ``max_i(restored_i - i * num_frames / fps)``. Also reports the
+    first chunk's latency and the aggregate restored-frame rate."""
+    rows = []
+    for index in sorted(chunk_times):
+        row = {"chunk": index, **chunk_times[index]}
+        rows.append(row)
+    restored = [(r["chunk"], r["restored"]) for r in rows if "restored" in r]
+    report = {"event": "latentsync_chunks", "t0_wall": round(t0_wall, 3), "num_frames": num_frames,
+              "fps": fps, "frames": total_frames, "persona_key": persona_key, "chunks": rows}
+    if restored:
+        per_chunk = num_frames / float(fps)
+        report["first_chunk_restored_seconds"] = restored[0][1]
+        report["last_chunk_restored_seconds"] = restored[-1][1]
+        report["min_head_start_seconds"] = round(max(t - i * per_chunk for i, t in restored), 3)
+        span = restored[-1][1] - min(r.get("submit", restored[0][1]) for r in rows)
+        report["restored_fps_aggregate"] = round(total_frames / span, 2) if span > 0 else None
+        cached = [r.get("persona_cached") for r in rows if "persona_cached" in r]
+        if cached:
+            report["persona_cache_hits"] = int(sum(1 for c in cached if c))
+    return report
+
+
 class LipsyncPipeline(DiffusionPipeline):
     _optional_components = []
 
@@ -521,7 +553,7 @@ class LipsyncPipeline(DiffusionPipeline):
         images = images.cpu().numpy()
         return images
 
-    def affine_transform_video(self, video_frames: np.ndarray):
+    def affine_transform_video(self, video_frames: np.ndarray, landmarks=None, visible=None):
         # CPU patch — two-pass landmark-smoothed affine.
         #
         # Upstream did detection + affine in a single per-frame call,
@@ -567,21 +599,48 @@ class LipsyncPipeline(DiffusionPipeline):
             os.environ.get("LATENTSYNC_MAX_MISSING_FACE_RATIO", "0.5"),
         )
 
-        # Pass 1: extract landmarks per frame (this is what detection
-        # actually costs; tqdm shows the expected 1 s/frame wall clock).
-        # Use the non-raising try_extract so a single bad frame doesn't
-        # fail the whole run. Gaps are filled after the pass completes.
-        print(f"Extracting landmarks from {len(video_frames)} frames...")
-        per_frame_landmarks = []
-        for frame in tqdm.tqdm(video_frames, desc="detect"):
-            per_frame_landmarks.append(
-                self.image_processor.try_extract_landmarks3(frame),
-            )
+        detect_started = time.perf_counter()
+        if landmarks is not None:
+            # Shared face track (latentsync_driver.face_track): detection and
+            # whole-clip smoothing already happened once for the source, so
+            # this window only needs the warp pass below.
+            if len(landmarks) != len(video_frames):
+                raise RuntimeError(
+                    f"face track has {len(landmarks)} entries for {len(video_frames)} frames"
+                )
+            per_frame_landmarks = [np.asarray(l, dtype=np.float32) for l in landmarks]
+            landmark_window = 1
+            if visible is not None and len(visible) != len(video_frames):
+                raise RuntimeError(
+                    f"face visibility has {len(visible)} entries for {len(video_frames)} frames"
+                )
+            print(f"Using shared face track for {len(video_frames)} frames (detection skipped)")
+        else:
+            # Pass 1: extract landmarks per frame (this is what detection
+            # actually costs; tqdm shows the expected 1 s/frame wall clock).
+            # Use the non-raising try_extract so a single bad frame doesn't
+            # fail the whole run. Gaps are filled after the pass completes.
+            print(f"Extracting landmarks from {len(video_frames)} frames...")
+            per_frame_landmarks = []
+            confidences = []
+            for frame in tqdm.tqdm(video_frames, desc="detect"):
+                landmarks3, score = self.image_processor.try_extract_with_score(frame)
+                per_frame_landmarks.append(landmarks3)
+                confidences.append(score)
+            if visible is None:
+                visible = np.asarray(confidences, dtype=np.float32)
 
         total_frames = len(per_frame_landmarks)
         per_frame_landmarks, missing_indices = _fill_missing_landmarks(
             per_frame_landmarks,
         )
+        if visible is None:
+            visible = np.ones(total_frames, dtype=np.float32)
+        # Detection confidence per frame, 0.0 where the landmarks are carried
+        # over from a neighbour: the paste-back must not trust those frames
+        # (latentsync_driver.face_parse).
+        visible = np.asarray(visible, dtype=np.float32).copy()
+        visible[missing_indices] = 0.0
         if missing_indices:
             miss_ratio = len(missing_indices) / total_frames
             # Log the first few indices so the user can pinpoint bad
@@ -627,6 +686,7 @@ class LipsyncPipeline(DiffusionPipeline):
         boxes = []
         affine_matrices = []
         print(f"Affine transforming {len(video_frames)} faces...")
+        warp_started = time.perf_counter()
         for frame, landmarks3 in tqdm.tqdm(
             zip(video_frames, per_frame_landmarks),
             total=len(video_frames),
@@ -640,7 +700,20 @@ class LipsyncPipeline(DiffusionPipeline):
             affine_matrices.append(affine_matrix)
 
         faces = torch.stack(faces)
-        return faces, boxes, affine_matrices
+        # Heads turned too far for the frontal template keep the source mouth
+        # (latentsync_driver.face_parse.turned_frames).
+        from latentsync_driver import face_parse
+
+        turned = np.zeros(total_frames, dtype=bool)
+        if os.environ.get("LATENTSYNC_YAW_GATE", "1") == "1":
+            turned = face_parse.turned_frames(face_parse.head_yaw(np.stack(per_frame_landmarks)))
+        print(json.dumps({"event": "latentsync_face_prep", "frames": len(video_frames),
+                          "detect_seconds": round(warp_started - detect_started, 2),
+                          "warp_seconds": round(time.perf_counter() - warp_started, 2),
+                          "shared_track": landmarks is not None,
+                          "occluded_frames": int((visible <= 0).sum()),
+                          "turned_frames": int(turned.sum())}), flush=True)
+        return faces, boxes, affine_matrices, visible, turned
 
     def restore_video(
         self,
@@ -649,337 +722,60 @@ class LipsyncPipeline(DiffusionPipeline):
         boxes: list,
         affine_matrices: list,
         progress_callback=None,  # CPU patch: per-frame progress reporting
+        face_masks=None,  # (N,1,fh,fw) source-face masks, see latentsync_driver.face_parse
+        alpha=None,  # (N,) per-frame paste weight; 0 keeps the source frame
     ):
         video_frames = video_frames[: len(faces)]
         out_frames = []
         total = len(faces)
         print(f"Restoring {total} faces...")
-        for index, face in enumerate(tqdm.tqdm(faces)):
-            x1, y1, x2, y2 = boxes[index]
-            height = int(y2 - y1)
-            width = int(x2 - x1)
-            face = torchvision.transforms.functional.resize(
-                face, size=(height, width), interpolation=transforms.InterpolationMode.BICUBIC, antialias=True
-            )
-            out_frame = self.image_processor.restorer.restore_img(video_frames[index], face, affine_matrices[index])
-            out_frames.append(out_frame)
-            # Per-frame progress. Caller gets a 0.0–1.0 fraction over
-            # the restore phase; __call__ maps it into the pipeline's
-            # 0.90–0.98 budget.
+        restorer = self.image_processor.restorer
+        device = self._execution_device
+        # Frames travel host->device and device->host once per batch rather
+        # than once per frame; the per-frame math is unchanged.
+        batch = max(1, int(os.environ.get("LATENTSYNC_RESTORE_BATCH", "16")))
+        debug = os.environ.get("LATENTSYNC_DEBUG_DUMP", "0") == "1"
+        for start in range(0, total, batch):
+            stop = min(total, start + batch)
+            frames_t = torch.from_numpy(np.ascontiguousarray(video_frames[start:stop])).to(
+                device=restorer.device, dtype=restorer.dtype, non_blocking=True
+            ).permute(0, 3, 1, 2)
+            composited = []
+            for index in range(start, stop):
+                x1, y1, x2, y2 = boxes[index]
+                height = int(y2 - y1)
+                width = int(x2 - x1)
+                face = torchvision.transforms.functional.resize(
+                    faces[index].to(device), size=(height, width),
+                    interpolation=transforms.InterpolationMode.BICUBIC, antialias=True,
+                )
+                weight = 1.0 if alpha is None else float(alpha[index])
+                if weight <= 0.0:
+                    composited.append(frames_t[index - start])  # face not located: source frame as is
+                    continue
+                mask = None
+                if face_masks is not None:
+                    mask = face_masks[index].to(device=restorer.device, dtype=restorer.dtype, non_blocking=True).unsqueeze(0)
+                composited.append(
+                    restorer.restore_on_device(
+                        frames_t[index - start], face, affine_matrices[index], debug=debug,
+                        face_mask=mask, alpha=weight,
+                    )
+                )
+            out = torch.stack(composited).clamp(0, 255).to(torch.uint8).permute(0, 2, 3, 1).contiguous()
+            out_frames.append(out.cpu().numpy())
+            # Progress over the restore phase; __call__ maps it into 0.90–0.98.
             if progress_callback is not None:
                 try:
-                    progress_callback((index + 1) / total)
+                    progress_callback(stop / total)
                 except Exception:
                     pass
-        return np.stack(out_frames, axis=0)
+        return np.concatenate(out_frames, axis=0)
 
-    def loop_video(self, whisper_chunks: list, video_frames: np.ndarray):
-        # If the audio is longer than the video, we need to loop the video
-        if len(whisper_chunks) > len(video_frames):
-            faces, boxes, affine_matrices = self.affine_transform_video(video_frames)
-            num_loops = math.ceil(len(whisper_chunks) / len(video_frames))
-            loop_video_frames = []
-            loop_faces = []
-            loop_boxes = []
-            loop_affine_matrices = []
-            for i in range(num_loops):
-                if i % 2 == 0:
-                    loop_video_frames.append(video_frames)
-                    loop_faces.append(faces)
-                    loop_boxes += boxes
-                    loop_affine_matrices += affine_matrices
-                else:
-                    loop_video_frames.append(video_frames[::-1])
-                    loop_faces.append(faces.flip(0))
-                    loop_boxes += boxes[::-1]
-                    loop_affine_matrices += affine_matrices[::-1]
-
-            video_frames = np.concatenate(loop_video_frames, axis=0)[: len(whisper_chunks)]
-            faces = torch.cat(loop_faces, dim=0)[: len(whisper_chunks)]
-            boxes = loop_boxes[: len(whisper_chunks)]
-            affine_matrices = loop_affine_matrices[: len(whisper_chunks)]
-        else:
-            video_frames = video_frames[: len(whisper_chunks)]
-            faces, boxes, affine_matrices = self.affine_transform_video(video_frames)
-
-        return video_frames, faces, boxes, affine_matrices
-
-    @torch.no_grad()
-    def __call__(
-        self,
-        video_path: str,
-        audio_path: str,
-        video_out_path: str,
-        num_frames: int = 16,
-        video_fps: int = 25,
-        audio_sample_rate: int = 16000,
-        height: Optional[int] = None,
-        width: Optional[int] = None,
-        num_inference_steps: int = 20,
-        guidance_scale: float = 1.5,
-        weight_dtype: Optional[torch.dtype] = torch.float16,
-        eta: float = 0.0,
-        mask_image_path: str = "latentsync/utils/mask.png",
-        temp_dir: str = "temp",
-        generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
-        callback: Optional[Callable[[int, int, torch.FloatTensor], None]] = None,
-        callback_steps: Optional[int] = 1,
-        **kwargs,
-    ):
-        is_train = self.unet.training
-        self.unet.eval()
-
-        check_ffmpeg_installed()
-
-        # 0. Define call parameters
-        device = self._execution_device
-        mask_image = load_fixed_mask(height, mask_image_path)
-        # CPU patch: upstream hard-coded device="cuda" here even though
-        # `device` (self._execution_device) is already defined on the
-        # line above. Use it so CPU execution paths don't crash in
-        # ImageProcessor's internal .to("cuda") calls.
-        self.image_processor = ImageProcessor(height, device=str(device), mask_image=mask_image)
-        self.set_progress_bar_config(desc=f"Sample frames: {num_frames}")
-
-        # 1. Default height and width to unet
-        height = height or self.unet.config.sample_size * self.vae_scale_factor
-        width = width or self.unet.config.sample_size * self.vae_scale_factor
-
-        # 2. Check inputs
-        self.check_inputs(height, width, callback_steps)
-
-        # here `guidance_scale` is defined analog to the guidance weight `w` of equation (2)
-        # of the Imagen paper: https://arxiv.org/pdf/2205.11487.pdf . `guidance_scale = 1`
-        # corresponds to doing no classifier free guidance.
-        do_classifier_free_guidance = guidance_scale > 1.0
-
-        # 3. set timesteps
-        self.scheduler.set_timesteps(num_inference_steps, device=device)
-        timesteps = self.scheduler.timesteps
-
-        # 4. Prepare extra step kwargs.
-        extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
-
-        # CPU patch: real-progress reporting. When the caller supplies a
-        # `progress_callback`, we call it at phase boundaries and within
-        # the denoise/restore loops. The driver wires this through to a
-        # JSON file on the shared /jobs volume that the backend's
-        # orchestrator polls. Replaces the backend's time-based-elapsed-
-        # divided-by-estimated-ETA heuristic which consistently hit 98%
-        # two minutes into a run and plateaued there for hours.
-        #
-        # Budget: face_detect 0–0.25, denoise 0.25–0.90, restore 0.90–0.98,
-        # mux 0.98–1.00. Tuned to observed wall-clock proportions at
-        # 1080p / bf16 / DeepCache (denoise dominates by a wide margin).
-        progress_callback = kwargs.get("progress_callback")
-        def _emit_progress(phase: str, pct: float) -> None:
-            if progress_callback is None:
-                return
-            try:
-                progress_callback(phase, float(max(0.0, min(1.0, pct))))
-            except Exception:
-                # Progress reporting must never break the pipeline.
-                pass
-
-        _emit_progress("face_detect", 0.01)
-
-        # Resume support (CPU patch): try to load a post-denoise checkpoint.
-        # Saves the expensive half of the pipeline (face detection +
-        # denoising loop, typically 20+ minutes) on retries. Keyed by a
-        # content hash computed in the driver — same inputs hit the cache
-        # automatically. See docs/lipsync.md for the cache layout.
-        denoise_checkpoint_path = kwargs.get("denoise_checkpoint_path")
-        synced_video_frames_tensor = None
-        video_frames = None
-        boxes = None
-        affine_matrices = None
-        audio_samples = None
-
-        if denoise_checkpoint_path and os.path.exists(denoise_checkpoint_path):
-            try:
-                print(f"Loading denoise checkpoint: {denoise_checkpoint_path}")
-                cache = torch.load(
-                    denoise_checkpoint_path, weights_only=False, map_location=device,
-                )
-                synced_video_frames_tensor = cache["synced_video_frames"]
-                video_frames = cache["video_frames"]
-                boxes = cache["boxes"]
-                affine_matrices = cache["affine_matrices"]
-                audio_samples = cache["audio_samples"]
-                print(
-                    f"Resume: skipping denoise "
-                    f"({synced_video_frames_tensor.shape[0]} frames from cache)",
-                )
-                # Cache hit — skip face_detect + denoise budget entirely.
-                _emit_progress("denoise", 0.90)
-            except Exception as e:
-                print(f"Checkpoint load failed ({e}); running full pipeline")
-                synced_video_frames_tensor = None
-
-        if synced_video_frames_tensor is None:
-            whisper_feature = self.audio_encoder.audio2feat(audio_path)
-            whisper_chunks = self.audio_encoder.feature2chunks(feature_array=whisper_feature, fps=video_fps)
-
-            audio_samples = read_audio(audio_path)
-            video_frames = read_video(video_path, use_decord=False)
-
-            video_frames, faces, boxes, affine_matrices = self.loop_video(whisper_chunks, video_frames)
-            # Face detection + affine transform is done at this point.
-            _emit_progress("face_detect", 0.25)
-
-            synced_video_frames = []
-
-            num_channels_latents = self.vae.config.latent_channels
-
-            # Prepare latent variables
-            all_latents = self.prepare_latents(
-                len(whisper_chunks),
-                num_channels_latents,
-                height,
-                width,
-                weight_dtype,
-                device,
-                generator,
-            )
-
-            # CPU patch — UNet bypass for jitter bisection. When this env
-            # var is set, we skip the denoise loop + VAE decode entirely
-            # and pass the reference face crop straight through to the
-            # restore/composite stage. Isolates geometric pipeline jitter
-            # (affine warp + soft-mask compositing) from anything the
-            # UNet / VAE numerical path introduces. See
-            # scripts/latentsync_debug/DEBUG_PLAN.md Step 2b.
-            bypass_unet = os.environ.get("LATENTSYNC_BYPASS_UNET", "0") == "1"
-            if bypass_unet:
-                print(
-                    "LATENTSYNC_BYPASS_UNET=1: skipping denoise + VAE decode; "
-                    "reference face crops will be passed through unchanged."
-                )
-
-            num_inferences = math.ceil(len(whisper_chunks) / num_frames)
-            for i in tqdm.tqdm(range(num_inferences), desc="Doing inference..."):
-                if self.unet.add_audio_layer:
-                    audio_embeds = torch.stack(whisper_chunks[i * num_frames : (i + 1) * num_frames])
-                    audio_embeds = audio_embeds.to(device, dtype=weight_dtype)
-                    if do_classifier_free_guidance:
-                        null_audio_embeds = torch.zeros_like(audio_embeds)
-                        audio_embeds = torch.cat([null_audio_embeds, audio_embeds])
-                else:
-                    audio_embeds = None
-                inference_faces = faces[i * num_frames : (i + 1) * num_frames]
-                latents = all_latents[:, :, i * num_frames : (i + 1) * num_frames]
-                ref_pixel_values, masked_pixel_values, masks = self.image_processor.prepare_masks_and_masked_images(
-                    inference_faces, affine_transform=False
-                )
-
-                if bypass_unet:
-                    # Short-circuit: use the reference face crop as the
-                    # "generated" output. Skips denoise+VAE entirely. The
-                    # shape of ref_pixel_values matches what decode_latents
-                    # would return (both are in pixel space after VAE-round-trip
-                    # normalization), so the downstream paste + restore
-                    # pipeline treats it identically.
-                    decoded_latents = ref_pixel_values.to(dtype=weight_dtype)
-                    decoded_latents = self.paste_surrounding_pixels_back(
-                        decoded_latents, ref_pixel_values, 1 - masks, device, weight_dtype
-                    )
-                    synced_video_frames.append(decoded_latents)
-                    # Emit the same progress signal we would have from the
-                    # denoise loop so the backend's progress bar still moves.
-                    _total = num_inferences
-                    _emit_progress("denoise", 0.25 + 0.65 * ((i + 1) / _total))
-                    continue
-
-                # 7. Prepare mask latent variables
-                mask_latents, masked_image_latents = self.prepare_mask_latents(
-                    masks,
-                    masked_pixel_values,
-                    height,
-                    width,
-                    weight_dtype,
-                    device,
-                    generator,
-                    do_classifier_free_guidance,
-                )
-
-                # 8. Prepare image latents
-                ref_latents = self.prepare_image_latents(
-                    ref_pixel_values,
-                    device,
-                    weight_dtype,
-                    generator,
-                    do_classifier_free_guidance,
-                )
-
-                # 9. Denoising loop
-                num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
-                with self.progress_bar(total=num_inference_steps) as progress_bar:
-                    for j, t in enumerate(timesteps):
-                        # expand the latents if we are doing classifier free guidance
-                        unet_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
-
-                        unet_input = self.scheduler.scale_model_input(unet_input, t)
-
-                        # concat latents, mask, masked_image_latents in the channel dimension
-                        unet_input = torch.cat([unet_input, mask_latents, masked_image_latents, ref_latents], dim=1)
-
-                        # predict the noise residual
-                        noise_pred = self.unet(unet_input, t, encoder_hidden_states=audio_embeds).sample
-
-                        # perform guidance
-                        if do_classifier_free_guidance:
-                            noise_pred_uncond, noise_pred_audio = noise_pred.chunk(2)
-                            noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_audio - noise_pred_uncond)
-
-                        # compute the previous noisy sample x_t -> x_t-1
-                        latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs).prev_sample
-
-                        # call the callback, if provided
-                        if j == len(timesteps) - 1 or ((j + 1) > num_warmup_steps and (j + 1) % self.scheduler.order == 0):
-                            progress_bar.update()
-                            if callback is not None and j % callback_steps == 0:
-                                callback(j, t, latents)
-
-                        # Real-progress emit (every step). Progress within
-                        # the denoise budget (0.25 -> 0.90) linearly tracks
-                        # total-steps-done / total-steps. "Total" here =
-                        # num_inferences * num_inference_steps.
-                        _total_steps = num_inferences * num_inference_steps
-                        _done_steps = i * num_inference_steps + (j + 1)
-                        _emit_progress(
-                            "denoise",
-                            0.25 + 0.65 * (_done_steps / _total_steps),
-                        )
-
-                # Recover the pixel values
-                decoded_latents = self.decode_latents(latents)
-                decoded_latents = self.paste_surrounding_pixels_back(
-                    decoded_latents, ref_pixel_values, 1 - masks, device, weight_dtype
-                )
-                synced_video_frames.append(decoded_latents)
-
-            # Consolidate all chunk outputs into one tensor, then save for
-            # resume. Cache write is best-effort: if disk is full or the
-            # path is unwritable we log and continue — the live run still
-            # completes; only a future retry would miss the cache.
-            synced_video_frames_tensor = torch.cat(synced_video_frames)
-            if denoise_checkpoint_path:
-                try:
-                    print(f"Saving denoise checkpoint: {denoise_checkpoint_path}")
-                    os.makedirs(os.path.dirname(denoise_checkpoint_path), exist_ok=True)
-                    torch.save(
-                        {
-                            "synced_video_frames": synced_video_frames_tensor,
-                            "video_frames": video_frames,
-                            "boxes": boxes,
-                            "affine_matrices": affine_matrices,
-                            "audio_samples": audio_samples,
-                        },
-                        denoise_checkpoint_path,
-                    )
-                except Exception as e:
-                    print(f"Checkpoint save failed ({e}); continuing anyway")
-
+    def _smooth_affines(self, affine_matrices, boxes):
+        """Temporal smoothing of the per-frame affine + boxes (with the
+        optional debug dumps). Runs before denoise so chunks can be restored
+        as soon as they are denoised."""
         # CPU patch: temporal smoothing on affine matrices + bboxes.
         # Landmark detection jitters a few pixels frame-to-frame (normal
         # for InsightFace on real video), and that jitter propagates
@@ -1052,16 +848,706 @@ class LipsyncPipeline(DiffusionPipeline):
                 )
             except Exception as _e:
                 print(f"affine dump (post-smooth) failed: {_e}")
+        return affine_matrices, boxes
+
+    def loop_video(self, whisper_chunks: list, video_frames: np.ndarray, landmarks=None, visible=None):
+        # If the audio is longer than the video, we need to loop the video
+        if len(whisper_chunks) > len(video_frames):
+            faces, boxes, affine_matrices, visible, turned = self.affine_transform_video(video_frames, landmarks, visible)
+            num_loops = math.ceil(len(whisper_chunks) / len(video_frames))
+            loop_video_frames = []
+            loop_faces = []
+            loop_boxes = []
+            loop_affine_matrices = []
+            loop_visible = []
+            loop_turned = []
+            for i in range(num_loops):
+                if i % 2 == 0:
+                    loop_video_frames.append(video_frames)
+                    loop_faces.append(faces)
+                    loop_boxes += boxes
+                    loop_affine_matrices += affine_matrices
+                    loop_visible.append(visible)
+                    loop_turned.append(turned)
+                else:
+                    loop_video_frames.append(video_frames[::-1])
+                    loop_faces.append(faces.flip(0))
+                    loop_boxes += boxes[::-1]
+                    loop_affine_matrices += affine_matrices[::-1]
+                    loop_visible.append(visible[::-1])
+                    loop_turned.append(turned[::-1])
+
+            video_frames = np.concatenate(loop_video_frames, axis=0)[: len(whisper_chunks)]
+            faces = torch.cat(loop_faces, dim=0)[: len(whisper_chunks)]
+            boxes = loop_boxes[: len(whisper_chunks)]
+            affine_matrices = loop_affine_matrices[: len(whisper_chunks)]
+            visible = np.concatenate(loop_visible, axis=0)[: len(whisper_chunks)]
+            turned = np.concatenate(loop_turned, axis=0)[: len(whisper_chunks)]
+        else:
+            video_frames = video_frames[: len(whisper_chunks)]
+            if landmarks is not None:
+                landmarks = landmarks[: len(video_frames)]
+            if visible is not None:
+                visible = visible[: len(video_frames)]
+            faces, boxes, affine_matrices, visible, turned = self.affine_transform_video(video_frames, landmarks, visible)
+
+        return video_frames, faces, boxes, affine_matrices, visible, turned
+
+    def prepare_inputs(self, video_path: str, audio_path: str, video_fps: int, window_landmarks=None) -> dict:
+        """Everything a window needs before denoising: audio features, decoded
+        frames, warped faces, smoothed affines. Independent of the UNet, so it
+        can run for window N+1 while window N denoises (see prepare_ahead)."""
+        started = time.perf_counter()
+        whisper_feature = self.audio_encoder.audio2feat(audio_path)
+        whisper_chunks = self.audio_encoder.feature2chunks(feature_array=whisper_feature, fps=video_fps)
+        audio_samples = read_audio(audio_path)
+        video_frames = read_video(video_path, use_decord=False)
+        window_visible = None
+        if window_landmarks is not None:
+            from latentsync_driver.face_track import slice_for_window
+
+            offset = int(window_landmarks.get("offset", 0))
+            if window_landmarks.get("visible") is not None:
+                window_visible = slice_for_window(
+                    np.asarray(window_landmarks["visible"], dtype=np.float32), offset, len(video_frames)
+                )
+            window_landmarks = slice_for_window(window_landmarks["landmarks"], offset, len(video_frames))
+        video_frames, faces, boxes, affine_matrices, visible, turned = self.loop_video(
+            whisper_chunks, video_frames, window_landmarks, window_visible
+        )
+        affine_matrices, boxes = self._smooth_affines(affine_matrices, boxes)
+        # Occlusion handling (latentsync_driver.face_parse): a per-pixel face
+        # mask from the source crops and a per-frame weight from detection.
+        from latentsync_driver import face_parse
+
+        parse_started = time.perf_counter()
+        face_masks, covered, mouth_open, lips = self.face_parser().masks(
+            faces, out_size=self.image_processor.restorer.face_size[::-1], visible=visible,
+            frames=video_frames, affines=affine_matrices,
+        )
+        gate = np.asarray(visible, dtype=np.float32).copy()
+        covered_frames = 0
+        closed_reference = None
+        if face_masks is not None:
+            face_masks = face_masks.to(torch.float16).cpu()
+            hidden = covered.numpy() > face_parse.MOUTH_COVERED
+            covered_frames = int(hidden.sum())
+            gate[hidden] = 0.0  # an occluder over the mouth: treat like a lost face
+        gate[turned] = 0.0  # head turned too far: the source mouth beats a squeezed one
+        # ramp=1: binary. A partial paste dissolves two different mouths.
+        alpha = face_parse.occlusion_alpha(gate, margin=2, ramp=1)
+        # Silence in the translated audio: render a closed mouth there instead of
+        # copying the source mouth (latentsync_driver.face_parse).
+        silent = face_parse.silent_frames(audio_samples.cpu().numpy() if hasattr(audio_samples, "cpu") else audio_samples,
+                                          16000, video_fps, len(video_frames))
+        if face_masks is not None and silent.any() and os.environ.get("LATENTSYNC_SILENT_CLOSED_MOUTH", "1") == "1":
+            closed_reference = face_parse.pick_closed_mouth(mouth_open.numpy(), alpha, covered.numpy())
+            if closed_reference is not None:
+                # Only the lips come from the closed-mouth render; beard and
+                # chin stay the source's.
+                quiet = torch.from_numpy(silent[: len(face_masks)])
+                face_masks[quiet] = lips[quiet].to(face_masks.dtype).cpu()
+        print(json.dumps({"event": "latentsync_occlusion", "frames": len(faces),
+                          "parsed": face_masks is not None, "gated_frames": int((alpha < 1).sum()),
+                          "no_face_frames": int((np.asarray(visible) <= 0).sum()), "covered_mouth_frames": covered_frames,
+                          "gated": face_parse.ranges(np.flatnonzero(alpha <= 0.0)),
+                          "turned": face_parse.ranges(np.flatnonzero(turned)),
+                          "silent": face_parse.ranges(np.flatnonzero(silent)), "closed_reference": closed_reference,
+                          "seconds": round(time.perf_counter() - parse_started, 2)}), flush=True)
+        return {
+            "whisper_chunks": whisper_chunks, "audio_samples": audio_samples, "video_frames": video_frames,
+            "faces": faces, "boxes": boxes, "affine_matrices": affine_matrices,
+            "face_masks": face_masks, "alpha": alpha,
+            "silent_frames": silent if closed_reference is not None else None, "closed_reference": closed_reference,
+            "seconds": time.perf_counter() - started,
+        }
+
+    def face_parser(self):
+        parser = getattr(self, "_face_parser", None)
+        if parser is None:
+            from latentsync_driver.face_parse import FaceParser
+
+            parser = self._face_parser = FaceParser(self._execution_device)
+        return parser
+
+    def prepare_ahead(self, video_path: str, audio_path: str, video_fps: int, face_track=None) -> dict:
+        """Compute and cache the inputs for a window that will be requested
+        next. Called from the /lipsync/prepare endpoint while the previous
+        window denoises. At most two windows are kept."""
+        prepared = getattr(self, "_prepared", None)
+        if prepared is None:
+            prepared = self._prepared = {}
+        key = (str(video_path), str(audio_path))
+        inputs = self.prepare_inputs(str(video_path), str(audio_path), video_fps, face_track)
+        inputs["mtime"] = (os.path.getmtime(video_path), os.path.getmtime(audio_path))
+        prepared[key] = inputs
+        while len(prepared) > 2:
+            prepared.pop(next(iter(prepared)))
+        return {"frames": int(len(inputs["video_frames"])), "seconds": round(inputs["seconds"], 2)}
+
+    def _take_prepared(self, video_path: str, audio_path: str):
+        prepared = getattr(self, "_prepared", None) or {}
+        inputs = prepared.pop((str(video_path), str(audio_path)), None)
+        if inputs is None:
+            return None
+        try:
+            if inputs["mtime"] != (os.path.getmtime(video_path), os.path.getmtime(audio_path)):
+                return None  # files were rewritten after preparation
+        except OSError:
+            return None
+        return inputs
+
+    def ensure_image_processor(self, height: int, mask_image_path: str):
+        """Build (once) the ImageProcessor used for detection and warping.
+
+        Its FaceDetector holds two onnxruntime CUDA sessions that took ~43 s
+        to create on the XE7740, so it is cached across requests. The face
+        track builder needs it before __call__ runs.
+        """
+        device = self._execution_device
+        ip_key = (int(height), str(device), str(mask_image_path))
+        if getattr(self, "_image_processor_key", None) != ip_key:
+            mask_image = load_fixed_mask(height, mask_image_path)
+            self.image_processor = ImageProcessor(height, device=str(device), mask_image=mask_image)
+            self._image_processor_key = ip_key
+        return self.image_processor
+
+    @torch.no_grad()
+    def __call__(
+        self,
+        video_path: str,
+        audio_path: str,
+        video_out_path: str,
+        num_frames: int = 16,
+        video_fps: int = 25,
+        audio_sample_rate: int = 16000,
+        height: Optional[int] = None,
+        width: Optional[int] = None,
+        num_inference_steps: int = 20,
+        guidance_scale: float = 1.5,
+        weight_dtype: Optional[torch.dtype] = torch.float16,
+        eta: float = 0.0,
+        mask_image_path: str = "latentsync/utils/mask.png",
+        temp_dir: str = "temp",
+        generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
+        callback: Optional[Callable[[int, int, torch.FloatTensor], None]] = None,
+        callback_steps: Optional[int] = 1,
+        **kwargs,
+    ):
+        is_train = self.unet.training
+        self.unet.eval()
+
+        check_ffmpeg_installed()
+
+        # 0. Define call parameters
+        device = self._execution_device
+        # GPU patch: reuse the ImageProcessor across requests (see
+        # ensure_image_processor). Device comes from self._execution_device
+        # so CPU paths do not hit ImageProcessor's internal .to("cuda").
+        self.ensure_image_processor(height, mask_image_path)
+        self.set_progress_bar_config(desc=f"Sample frames: {num_frames}")
+
+        # 1. Default height and width to unet
+        height = height or self.unet.config.sample_size * self.vae_scale_factor
+        width = width or self.unet.config.sample_size * self.vae_scale_factor
+
+        # 2. Check inputs
+        self.check_inputs(height, width, callback_steps)
+
+        # here `guidance_scale` is defined analog to the guidance weight `w` of equation (2)
+        # of the Imagen paper: https://arxiv.org/pdf/2205.11487.pdf . `guidance_scale = 1`
+        # corresponds to doing no classifier free guidance.
+        do_classifier_free_guidance = guidance_scale > 1.0
+
+        # 3. set timesteps
+        self.scheduler.set_timesteps(num_inference_steps, device=device)
+        timesteps = self.scheduler.timesteps
+
+        # 4. Prepare extra step kwargs.
+        extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
+
+        # CPU patch: real-progress reporting. When the caller supplies a
+        # `progress_callback`, we call it at phase boundaries and within
+        # the denoise/restore loops. The driver wires this through to a
+        # JSON file on the shared /jobs volume that the backend's
+        # orchestrator polls. Replaces the backend's time-based-elapsed-
+        # divided-by-estimated-ETA heuristic which consistently hit 98%
+        # two minutes into a run and plateaued there for hours.
+        #
+        # Budget: face_detect 0–0.25, denoise 0.25–0.90, restore 0.90–0.98,
+        # mux 0.98–1.00. Tuned to observed wall-clock proportions at
+        # 1080p / bf16 / DeepCache (denoise dominates by a wide margin).
+        progress_callback = kwargs.get("progress_callback")
+        def _emit_progress(phase: str, pct: float) -> None:
+            if progress_callback is None:
+                return
+            try:
+                progress_callback(phase, float(max(0.0, min(1.0, pct))))
+            except Exception:
+                # Progress reporting must never break the pipeline.
+                pass
+
+        _emit_progress("face_detect", 0.01)
+
+        # Resume support (CPU patch): try to load a post-denoise checkpoint.
+        # Saves the expensive half of the pipeline (face detection +
+        # denoising loop, typically 20+ minutes) on retries. Keyed by a
+        # content hash computed in the driver — same inputs hit the cache
+        # automatically. See docs/lipsync.md for the cache layout.
+        denoise_checkpoint_path = kwargs.get("denoise_checkpoint_path")
+        synced_video_frames_tensor = None
+        video_frames = None
+        boxes = None
+        affine_matrices = None
+        audio_samples = None
+
+        if denoise_checkpoint_path and os.path.exists(denoise_checkpoint_path):
+            try:
+                print(f"Loading denoise checkpoint: {denoise_checkpoint_path}")
+                cache = torch.load(
+                    denoise_checkpoint_path, weights_only=False, map_location="cpu",
+                )
+                synced_video_frames_tensor = cache["synced_video_frames"]
+                video_frames = cache["video_frames"]
+                boxes = cache["boxes"]
+                affine_matrices = cache["affine_matrices"]
+                audio_samples = cache["audio_samples"]
+                print(
+                    f"Resume: skipping denoise "
+                    f"({synced_video_frames_tensor.shape[0]} frames from cache)",
+                )
+                # Cache hit — skip face_detect + denoise budget entirely.
+                _emit_progress("denoise", 0.90)
+            except Exception as e:
+                print(f"Checkpoint load failed ({e}); running full pipeline")
+                synced_video_frames_tensor = None
+
+        restored_frames = None
+        face_masks, alpha = None, None
+        silent_frames, closed_reference, closed_ref_pixels = None, None, None
+        if synced_video_frames_tensor is not None:
+            affine_matrices, boxes = self._smooth_affines(affine_matrices, boxes)
+
+        if synced_video_frames_tensor is None:
+            stage_started = time.perf_counter()
+            profile = {}
+            # Per-chunk timeline (seconds since this call began, plus the wall
+            # clock origin) so a streaming consumer's playout margin can be
+            # computed offline: when each chunk was submitted, when its pixels
+            # came back, and when it was pasted into the full frames.
+            call_t0 = stage_started
+            call_t0_wall = time.time()
+            chunk_times: dict = {}
+            persona_key = kwargs.get("persona_key")
+            profile["persona_key"] = persona_key
+            # Window inputs: decoded frames, warped faces (via the shared face
+            # track when supplied), audio features. Prepared ahead by
+            # /lipsync/prepare while the previous window denoised, otherwise
+            # computed here.
+            inputs = self._take_prepared(video_path, audio_path)
+            profile["prepared_ahead"] = inputs is not None
+            if inputs is None:
+                inputs = self.prepare_inputs(video_path, audio_path, video_fps, kwargs.get("face_track"))
+            whisper_chunks = inputs["whisper_chunks"]
+            audio_samples = inputs["audio_samples"]
+            video_frames = inputs["video_frames"]
+            faces, boxes, affine_matrices = inputs["faces"], inputs["boxes"], inputs["affine_matrices"]
+            face_masks, alpha = inputs.get("face_masks"), inputs.get("alpha")
+            silent_frames, closed_reference = inputs.get("silent_frames"), inputs.get("closed_reference")
+            closed_ref_pixels = None
+            if silent_frames is not None and closed_reference is not None:
+                closed_ref_pixels = self.image_processor.prepare_masks_and_masked_images(
+                    faces[closed_reference:closed_reference + 1], affine_transform=False
+                )[0][0]
+            profile["decode_audio_face_seconds"] = time.perf_counter() - stage_started
+            profile["conditioning_seconds"] = 0.0
+            profile["wait_for_worker_seconds"] = 0.0
+            profile["collect_and_paste_seconds"] = 0.0
+            # Face detection + affine transform is done at this point.
+            _emit_progress("face_detect", 0.25)
+
+            synced_video_frames = []
+
+            num_channels_latents = self.vae.config.latent_channels
+
+            # Prepare latent variables
+            all_latents = self.prepare_latents(
+                len(whisper_chunks),
+                num_channels_latents,
+                height,
+                width,
+                weight_dtype,
+                device,
+                generator,
+            )
+
+            # CPU patch — UNet bypass for jitter bisection. When this env
+            # var is set, we skip the denoise loop + VAE decode entirely
+            # and pass the reference face crop straight through to the
+            # restore/composite stage. Isolates geometric pipeline jitter
+            # (affine warp + soft-mask compositing) from anything the
+            # UNet / VAE numerical path introduces. See
+            # scripts/latentsync_debug/DEBUG_PLAN.md Step 2b.
+            bypass_unet = os.environ.get("LATENTSYNC_BYPASS_UNET", "0") == "1"
+            if bypass_unet:
+                print(
+                    "LATENTSYNC_BYPASS_UNET=1: skipping denoise + VAE decode; "
+                    "reference face crops will be passed through unchanged."
+                )
+
+            num_inferences = math.ceil(len(whisper_chunks) / num_frames)
+
+            # GPU patch — sharded denoise. `unet_replicas` (set by the
+            # driver) holds the UNet on the main device plus one copy per
+            # additional visible GPU. The 16-frame chunks are independent
+            # given the shared noise sample, so:
+            #   A. main thread, main device: conditioning for every chunk
+            #      (VAE encodes of masks / reference), as before;
+            #   B. one thread per replica runs the 20-step UNet loop for
+            #      its round-robin share of chunks and ships the latents
+            #      back to the main device;
+            #   C. main thread decodes + pastes in chunk order.
+            # With one replica this is the original sequential loop, just
+            # split into the same three phases. The scheduler is stateless
+            # per step, `torch.no_grad()` is thread-local so each worker
+            # enters it itself, and DeepCache (which patches `self.unet`
+            # with per-call cache state) is disabled by the driver when
+            # more than one replica is in play.
+            replicas = list(getattr(self, "unet_replicas", None) or [self.unet])
+            replica_devices = [next(u.parameters()).device for u in replicas]
+            # Process-per-GPU pool (latentsync_driver/shard_workers.py) takes
+            # precedence over in-process thread replicas when the driver
+            # attached one. Each worker owns a UNet + VAE and returns decoded
+            # pixels; this process only conditions and pastes.
+            pool = getattr(self, "denoise_pool", None)
+            use_pool = pool is not None and not bypass_unet
+            if use_pool:
+                print(f"Denoise sharded across {pool.size} worker processes on cuda:{pool.devices}")
+                pool.begin_job(num_inference_steps, guidance_scale, do_classifier_free_guidance, eta)
+            elif len(replicas) > 1:
+                print(f"Denoise sharded across {len(replicas)} UNet replicas on {replica_devices}")
+
+            # --- Workers (one per replica) start first and consume chunks
+            # as Phase A produces them, so conditioning, denoising and the
+            # decode below overlap instead of running back to back.
+            todo_count = [0]
+            denoised: dict = {}
+            denoise_lock = threading.Lock()
+            done_count = [0]
+            ready: dict = {}  # chunk index -> threading.Event
+            work_queues = [queue.Queue() for _ in replicas]
+            failures: list = []
+            stopping = threading.Event()
+
+            vae_replicas = list(getattr(self, "vae_replicas", None) or [])
+
+            def _denoise_chunk(unet, dev, k, cond):
+                latents, mask_latents, masked_image_latents, ref_latents, audio_embeds, _, _ = cond
+                mv = lambda x: None if x is None else x.to(dev)
+                lat, ml, mil, rl, ae = mv(latents), mv(mask_latents), mv(masked_image_latents), mv(ref_latents), mv(audio_embeds)
+                with torch.no_grad():
+                    for t in timesteps:
+                        unet_input = torch.cat([lat] * 2) if do_classifier_free_guidance else lat
+                        unet_input = self.scheduler.scale_model_input(unet_input, t)
+                        unet_input = torch.cat([unet_input, ml, mil, rl], dim=1)
+                        noise_pred = unet(unet_input, t.to(dev), encoder_hidden_states=ae).sample
+                        if do_classifier_free_guidance:
+                            noise_pred_uncond, noise_pred_audio = noise_pred.chunk(2)
+                            noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_audio - noise_pred_uncond)
+                        lat = self.scheduler.step(noise_pred, t, lat, **extra_step_kwargs).prev_sample
+                    if k < len(vae_replicas) and vae_replicas[k] is not None:
+                        # Decode here, on this device, so the main GPU is
+                        # not left doing all 78 decodes after the workers
+                        # finish. Returns pixels; Phase C only pastes.
+                        vae = vae_replicas[k]
+                        z = lat / vae.config.scaling_factor + vae.config.shift_factor
+                        z = rearrange(z, "b c f h w -> (b f) c h w")
+                        return ("pixels", vae.decode(z).sample.to(device))
+                return ("latents", lat.to(device))
+
+            def _worker(k: int):
+                unet, dev = replicas[k], replica_devices[k]
+                q = work_queues[k]
+                while True:
+                    item = q.get()
+                    if item is None:
+                        return
+                    i, cond = item
+                    if stopping.is_set():
+                        ready[i].set()
+                        continue
+                    try:
+                        out = _denoise_chunk(unet, dev, k, cond)
+                    except Exception as e:  # surface on the main thread
+                        with denoise_lock:
+                            failures.append((i, e))
+                        ready[i].set()
+                        continue
+                    with denoise_lock:
+                        denoised[i] = out
+                        done_count[0] += 1
+                        _emit_progress("denoise", 0.35 + 0.50 * (done_count[0] / max(1, todo_count[0] or num_inferences)))
+                    ready[i].set()
+
+            threads = []
+            if not use_pool:
+                threads = [threading.Thread(target=_worker, args=(k,), daemon=True) for k in range(len(replicas))]
+                for th in threads:
+                    th.start()
+
+            # Restore (paste faces back into the 1080p frames) runs on a side
+            # thread per chunk as soon as the chunk is denoised, instead of as
+            # a serial stage after the last chunk. Disabled when a denoise
+            # checkpoint must be saved (that path needs the pre-restore tensor).
+            from concurrent.futures import ThreadPoolExecutor
+            overlap_restore = (
+                not denoise_checkpoint_path
+                and os.environ.get("LATENTSYNC_OVERLAP_RESTORE", "1") == "1"
+            )
+            restore_pool = ThreadPoolExecutor(max_workers=1) if overlap_restore else None
+            restore_futures: dict = {}
+            restore_seconds = [0.0]
+
+            def restore_chunk(index, decoded):
+                a = index * num_frames
+                b = min(len(video_frames), a + len(decoded))
+                started_at = time.perf_counter()
+                out = self.restore_video(
+                    decoded[: b - a], video_frames[a:b], boxes[a:b], affine_matrices[a:b],
+                    face_masks=None if face_masks is None else face_masks[a:b],
+                    alpha=None if alpha is None else alpha[a:b],
+                )
+                restore_seconds[0] += time.perf_counter() - started_at
+                chunk_times.setdefault(index, {})["restored"] = round(time.perf_counter() - call_t0, 3)
+                return out
+
+            def collect_chunk(index):
+                collect_started = time.perf_counter()
+                _, _, _, _, _, ref_pixels, chunk_masks = chunk_cond[index]
+                if use_pool:
+                    decoded = pool.result(index).to(device, dtype=weight_dtype)
+                    done_count[0] += 1
+                    entry = chunk_times.setdefault(index, {})
+                    entry["result"] = round(time.perf_counter() - call_t0, 3)
+                    timing = pool.timings.get(index)
+                    if timing:
+                        entry["worker_received"] = round(timing["received"] - call_t0_wall, 3)
+                        entry["worker_done"] = round(timing["done"] - call_t0_wall, 3)
+                        entry["device"] = timing.get("device")
+                        entry["persona_cached"] = timing.get("persona_cached", False)
+                else:
+                    ready[index].wait()
+                    if failures:
+                        raise failures[0][1]
+                    kind, payload = denoised.pop(index)
+                    decoded = payload if kind == "pixels" else self.decode_latents(payload)
+                profile["wait_for_worker_seconds"] += time.perf_counter() - collect_started
+                paste_started = time.perf_counter()
+                decoded = self.paste_surrounding_pixels_back(
+                    decoded, ref_pixels, 1 - chunk_masks, device, weight_dtype)
+                if restore_pool is not None:
+                    restore_futures[index] = restore_pool.submit(restore_chunk, index, decoded)
+                else:
+                    synced_video_frames.append(decoded.cpu())
+                chunk_cond[index] = None
+                profile["collect_and_paste_seconds"] += time.perf_counter() - paste_started
+                _emit_progress("denoise", 0.35 + 0.50 * done_count[0] / num_inferences)
+
+            try:
+                collected = 0
+                # --- Phase A: conditioning per chunk (main device) -------------
+                chunk_cond: list = []
+                decoded_by_chunk: dict = {}
+                next_worker = 0
+                prefetch = max(1, min(4, int(os.environ.get("LATENTSYNC_PREFETCH_PER_WORKER", "1"))))
+                for i in tqdm.tqdm(range(num_inferences), desc="Preparing chunks..."):
+                    conditioning_started = time.perf_counter()
+                    if self.unet.add_audio_layer:
+                        audio_embeds = torch.stack(whisper_chunks[i * num_frames : (i + 1) * num_frames])
+                        audio_embeds = audio_embeds.to(device, dtype=weight_dtype)
+                        if do_classifier_free_guidance:
+                            null_audio_embeds = torch.zeros_like(audio_embeds)
+                            audio_embeds = torch.cat([null_audio_embeds, audio_embeds])
+                    else:
+                        audio_embeds = None
+                    inference_faces = faces[i * num_frames : (i + 1) * num_frames]
+                    latents = all_latents[:, :, i * num_frames : (i + 1) * num_frames]
+                    ref_pixel_values, masked_pixel_values, masks = self.image_processor.prepare_masks_and_masked_images(
+                        inference_faces, affine_transform=False
+                    )
+                    # UNet reference for silent frames: the closed-mouth frame.
+                    # `ref_pixel_values` itself stays the current frame, since the
+                    # paste-back takes the surrounding pixels from it.
+                    unet_ref = ref_pixel_values
+                    if closed_ref_pixels is not None:
+                        quiet = np.flatnonzero(silent_frames[i * num_frames : (i + 1) * num_frames][: len(ref_pixel_values)])
+                        if len(quiet):
+                            unet_ref = ref_pixel_values.clone()
+                            unet_ref[quiet] = closed_ref_pixels.to(unet_ref.device, unet_ref.dtype)
+
+                    if bypass_unet:
+                        # Short-circuit: use the reference face crop as the
+                        # "generated" output. Skips denoise+VAE entirely.
+                        decoded_latents = ref_pixel_values.to(dtype=weight_dtype)
+                        decoded_latents = self.paste_surrounding_pixels_back(
+                            decoded_latents, ref_pixel_values, 1 - masks, device, weight_dtype
+                        )
+                        decoded_by_chunk[i] = decoded_latents.cpu()
+                        chunk_cond.append(None)
+                        continue
+
+                    worker_conditioning = use_pool and os.environ.get(
+                        "LATENTSYNC_WORKER_CONDITIONING", "1"
+                    ) == "1"
+                    if worker_conditioning:
+                        # The worker encodes masks/masked/reference crops with
+                        # its own VAE (shard_workers.py). Profiling showed the
+                        # coordinator spending ~50% of its time in the VAE
+                        # encode and the sync it forced; the pixel crops are
+                        # ~19 MB per chunk over /dev/shm, which is cheap.
+                        cond = (latents, None, None, None, audio_embeds, ref_pixel_values, masks)
+                        chunk_cond.append(cond)
+                        todo_count[0] += 1
+                        chunk_times.setdefault(i, {})["submit"] = round(time.perf_counter() - call_t0, 3)
+                        audio_cpu = None if audio_embeds is None else audio_embeds.detach().to("cpu")
+                        if persona_key:
+                            # Resident persona: the worker keeps this chunk's
+                            # footage latents after the first reply; the crops
+                            # still travel (cheap over /dev/shm) so a cold
+                            # worker can build them.
+                            pool.submit(i, ("persona", persona_key, i, latents.detach().to("cpu"), audio_cpu, *(
+                                x.detach().to("cpu") for x in (masks, masked_pixel_values, ref_pixel_values)
+                            )))
+                        else:
+                            pool.submit(i, ("pixels", *(
+                                x.detach().to("cpu") for x in (latents, masks, masked_pixel_values, unet_ref)
+                            ), audio_cpu))
+                    else:
+                        # 7. Prepare mask latent variables
+                        mask_latents, masked_image_latents = self.prepare_mask_latents(
+                            masks,
+                            masked_pixel_values,
+                            height,
+                            width,
+                            weight_dtype,
+                            device,
+                            generator,
+                            do_classifier_free_guidance,
+                        )
+                        # 8. Prepare image latents
+                        ref_latents = self.prepare_image_latents(
+                            unet_ref,
+                            device,
+                            weight_dtype,
+                            generator,
+                            do_classifier_free_guidance,
+                        )
+                        cond = (latents, mask_latents, masked_image_latents, ref_latents,
+                                audio_embeds, ref_pixel_values, masks)
+                        chunk_cond.append(cond)
+                        todo_count[0] += 1
+                    if worker_conditioning:
+                        pass
+                    elif use_pool:
+                        pool.submit(i, tuple(
+                            None if x is None else x.detach().to("cpu")
+                            for x in (latents, mask_latents, masked_image_latents, ref_latents, audio_embeds)
+                        ))
+                    else:
+                        ready[i] = threading.Event()
+                        work_queues[next_worker].put((i, cond))
+                        next_worker = (next_worker + 1) % len(replicas)
+                    profile["conditioning_seconds"] += time.perf_counter() - conditioning_started
+                    # Bounded prefetch overlaps coordinator work with workers.
+                    if i - collected + 1 >= prefetch * max(1, pool.size if use_pool else len(replicas)):
+                        collect_chunk(collected)
+                        collected += 1
+                    _emit_progress("denoise", 0.25 + 0.10 * ((i + 1) / num_inferences))
+
+                if not use_pool:
+                    for q in work_queues:
+                        q.put(None)
+
+                # --- Phase C: decode + paste, in order, as results land --------
+                for i in tqdm.tqdm(range(collected, num_inferences), desc="Decoding chunks..."):
+                    if chunk_cond[i] is None:
+                        if restore_pool is not None:
+                            restore_futures[i] = restore_pool.submit(
+                                restore_chunk, i, decoded_by_chunk[i].to(device, dtype=weight_dtype)
+                            )
+                        else:
+                            synced_video_frames.append(decoded_by_chunk[i])
+                        continue
+                    collect_chunk(i)
+
+                for th in threads:
+                    th.join()
+                for dev in replica_devices[1:]:
+                    torch.cuda.synchronize(dev)
+
+            finally:
+                # A failed request must not leave threads touching the scheduler
+                # or models after the service releases its inference lock.
+                stopping.set()
+                for q in work_queues:
+                    q.put(None)
+                for th in threads:
+                    th.join()
+
+            # Always printed: perf_counter sums only, no stream syncs. This is
+            # the stage breakdown operators need to pick the next optimization.
+            profile.update(event="latentsync_stages", frames=len(whisper_chunks), steps=num_inference_steps, workers=pool.size if use_pool else len(replicas), prefetch=prefetch)
+            profile = {k: (round(v, 2) if isinstance(v, float) else v) for k, v in profile.items()}
+            print(json.dumps(profile), flush=True)
+
+            if restore_pool is not None:
+                # Chunks already restored on the side thread; join in order.
+                restored_frames = np.concatenate(
+                    [restore_futures[i].result() for i in range(num_inferences)], axis=0
+                )
+                restore_pool.shutdown(wait=True)
+                print(json.dumps({"event": "latentsync_restore_overlapped", "frames": int(len(restored_frames)),
+                                  "restore_seconds_on_side_thread": round(restore_seconds[0], 2)}), flush=True)
+                synced_video_frames_tensor = None
+            else:
+                # Consolidate all chunk outputs into one tensor, then save for
+                # resume. Cache write is best-effort: if disk is full or the
+                # path is unwritable we log and continue — the live run still
+                # completes; only a future retry would miss the cache.
+                synced_video_frames_tensor = torch.cat(synced_video_frames)
+            print(json.dumps(chunk_timeline_report(chunk_times, num_frames, video_fps, call_t0_wall,
+                                                   len(whisper_chunks), persona_key)), flush=True)
+            if denoise_checkpoint_path and synced_video_frames_tensor is not None:
+                try:
+                    print(f"Saving denoise checkpoint: {denoise_checkpoint_path}")
+                    os.makedirs(os.path.dirname(denoise_checkpoint_path), exist_ok=True)
+                    torch.save(
+                        {
+                            "synced_video_frames": synced_video_frames_tensor,
+                            "video_frames": video_frames,
+                            "boxes": boxes,
+                            "affine_matrices": affine_matrices,
+                            "audio_samples": audio_samples,
+                        },
+                        denoise_checkpoint_path,
+                    )
+                except Exception as e:
+                    print(f"Checkpoint save failed ({e}); continuing anyway")
 
         _emit_progress("restore", 0.90)
-        synced_video_frames = self.restore_video(
-            synced_video_frames_tensor, video_frames, boxes, affine_matrices,
-            progress_callback=(
-                lambda frame_pct: _emit_progress(
-                    "restore", 0.90 + 0.08 * frame_pct,
-                )
-            ),
-        )
+        restore_started = time.perf_counter()
+        if restored_frames is not None:
+            synced_video_frames = restored_frames
+        else:
+            synced_video_frames = self.restore_video(
+                synced_video_frames_tensor, video_frames, boxes, affine_matrices,
+                face_masks=face_masks, alpha=alpha,
+                progress_callback=(
+                    lambda frame_pct: _emit_progress(
+                        "restore", 0.90 + 0.08 * frame_pct,
+                    )
+                ),
+            )
 
         audio_samples_remain_length = int(synced_video_frames.shape[0] / video_fps * audio_sample_rate)
         audio_samples = audio_samples[:audio_samples_remain_length].cpu().numpy()
@@ -1074,10 +1560,15 @@ class LipsyncPipeline(DiffusionPipeline):
         os.makedirs(temp_dir, exist_ok=True)
 
         _emit_progress("mux", 0.98)
-        write_video(os.path.join(temp_dir, "video.mp4"), synced_video_frames, fps=video_fps)
-
+        # GPU patch: one encode+mux pass (NVENC when available) instead of
+        # imageio libx264 crf 13 followed by a second libx264 crf 18 pass.
+        write_started = time.perf_counter()
         sf.write(os.path.join(temp_dir, "audio.wav"), audio_samples, audio_sample_rate)
-
-        command = f"ffmpeg -y -loglevel error -nostdin -i {os.path.join(temp_dir, 'video.mp4')} -i {os.path.join(temp_dir, 'audio.wav')} -c:v libx264 -crf 18 -c:a aac -q:v 0 -q:a 0 {video_out_path}"
-        subprocess.run(command, shell=True)
+        write_video_with_audio(
+            video_out_path, synced_video_frames, fps=video_fps,
+            audio_wav_path=os.path.join(temp_dir, "audio.wav"),
+        )
+        print(json.dumps({"event": "latentsync_finish", "frames": int(synced_video_frames.shape[0]),
+                          "restore_seconds": round(write_started - restore_started, 2),
+                          "write_seconds": round(time.perf_counter() - write_started, 2)}), flush=True)
         _emit_progress("done", 1.0)

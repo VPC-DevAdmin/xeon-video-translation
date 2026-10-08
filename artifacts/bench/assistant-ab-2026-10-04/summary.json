@@ -1,0 +1,1328 @@
+[
+ {
+  "label": "flashhead-lite-14s",
+  "design": "flashhead-lite-eager",
+  "frames": 339,
+  "head_start_from_call_s": 0.21,
+  "head_start_from_first_submit_s": 0.21,
+  "first_chunk_s": 0.21,
+  "aggregate_fps": 117.07,
+  "r": 4.683,
+  "chunk_seconds_mean": 0.203,
+  "chunk_seconds_p95": 0.204,
+  "stalls_with_H10": 0,
+  "stalls_with_H20": 0,
+  "load_s": 4.37,
+  "warmup_s": 0.63,
+  "peak_torch_gb": 5.36,
+  "gpu": {
+   "samples": 3,
+   "busy_gpus": [
+    "2"
+   ],
+   "busy_power_mean_w": 422.0,
+   "per_gpu": {
+    "0": {
+     "sm_mean": 0.0,
+     "sm_max": 0.0,
+     "power_mean_w": 83.0,
+     "mem_max_mb": 32177.0,
+     "enc_mean": 0.0
+    },
+    "1": {
+     "sm_mean": 0.0,
+     "sm_max": 0.0,
+     "power_mean_w": 85.0,
+     "mem_max_mb": 86248.0,
+     "enc_mean": 0.0
+    },
+    "2": {
+     "sm_mean": 80.7,
+     "sm_max": 86.0,
+     "power_mean_w": 422.0,
+     "mem_max_mb": 24086.0,
+     "enc_mean": 0.0
+    },
+    "3": {
+     "sm_mean": 0.0,
+     "sm_max": 0.0,
+     "power_mean_w": 88.0,
+     "mem_max_mb": 17751.0,
+     "enc_mean": 0.0
+    },
+    "4": {
+     "sm_mean": 0.0,
+     "sm_max": 0.0,
+     "power_mean_w": 83.0,
+     "mem_max_mb": 17751.0,
+     "enc_mean": 0.0
+    },
+    "5": {
+     "sm_mean": 0.0,
+     "sm_max": 0.0,
+     "power_mean_w": 85.0,
+     "mem_max_mb": 17751.0,
+     "enc_mean": 0.0
+    },
+    "6": {
+     "sm_mean": 0.0,
+     "sm_max": 0.0,
+     "power_mean_w": 84.0,
+     "mem_max_mb": 17751.0,
+     "enc_mean": 0.0
+    },
+    "7": {
+     "sm_mean": 0.0,
+     "sm_max": 0.0,
+     "power_mean_w": 141.0,
+     "mem_max_mb": 17755.0,
+     "enc_mean": 0.0
+    }
+   }
+  },
+  "quality": {
+   "faces_detected": "339/339",
+   "identity_vs_portrait_mean": 0.9367,
+   "identity_vs_portrait_p05": 0.8922,
+   "identity_vs_source_mean": 0.929,
+   "identity_drift": 0.0115,
+   "sharp_face": 201.7954,
+   "sharp_mouth": 127.4771,
+   "temporal_diff": 3.2024,
+   "temporal_diff_p95": 5.1249,
+   "flicker": 0.5543,
+   "sync_corr": 0.251,
+   "sync_lag_ms": -40.0,
+   "syncnet_cos0": 0.672,
+   "syncnet_margin": 0.5251,
+   "syncnet_offset": 1,
+   "size": "512x512"
+  }
+ },
+ {
+  "label": "flashhead-lite-60s",
+  "design": "flashhead-lite-eager",
+  "frames": 1488,
+  "head_start_from_call_s": 0.21,
+  "head_start_from_first_submit_s": 0.21,
+  "first_chunk_s": 0.21,
+  "aggregate_fps": 114.44,
+  "r": 4.578,
+  "chunk_seconds_mean": 0.204,
+  "chunk_seconds_p95": 0.206,
+  "stalls_with_H10": 0,
+  "stalls_with_H20": 0,
+  "load_s": 3.92,
+  "warmup_s": 0.59,
+  "peak_torch_gb": 5.36,
+  "gpu": {
+   "samples": 13,
+   "busy_gpus": [
+    "2"
+   ],
+   "busy_power_mean_w": 398.0,
+   "per_gpu": {
+    "0": {
+     "sm_mean": 0.0,
+     "sm_max": 0.0,
+     "power_mean_w": 83.0,
+     "mem_max_mb": 32177.0,
+     "enc_mean": 0.0
+    },
+    "1": {
+     "sm_mean": 0.0,
+     "sm_max": 0.0,
+     "power_mean_w": 86.0,
+     "mem_max_mb": 86248.0,
+     "enc_mean": 0.0
+    },
+    "2": {
+     "sm_mean": 82.2,
+     "sm_max": 93.0,
+     "power_mean_w": 398.0,
+     "mem_max_mb": 24086.0,
+     "enc_mean": 0.0
+    },
+    "3": {
+     "sm_mean": 0.0,
+     "sm_max": 0.0,
+     "power_mean_w": 88.0,
+     "mem_max_mb": 17751.0,
+     "enc_mean": 0.0
+    },
+    "4": {
+     "sm_mean": 0.0,
+     "sm_max": 0.0,
+     "power_mean_w": 83.0,
+     "mem_max_mb": 17751.0,
+     "enc_mean": 0.0
+    },
+    "5": {
+     "sm_mean": 0.0,
+     "sm_max": 0.0,
+     "power_mean_w": 86.0,
+     "mem_max_mb": 17751.0,
+     "enc_mean": 0.0
+    },
+    "6": {
+     "sm_mean": 0.0,
+     "sm_max": 0.0,
+     "power_mean_w": 84.0,
+     "mem_max_mb": 17751.0,
+     "enc_mean": 0.0
+    },
+    "7": {
+     "sm_mean": 0.0,
+     "sm_max": 0.0,
+     "power_mean_w": 90.0,
+     "mem_max_mb": 17755.0,
+     "enc_mean": 0.0
+    }
+   }
+  },
+  "quality": {
+   "faces_detected": "750/750",
+   "identity_vs_portrait_mean": 0.9382,
+   "identity_vs_portrait_p05": 0.8964,
+   "identity_vs_source_mean": 0.9255,
+   "identity_drift": 0.0093,
+   "sharp_face": 208.5318,
+   "sharp_mouth": 129.4733,
+   "temporal_diff": 3.2204,
+   "temporal_diff_p95": 5.067,
+   "flicker": 0.5409,
+   "sync_corr": 0.113,
+   "sync_lag_ms": 0.0,
+   "syncnet_cos0": 0.7255,
+   "syncnet_margin": 0.5155,
+   "syncnet_offset": 1,
+   "size": "512x512"
+  }
+ },
+ {
+  "label": "flashhead-pro-compiled-14s",
+  "design": "flashhead-pro-compiled",
+  "frames": 339,
+  "head_start_from_call_s": 3.26,
+  "head_start_from_first_submit_s": 3.26,
+  "first_chunk_s": 1.28,
+  "aggregate_fps": 21.79,
+  "r": 0.872,
+  "chunk_seconds_mean": 1.278,
+  "chunk_seconds_p95": 1.279,
+  "stalls_with_H10": 0,
+  "stalls_with_H20": 0,
+  "load_s": 8.86,
+  "warmup_s": 23.35,
+  "peak_torch_gb": 9.68,
+  "gpu": {
+   "samples": 17,
+   "busy_gpus": [
+    "2"
+   ],
+   "busy_power_mean_w": 528.0,
+   "per_gpu": {
+    "0": {
+     "sm_mean": 0.0,
+     "sm_max": 0.0,
+     "power_mean_w": 84.0,
+     "mem_max_mb": 32177.0,
+     "enc_mean": 0.0
+    },
+    "1": {
+     "sm_mean": 0.0,
+     "sm_max": 0.0,
+     "power_mean_w": 85.0,
+     "mem_max_mb": 86248.0,
+     "enc_mean": 0.0
+    },
+    "2": {
+     "sm_mean": 98.2,
+     "sm_max": 100.0,
+     "power_mean_w": 528.0,
+     "mem_max_mb": 29244.0,
+     "enc_mean": 0.0
+    },
+    "3": {
+     "sm_mean": 0.0,
+     "sm_max": 0.0,
+     "power_mean_w": 89.0,
+     "mem_max_mb": 17751.0,
+     "enc_mean": 0.0
+    },
+    "4": {
+     "sm_mean": 0.0,
+     "sm_max": 0.0,
+     "power_mean_w": 83.0,
+     "mem_max_mb": 17751.0,
+     "enc_mean": 0.0
+    },
+    "5": {
+     "sm_mean": 0.0,
+     "sm_max": 0.0,
+     "power_mean_w": 85.0,
+     "mem_max_mb": 17751.0,
+     "enc_mean": 0.0
+    },
+    "6": {
+     "sm_mean": 0.0,
+     "sm_max": 0.0,
+     "power_mean_w": 84.0,
+     "mem_max_mb": 17751.0,
+     "enc_mean": 0.0
+    },
+    "7": {
+     "sm_mean": 0.0,
+     "sm_max": 0.0,
+     "power_mean_w": 141.0,
+     "mem_max_mb": 17755.0,
+     "enc_mean": 0.0
+    }
+   }
+  },
+  "quality": {
+   "faces_detected": "339/339",
+   "identity_vs_portrait_mean": 0.9229,
+   "identity_vs_portrait_p05": 0.8725,
+   "identity_vs_source_mean": 0.9174,
+   "identity_drift": 0.0235,
+   "sharp_face": 305.4596,
+   "sharp_mouth": 268.1224,
+   "temporal_diff": 3.9601,
+   "temporal_diff_p95": 6.9755,
+   "flicker": 0.7755,
+   "sync_corr": 0.459,
+   "sync_lag_ms": 0.0,
+   "syncnet_cos0": 0.7545,
+   "syncnet_margin": 0.618,
+   "syncnet_offset": 0,
+   "size": "512x512"
+  }
+ },
+ {
+  "label": "flashhead-pro-compiled-60s",
+  "design": "flashhead-pro-compiled",
+  "frames": 1488,
+  "head_start_from_call_s": 10.47,
+  "head_start_from_first_submit_s": 10.47,
+  "first_chunk_s": 1.29,
+  "aggregate_fps": 21.65,
+  "r": 0.866,
+  "chunk_seconds_mean": 1.28,
+  "chunk_seconds_p95": 1.282,
+  "stalls_with_H10": 3,
+  "stalls_with_H20": 0,
+  "load_s": 8.68,
+  "warmup_s": 23.46,
+  "peak_torch_gb": 9.68,
+  "gpu": {
+   "samples": 69,
+   "busy_gpus": [
+    "2"
+   ],
+   "busy_power_mean_w": 539.0,
+   "per_gpu": {
+    "0": {
+     "sm_mean": 0.0,
+     "sm_max": 0.0,
+     "power_mean_w": 83.0,
+     "mem_max_mb": 32177.0,
+     "enc_mean": 0.0
+    },
+    "1": {
+     "sm_mean": 0.0,
+     "sm_max": 0.0,
+     "power_mean_w": 86.0,
+     "mem_max_mb": 86248.0,
+     "enc_mean": 0.0
+    },
+    "2": {
+     "sm_mean": 98.1,
+     "sm_max": 100.0,
+     "power_mean_w": 539.0,
+     "mem_max_mb": 29244.0,
+     "enc_mean": 0.0
+    },
+    "3": {
+     "sm_mean": 0.0,
+     "sm_max": 0.0,
+     "power_mean_w": 88.0,
+     "mem_max_mb": 17751.0,
+     "enc_mean": 0.0
+    },
+    "4": {
+     "sm_mean": 0.0,
+     "sm_max": 0.0,
+     "power_mean_w": 83.0,
+     "mem_max_mb": 17751.0,
+     "enc_mean": 0.0
+    },
+    "5": {
+     "sm_mean": 0.0,
+     "sm_max": 0.0,
+     "power_mean_w": 85.0,
+     "mem_max_mb": 17751.0,
+     "enc_mean": 0.0
+    },
+    "6": {
+     "sm_mean": 0.0,
+     "sm_max": 0.0,
+     "power_mean_w": 84.0,
+     "mem_max_mb": 17751.0,
+     "enc_mean": 0.0
+    },
+    "7": {
+     "sm_mean": 0.0,
+     "sm_max": 0.0,
+     "power_mean_w": 117.0,
+     "mem_max_mb": 17755.0,
+     "enc_mean": 0.0
+    }
+   }
+  },
+  "quality": {
+   "faces_detected": "750/750",
+   "identity_vs_portrait_mean": 0.9241,
+   "identity_vs_portrait_p05": 0.8757,
+   "identity_vs_source_mean": 0.9189,
+   "identity_drift": 0.0255,
+   "sharp_face": 314.963,
+   "sharp_mouth": 282.0525,
+   "temporal_diff": 3.9833,
+   "temporal_diff_p95": 7.2314,
+   "flicker": 0.7849,
+   "sync_corr": 0.41,
+   "sync_lag_ms": 40.0,
+   "syncnet_cos0": 0.8125,
+   "syncnet_margin": 0.6135,
+   "syncnet_offset": 0,
+   "size": "512x512"
+  }
+ },
+ {
+  "label": "flashhead-pro-eager-14s",
+  "design": "flashhead-pro-eager",
+  "frames": 339,
+  "head_start_from_call_s": 6.68,
+  "head_start_from_first_submit_s": 6.68,
+  "first_chunk_s": 1.54,
+  "aggregate_fps": 18.09,
+  "r": 0.724,
+  "chunk_seconds_mean": 1.541,
+  "chunk_seconds_p95": 1.541,
+  "stalls_with_H10": 0,
+  "stalls_with_H20": 0,
+  "load_s": 2.49,
+  "warmup_s": 3.29,
+  "peak_torch_gb": 6.52,
+  "gpu": {
+   "samples": 20,
+   "busy_gpus": [
+    "2"
+   ],
+   "busy_power_mean_w": 512.0,
+   "per_gpu": {
+    "0": {
+     "sm_mean": 0.0,
+     "sm_max": 0.0,
+     "power_mean_w": 84.0,
+     "mem_max_mb": 32177.0,
+     "enc_mean": 0.0
+    },
+    "1": {
+     "sm_mean": 0.0,
+     "sm_max": 0.0,
+     "power_mean_w": 85.0,
+     "mem_max_mb": 86248.0,
+     "enc_mean": 0.0
+    },
+    "2": {
+     "sm_mean": 98.2,
+     "sm_max": 99.0,
+     "power_mean_w": 512.0,
+     "mem_max_mb": 25930.0,
+     "enc_mean": 0.0
+    },
+    "3": {
+     "sm_mean": 0.0,
+     "sm_max": 0.0,
+     "power_mean_w": 88.0,
+     "mem_max_mb": 17751.0,
+     "enc_mean": 0.0
+    },
+    "4": {
+     "sm_mean": 0.0,
+     "sm_max": 0.0,
+     "power_mean_w": 83.0,
+     "mem_max_mb": 17751.0,
+     "enc_mean": 0.0
+    },
+    "5": {
+     "sm_mean": 0.0,
+     "sm_max": 0.0,
+     "power_mean_w": 85.0,
+     "mem_max_mb": 17751.0,
+     "enc_mean": 0.0
+    },
+    "6": {
+     "sm_mean": 0.0,
+     "sm_max": 0.0,
+     "power_mean_w": 84.0,
+     "mem_max_mb": 17751.0,
+     "enc_mean": 0.0
+    },
+    "7": {
+     "sm_mean": 0.0,
+     "sm_max": 0.0,
+     "power_mean_w": 141.0,
+     "mem_max_mb": 17755.0,
+     "enc_mean": 0.0
+    }
+   }
+  },
+  "quality": {
+   "faces_detected": "339/339",
+   "identity_vs_portrait_mean": 0.9217,
+   "identity_vs_portrait_p05": 0.8623,
+   "identity_vs_source_mean": 0.9157,
+   "identity_drift": 0.0341,
+   "sharp_face": 308.7577,
+   "sharp_mouth": 266.6639,
+   "temporal_diff": 3.9769,
+   "temporal_diff_p95": 6.9024,
+   "flicker": 0.7962,
+   "sync_corr": 0.377,
+   "sync_lag_ms": 0.0,
+   "syncnet_cos0": 0.7285,
+   "syncnet_margin": 0.5916,
+   "syncnet_offset": 1,
+   "size": "512x512"
+  }
+ },
+ {
+  "label": "ls10-14s-cold",
+  "design": "latentsync-persona",
+  "frames": 340,
+  "steps": 10,
+  "wall_s": 86.56,
+  "prepare_s": null,
+  "head_start_from_call_s": 19.48,
+  "head_start_from_first_submit_s": 6.81,
+  "first_chunk_s": 18.11,
+  "aggregate_fps": 21.1,
+  "r": 0.844,
+  "worker_seconds_per_chunk_mean": 3.56,
+  "stalls_with_H10": 0,
+  "stalls_with_H20": 0,
+  "persona_cache_hits": 0,
+  "stage_decode_audio_face_s": 12.65,
+  "stage_wait_workers_s": 10.8,
+  "stage_write_s": 2.52,
+  "gpu": {
+   "samples": 87,
+   "busy_gpus": [
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7"
+   ],
+   "busy_power_mean_w": 1096.0,
+   "per_gpu": {
+    "0": {
+     "sm_mean": 13.1,
+     "sm_max": 100.0,
+     "power_mean_w": 147.0,
+     "mem_max_mb": 32978.0,
+     "enc_mean": 0.2
+    },
+    "1": {
+     "sm_mean": 10.8,
+     "sm_max": 100.0,
+     "power_mean_w": 141.0,
+     "mem_max_mb": 86252.0,
+     "enc_mean": 0.0
+    },
+    "2": {
+     "sm_mean": 10.3,
+     "sm_max": 100.0,
+     "power_mean_w": 141.0,
+     "mem_max_mb": 17755.0,
+     "enc_mean": 0.0
+    },
+    "3": {
+     "sm_mean": 10.3,
+     "sm_max": 100.0,
+     "power_mean_w": 142.0,
+     "mem_max_mb": 17755.0,
+     "enc_mean": 0.0
+    },
+    "4": {
+     "sm_mean": 11.3,
+     "sm_max": 100.0,
+     "power_mean_w": 139.0,
+     "mem_max_mb": 17755.0,
+     "enc_mean": 0.0
+    },
+    "5": {
+     "sm_mean": 9.0,
+     "sm_max": 100.0,
+     "power_mean_w": 127.0,
+     "mem_max_mb": 17753.0,
+     "enc_mean": 0.0
+    },
+    "6": {
+     "sm_mean": 8.0,
+     "sm_max": 100.0,
+     "power_mean_w": 123.0,
+     "mem_max_mb": 17753.0,
+     "enc_mean": 0.0
+    },
+    "7": {
+     "sm_mean": 8.5,
+     "sm_max": 100.0,
+     "power_mean_w": 136.0,
+     "mem_max_mb": 17753.0,
+     "enc_mean": 0.0
+    }
+   }
+  },
+  "quality": {
+   "faces_detected": "340/340",
+   "identity_vs_portrait_mean": 0.9276,
+   "identity_vs_portrait_p05": 0.9035,
+   "identity_vs_source_mean": 0.9592,
+   "identity_drift": 0.0018,
+   "sharp_face": 291.1545,
+   "sharp_mouth": 148.6714,
+   "temporal_diff": 3.2971,
+   "temporal_diff_p95": 5.7005,
+   "flicker": 0.7454,
+   "sync_corr": 0.571,
+   "sync_lag_ms": 40.0,
+   "syncnet_cos0": 0.8694,
+   "syncnet_margin": 0.7275,
+   "syncnet_offset": 0,
+   "size": "1080x1920"
+  }
+ },
+ {
+  "label": "ls10-14s-resident-run1",
+  "design": "latentsync-persona",
+  "frames": 340,
+  "steps": 10,
+  "wall_s": 19.01,
+  "prepare_s": 12.86,
+  "head_start_from_call_s": 5.35,
+  "head_start_from_first_submit_s": 5.34,
+  "first_chunk_s": 4.07,
+  "aggregate_fps": 23.21,
+  "r": 0.928,
+  "worker_seconds_per_chunk_mean": 3.06,
+  "stalls_with_H10": 0,
+  "stalls_with_H20": 0,
+  "persona_cache_hits": 22,
+  "stage_decode_audio_face_s": 0.0,
+  "stage_wait_workers_s": 9.56,
+  "stage_write_s": 2.49,
+  "gpu": {
+   "samples": 19,
+   "busy_gpus": [
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7"
+   ],
+   "busy_power_mean_w": 2417.0,
+   "per_gpu": {
+    "0": {
+     "sm_mean": 55.3,
+     "sm_max": 100.0,
+     "power_mean_w": 344.0,
+     "mem_max_mb": 32978.0,
+     "enc_mean": 1.1
+    },
+    "1": {
+     "sm_mean": 51.4,
+     "sm_max": 100.0,
+     "power_mean_w": 319.0,
+     "mem_max_mb": 86252.0,
+     "enc_mean": 0.0
+    },
+    "2": {
+     "sm_mean": 47.1,
+     "sm_max": 100.0,
+     "power_mean_w": 320.0,
+     "mem_max_mb": 17755.0,
+     "enc_mean": 0.0
+    },
+    "3": {
+     "sm_mean": 47.1,
+     "sm_max": 100.0,
+     "power_mean_w": 315.0,
+     "mem_max_mb": 17755.0,
+     "enc_mean": 0.0
+    },
+    "4": {
+     "sm_mean": 47.0,
+     "sm_max": 100.0,
+     "power_mean_w": 314.0,
+     "mem_max_mb": 17755.0,
+     "enc_mean": 0.0
+    },
+    "5": {
+     "sm_mean": 36.5,
+     "sm_max": 100.0,
+     "power_mean_w": 289.0,
+     "mem_max_mb": 17753.0,
+     "enc_mean": 0.0
+    },
+    "6": {
+     "sm_mean": 31.3,
+     "sm_max": 99.0,
+     "power_mean_w": 235.0,
+     "mem_max_mb": 17753.0,
+     "enc_mean": 0.0
+    },
+    "7": {
+     "sm_mean": 31.4,
+     "sm_max": 100.0,
+     "power_mean_w": 281.0,
+     "mem_max_mb": 17753.0,
+     "enc_mean": 0.0
+    }
+   }
+  }
+ },
+ {
+  "label": "ls10-14s-resident-run2",
+  "design": "latentsync-persona",
+  "frames": 340,
+  "steps": 10,
+  "wall_s": 18.81,
+  "prepare_s": 13.59,
+  "head_start_from_call_s": 5.45,
+  "head_start_from_first_submit_s": 5.43,
+  "first_chunk_s": 4.14,
+  "aggregate_fps": 23.12,
+  "r": 0.925,
+  "worker_seconds_per_chunk_mean": 3.07,
+  "stalls_with_H10": 0,
+  "stalls_with_H20": 0,
+  "persona_cache_hits": 22,
+  "stage_decode_audio_face_s": 0.0,
+  "stage_wait_workers_s": 9.5,
+  "stage_write_s": 2.69,
+  "gpu": {
+   "samples": 19,
+   "busy_gpus": [
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7"
+   ],
+   "busy_power_mean_w": 2393.0,
+   "per_gpu": {
+    "0": {
+     "sm_mean": 59.6,
+     "sm_max": 100.0,
+     "power_mean_w": 342.0,
+     "mem_max_mb": 32978.0,
+     "enc_mean": 0.5
+    },
+    "1": {
+     "sm_mean": 47.7,
+     "sm_max": 100.0,
+     "power_mean_w": 314.0,
+     "mem_max_mb": 86252.0,
+     "enc_mean": 0.0
+    },
+    "2": {
+     "sm_mean": 56.4,
+     "sm_max": 100.0,
+     "power_mean_w": 316.0,
+     "mem_max_mb": 17755.0,
+     "enc_mean": 0.0
+    },
+    "3": {
+     "sm_mean": 47.8,
+     "sm_max": 100.0,
+     "power_mean_w": 317.0,
+     "mem_max_mb": 17755.0,
+     "enc_mean": 0.0
+    },
+    "4": {
+     "sm_mean": 48.5,
+     "sm_max": 100.0,
+     "power_mean_w": 316.0,
+     "mem_max_mb": 17755.0,
+     "enc_mean": 0.0
+    },
+    "5": {
+     "sm_mean": 33.6,
+     "sm_max": 100.0,
+     "power_mean_w": 263.0,
+     "mem_max_mb": 17753.0,
+     "enc_mean": 0.0
+    },
+    "6": {
+     "sm_mean": 31.3,
+     "sm_max": 100.0,
+     "power_mean_w": 240.0,
+     "mem_max_mb": 17753.0,
+     "enc_mean": 0.0
+    },
+    "7": {
+     "sm_mean": 31.4,
+     "sm_max": 100.0,
+     "power_mean_w": 285.0,
+     "mem_max_mb": 17753.0,
+     "enc_mean": 0.0
+    }
+   }
+  },
+  "quality": {
+   "faces_detected": "340/340",
+   "identity_vs_portrait_mean": 0.9276,
+   "identity_vs_portrait_p05": 0.9035,
+   "identity_vs_source_mean": 0.9592,
+   "identity_drift": 0.0018,
+   "sharp_face": 291.1545,
+   "sharp_mouth": 148.6714,
+   "temporal_diff": 3.2971,
+   "temporal_diff_p95": 5.7005,
+   "flicker": 0.7454,
+   "sync_corr": 0.571,
+   "sync_lag_ms": 40.0,
+   "syncnet_cos0": 0.8694,
+   "syncnet_margin": 0.7275,
+   "syncnet_offset": 0,
+   "size": "1080x1920"
+  }
+ },
+ {
+  "label": "ls10-60s-cold",
+  "design": "latentsync-persona",
+  "frames": 1489,
+  "steps": 10,
+  "wall_s": 135.87,
+  "prepare_s": null,
+  "head_start_from_call_s": 56.1,
+  "head_start_from_first_submit_s": 13.73,
+  "first_chunk_s": 46.9,
+  "aggregate_fps": 24.05,
+  "r": 0.962,
+  "worker_seconds_per_chunk_mean": 3.5,
+  "stalls_with_H10": 39,
+  "stalls_with_H20": 0,
+  "persona_cache_hits": 0,
+  "stage_decode_audio_face_s": 42.33,
+  "stage_wait_workers_s": 42.66,
+  "stage_write_s": 8.74,
+  "gpu": {
+   "samples": 136,
+   "busy_gpus": [
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7"
+   ],
+   "busy_power_mean_w": 1852.0,
+   "per_gpu": {
+    "0": {
+     "sm_mean": 39.1,
+     "sm_max": 100.0,
+     "power_mean_w": 243.0,
+     "mem_max_mb": 33384.0,
+     "enc_mean": 0.5
+    },
+    "1": {
+     "sm_mean": 31.5,
+     "sm_max": 100.0,
+     "power_mean_w": 229.0,
+     "mem_max_mb": 86278.0,
+     "enc_mean": 0.0
+    },
+    "2": {
+     "sm_mean": 32.8,
+     "sm_max": 100.0,
+     "power_mean_w": 229.0,
+     "mem_max_mb": 17781.0,
+     "enc_mean": 0.0
+    },
+    "3": {
+     "sm_mean": 33.6,
+     "sm_max": 100.0,
+     "power_mean_w": 232.0,
+     "mem_max_mb": 17781.0,
+     "enc_mean": 0.0
+    },
+    "4": {
+     "sm_mean": 33.9,
+     "sm_max": 100.0,
+     "power_mean_w": 227.0,
+     "mem_max_mb": 17781.0,
+     "enc_mean": 0.0
+    },
+    "5": {
+     "sm_mean": 31.9,
+     "sm_max": 100.0,
+     "power_mean_w": 217.0,
+     "mem_max_mb": 17781.0,
+     "enc_mean": 0.0
+    },
+    "6": {
+     "sm_mean": 31.2,
+     "sm_max": 100.0,
+     "power_mean_w": 216.0,
+     "mem_max_mb": 17777.0,
+     "enc_mean": 0.0
+    },
+    "7": {
+     "sm_mean": 31.1,
+     "sm_max": 100.0,
+     "power_mean_w": 259.0,
+     "mem_max_mb": 17777.0,
+     "enc_mean": 0.0
+    }
+   }
+  }
+ },
+ {
+  "label": "ls10-60s-resident-run1",
+  "design": "latentsync-persona",
+  "frames": 1489,
+  "steps": 10,
+  "wall_s": 70.73,
+  "prepare_s": 43.3,
+  "head_start_from_call_s": 11.85,
+  "head_start_from_first_submit_s": 11.83,
+  "first_chunk_s": 4.02,
+  "aggregate_fps": 25.67,
+  "r": 1.027,
+  "worker_seconds_per_chunk_mean": 3.15,
+  "stalls_with_H10": 18,
+  "stalls_with_H20": 0,
+  "persona_cache_hits": 94,
+  "stage_decode_audio_face_s": 0.0,
+  "stage_wait_workers_s": 37.65,
+  "stage_write_s": 8.76,
+  "gpu": {
+   "samples": 70,
+   "busy_gpus": [
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7"
+   ],
+   "busy_power_mean_w": 2679.0,
+   "per_gpu": {
+    "0": {
+     "sm_mean": 62.7,
+     "sm_max": 100.0,
+     "power_mean_w": 359.0,
+     "mem_max_mb": 33384.0,
+     "enc_mean": 1.1
+    },
+    "1": {
+     "sm_mean": 54.9,
+     "sm_max": 100.0,
+     "power_mean_w": 334.0,
+     "mem_max_mb": 86278.0,
+     "enc_mean": 0.0
+    },
+    "2": {
+     "sm_mean": 52.3,
+     "sm_max": 100.0,
+     "power_mean_w": 338.0,
+     "mem_max_mb": 17781.0,
+     "enc_mean": 0.0
+    },
+    "3": {
+     "sm_mean": 53.1,
+     "sm_max": 100.0,
+     "power_mean_w": 337.0,
+     "mem_max_mb": 17781.0,
+     "enc_mean": 0.0
+    },
+    "4": {
+     "sm_mean": 56.2,
+     "sm_max": 100.0,
+     "power_mean_w": 333.0,
+     "mem_max_mb": 17781.0,
+     "enc_mean": 0.0
+    },
+    "5": {
+     "sm_mean": 50.8,
+     "sm_max": 100.0,
+     "power_mean_w": 317.0,
+     "mem_max_mb": 17781.0,
+     "enc_mean": 0.0
+    },
+    "6": {
+     "sm_mean": 50.9,
+     "sm_max": 100.0,
+     "power_mean_w": 316.0,
+     "mem_max_mb": 17777.0,
+     "enc_mean": 0.0
+    },
+    "7": {
+     "sm_mean": 50.8,
+     "sm_max": 100.0,
+     "power_mean_w": 345.0,
+     "mem_max_mb": 17777.0,
+     "enc_mean": 0.0
+    }
+   }
+  }
+ },
+ {
+  "label": "ls10-60s-resident-run2",
+  "design": "latentsync-persona",
+  "frames": 1489,
+  "steps": 10,
+  "wall_s": 70.73,
+  "prepare_s": 42.36,
+  "head_start_from_call_s": 11.89,
+  "head_start_from_first_submit_s": 11.86,
+  "first_chunk_s": 4.09,
+  "aggregate_fps": 25.71,
+  "r": 1.028,
+  "worker_seconds_per_chunk_mean": 3.15,
+  "stalls_with_H10": 19,
+  "stalls_with_H20": 0,
+  "persona_cache_hits": 94,
+  "stage_decode_audio_face_s": 0.0,
+  "stage_wait_workers_s": 37.83,
+  "stage_write_s": 8.53,
+  "gpu": {
+   "samples": 70,
+   "busy_gpus": [
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7"
+   ],
+   "busy_power_mean_w": 2682.0,
+   "per_gpu": {
+    "0": {
+     "sm_mean": 61.9,
+     "sm_max": 100.0,
+     "power_mean_w": 361.0,
+     "mem_max_mb": 33384.0,
+     "enc_mean": 1.1
+    },
+    "1": {
+     "sm_mean": 53.9,
+     "sm_max": 100.0,
+     "power_mean_w": 336.0,
+     "mem_max_mb": 86278.0,
+     "enc_mean": 0.0
+    },
+    "2": {
+     "sm_mean": 52.8,
+     "sm_max": 100.0,
+     "power_mean_w": 338.0,
+     "mem_max_mb": 17781.0,
+     "enc_mean": 0.0
+    },
+    "3": {
+     "sm_mean": 53.4,
+     "sm_max": 100.0,
+     "power_mean_w": 336.0,
+     "mem_max_mb": 17781.0,
+     "enc_mean": 0.0
+    },
+    "4": {
+     "sm_mean": 53.6,
+     "sm_max": 100.0,
+     "power_mean_w": 333.0,
+     "mem_max_mb": 17781.0,
+     "enc_mean": 0.0
+    },
+    "5": {
+     "sm_mean": 51.6,
+     "sm_max": 100.0,
+     "power_mean_w": 317.0,
+     "mem_max_mb": 17781.0,
+     "enc_mean": 0.0
+    },
+    "6": {
+     "sm_mean": 49.4,
+     "sm_max": 100.0,
+     "power_mean_w": 314.0,
+     "mem_max_mb": 17777.0,
+     "enc_mean": 0.0
+    },
+    "7": {
+     "sm_mean": 48.2,
+     "sm_max": 100.0,
+     "power_mean_w": 347.0,
+     "mem_max_mb": 17777.0,
+     "enc_mean": 0.0
+    }
+   }
+  },
+  "quality": {
+   "faces_detected": "750/750",
+   "identity_vs_portrait_mean": 0.9281,
+   "identity_vs_portrait_p05": 0.903,
+   "identity_vs_source_mean": 0.9592,
+   "identity_drift": 0.0009,
+   "sharp_face": 293.0106,
+   "sharp_mouth": 153.2894,
+   "temporal_diff": 3.3258,
+   "temporal_diff_p95": 6.0471,
+   "flicker": 0.8834,
+   "sync_corr": 0.549,
+   "sync_lag_ms": 40.0,
+   "syncnet_cos0": 0.8953,
+   "syncnet_margin": 0.6772,
+   "syncnet_offset": 0,
+   "size": "1080x1920"
+  }
+ },
+ {
+  "label": "ls20-14s-resident",
+  "design": "latentsync-persona",
+  "frames": 340,
+  "steps": 20,
+  "wall_s": 24.88,
+  "prepare_s": 13.53,
+  "head_start_from_call_s": 9.51,
+  "head_start_from_first_submit_s": 9.49,
+  "first_chunk_s": 6.83,
+  "aggregate_fps": 16.56,
+  "r": 0.663,
+  "worker_seconds_per_chunk_mean": 5.76,
+  "stalls_with_H10": 0,
+  "stalls_with_H20": 0,
+  "persona_cache_hits": 22,
+  "stage_decode_audio_face_s": 0.0,
+  "stage_wait_workers_s": 18.3,
+  "stage_write_s": 2.74,
+  "gpu": {
+   "samples": 25,
+   "busy_gpus": [
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7"
+   ],
+   "busy_power_mean_w": 3060.0,
+   "per_gpu": {
+    "0": {
+     "sm_mean": 80.3,
+     "sm_max": 100.0,
+     "power_mean_w": 429.0,
+     "mem_max_mb": 32978.0,
+     "enc_mean": 0.5
+    },
+    "1": {
+     "sm_mean": 71.4,
+     "sm_max": 100.0,
+     "power_mean_w": 410.0,
+     "mem_max_mb": 86252.0,
+     "enc_mean": 0.0
+    },
+    "2": {
+     "sm_mean": 71.5,
+     "sm_max": 100.0,
+     "power_mean_w": 415.0,
+     "mem_max_mb": 17755.0,
+     "enc_mean": 0.0
+    },
+    "3": {
+     "sm_mean": 71.4,
+     "sm_max": 100.0,
+     "power_mean_w": 412.0,
+     "mem_max_mb": 17755.0,
+     "enc_mean": 0.0
+    },
+    "4": {
+     "sm_mean": 69.0,
+     "sm_max": 100.0,
+     "power_mean_w": 408.0,
+     "mem_max_mb": 17755.0,
+     "enc_mean": 0.0
+    },
+    "5": {
+     "sm_mean": 51.6,
+     "sm_max": 100.0,
+     "power_mean_w": 345.0,
+     "mem_max_mb": 17753.0,
+     "enc_mean": 0.0
+    },
+    "6": {
+     "sm_mean": 41.9,
+     "sm_max": 100.0,
+     "power_mean_w": 302.0,
+     "mem_max_mb": 17753.0,
+     "enc_mean": 0.0
+    },
+    "7": {
+     "sm_mean": 43.6,
+     "sm_max": 100.0,
+     "power_mean_w": 339.0,
+     "mem_max_mb": 17753.0,
+     "enc_mean": 0.0
+    }
+   }
+  },
+  "quality": {
+   "faces_detected": "340/340",
+   "identity_vs_portrait_mean": 0.9275,
+   "identity_vs_portrait_p05": 0.9031,
+   "identity_vs_source_mean": 0.9597,
+   "identity_drift": 0.0008,
+   "sharp_face": 294.0578,
+   "sharp_mouth": 156.8144,
+   "temporal_diff": 3.3619,
+   "temporal_diff_p95": 5.8561,
+   "flicker": 0.7592,
+   "sync_corr": 0.588,
+   "sync_lag_ms": 40.0,
+   "syncnet_cos0": 0.8726,
+   "syncnet_margin": 0.7333,
+   "syncnet_offset": 0,
+   "size": "1080x1920"
+  }
+ },
+ {
+  "label": "ls20-60s-resident",
+  "design": "latentsync-persona",
+  "frames": 1489,
+  "steps": 20,
+  "wall_s": 93.45,
+  "prepare_s": 40.83,
+  "head_start_from_call_s": 23.65,
+  "head_start_from_first_submit_s": 23.63,
+  "first_chunk_s": 7.0,
+  "aggregate_fps": 18.48,
+  "r": 0.739,
+  "worker_seconds_per_chunk_mean": 5.91,
+  "stalls_with_H10": 77,
+  "stalls_with_H20": 25,
+  "persona_cache_hits": 94,
+  "stage_decode_audio_face_s": 0.0,
+  "stage_wait_workers_s": 74.04,
+  "stage_write_s": 8.72,
+  "gpu": {
+   "samples": 94,
+   "busy_gpus": [
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7"
+   ],
+   "busy_power_mean_w": 3482.0,
+   "per_gpu": {
+    "0": {
+     "sm_mean": 79.9,
+     "sm_max": 100.0,
+     "power_mean_w": 455.0,
+     "mem_max_mb": 33384.0,
+     "enc_mean": 0.8
+    },
+    "1": {
+     "sm_mean": 72.2,
+     "sm_max": 100.0,
+     "power_mean_w": 438.0,
+     "mem_max_mb": 86278.0,
+     "enc_mean": 0.0
+    },
+    "2": {
+     "sm_mean": 74.7,
+     "sm_max": 100.0,
+     "power_mean_w": 444.0,
+     "mem_max_mb": 17781.0,
+     "enc_mean": 0.0
+    },
+    "3": {
+     "sm_mean": 75.5,
+     "sm_max": 100.0,
+     "power_mean_w": 440.0,
+     "mem_max_mb": 17781.0,
+     "enc_mean": 0.0
+    },
+    "4": {
+     "sm_mean": 76.0,
+     "sm_max": 100.0,
+     "power_mean_w": 437.0,
+     "mem_max_mb": 17781.0,
+     "enc_mean": 0.0
+    },
+    "5": {
+     "sm_mean": 69.9,
+     "sm_max": 100.0,
+     "power_mean_w": 417.0,
+     "mem_max_mb": 17781.0,
+     "enc_mean": 0.0
+    },
+    "6": {
+     "sm_mean": 68.3,
+     "sm_max": 100.0,
+     "power_mean_w": 412.0,
+     "mem_max_mb": 17777.0,
+     "enc_mean": 0.0
+    },
+    "7": {
+     "sm_mean": 68.8,
+     "sm_max": 100.0,
+     "power_mean_w": 439.0,
+     "mem_max_mb": 17777.0,
+     "enc_mean": 0.0
+    }
+   }
+  },
+  "quality": {
+   "faces_detected": "750/750",
+   "identity_vs_portrait_mean": 0.928,
+   "identity_vs_portrait_p05": 0.9019,
+   "identity_vs_source_mean": 0.96,
+   "identity_drift": -0.0001,
+   "sharp_face": 295.9781,
+   "sharp_mouth": 161.3395,
+   "temporal_diff": 3.387,
+   "temporal_diff_p95": 6.2118,
+   "flicker": 0.91,
+   "sync_corr": 0.552,
+   "sync_lag_ms": 40.0,
+   "syncnet_cos0": 0.8934,
+   "syncnet_margin": 0.6763,
+   "syncnet_offset": 0,
+   "size": "1080x1920"
+  }
+ }
+]

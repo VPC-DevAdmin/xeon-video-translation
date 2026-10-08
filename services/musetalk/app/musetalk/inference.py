@@ -21,7 +21,7 @@ import json
 import logging
 import os
 import subprocess
-import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
@@ -30,9 +30,10 @@ from typing import Callable
 import cv2
 import numpy as np
 import torch
+from concurrent.futures import ThreadPoolExecutor
 
 from .audio_features import AudioProcessor
-from .blending import get_image
+from .blending import composite_np, face_large_crop_rgb
 from .face_parsing import FaceParsing
 from .face_tracking import build_aligner, detect_batch
 from .models.unet import UNet
@@ -184,7 +185,7 @@ def _smooth_boxes(
 # --------------------------------------------------------------------------- #
 # Detection cache
 #
-# Keyed on a cheap signature of the input video (size + first 1 MB).
+# Keyed on the full SHA-256 of the input video and detector version.
 # Cached under MODEL_CACHE_DIR/cache/face_detections/.
 # The cache stores raw SCRFD output (pre-fill, pre-smooth) so downstream
 # preprocessing can change without invalidating detection work.
@@ -204,18 +205,11 @@ def _cache_dir() -> Path:
 
 
 def _video_signature(path: Path) -> str:
-    """Fast-enough fingerprint. First 1 MB hash + size + detector version.
-
-    Collisions in practice are negligible for demo use; we're not verifying
-    video identity for security, just avoiding redundant compute across
-    repeated runs on the same asset.
-    """
-    stat = path.stat()
-    h = hashlib.sha1()
-    h.update(_DETECTOR_VERSION.encode())
-    h.update(str(stat.st_size).encode())
-    with path.open("rb") as f:
-        h.update(f.read(1 << 20))
+    """Hash the whole asset; equal prefixes and sizes do not imply equal video."""
+    h = hashlib.sha256(_DETECTOR_VERSION.encode())
+    with path.open("rb") as source:
+        for block in iter(lambda: source.read(1024 * 1024), b""):
+            h.update(block)
     return h.hexdigest()
 
 
@@ -234,6 +228,8 @@ _CacheEntry = tuple[
 
 
 def _load_detection_cache(video_path: Path) -> list[_CacheEntry] | None:
+    if os.environ.get("MUSETALK_DETECTION_CACHE", "1") == "0":
+        return None
     path = _cache_path_for(video_path)
     if not path.exists():
         return None
@@ -266,6 +262,8 @@ def _save_detection_cache(
     video_path: Path,
     detections: list[_CacheEntry],
 ) -> None:
+    if os.environ.get("MUSETALK_DETECTION_CACHE", "1") == "0":
+        return None
     path = _cache_path_for(video_path)
     payload = {
         "schema": _CACHE_SCHEMA_VERSION,
@@ -292,17 +290,47 @@ def _save_detection_cache(
 # --------------------------------------------------------------------------- #
 
 
-def _ipex_dtype() -> "torch.dtype":
-    """Resolve the IPEX compute dtype from env.
+def _resolve_device() -> "torch.device":
+    """Compute device from the DEVICE env var: cpu (default) | cuda | auto.
 
-    fp32 is the safe default — pure kernel acceleration, no numerical drift.
-    bf16 is opt-in because the VAE and UNet haven't been validated end-to-end
-    at lower precision and may produce subtle output changes (mouth texture,
-    color shift). Enable with `MUSETALK_IPEX_DTYPE=bf16`.
+    The GPU track (docker-compose.gpu.yml) sets DEVICE=cuda and pins the
+    container to one card via CUDA_VISIBLE_DEVICES, so `cuda` here always
+    means cuda:0 inside the container.
     """
-    choice = os.environ.get("MUSETALK_IPEX_DTYPE", "fp32").lower()
+    choice = os.environ.get("DEVICE", "cpu").lower()
+    if choice == "auto":
+        choice = "cuda" if torch.cuda.is_available() else "cpu"
+    if choice.startswith("cuda") and not torch.cuda.is_available():
+        raise RuntimeError(f"DEVICE={choice} requested but CUDA is unavailable")
+    if choice.startswith("cuda"):
+        # Free on Ampere+/Blackwell for this workload: TF32 for remaining fp32
+        # matmuls, cuDNN autotune for fixed-shape UNet/VAE convs.
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        torch.backends.cudnn.benchmark = os.environ.get("GPU_CUDNN_BENCHMARK", "0") == "1"
+    return torch.device(choice)
+
+
+def _ipex_dtype() -> "torch.dtype":
+    """Resolve the compute dtype from env.
+
+    `MUSETALK_DTYPE` (fp32 | fp16 | bf16) is the device-neutral knob;
+    `MUSETALK_IPEX_DTYPE` is honoured as the legacy CPU spelling.
+
+    fp32 is the safe default — no numerical drift. bf16 is opt-in on CPU
+    because the VAE and UNet haven't been validated end-to-end at lower
+    precision. fp16 is the natural GPU speed mode and is what MuseTalk
+    upstream runs on CUDA; it is still opt-in here until the GPU track has
+    compared outputs against fp32.
+    """
+    choice = (
+        os.environ.get("MUSETALK_DTYPE")
+        or os.environ.get("MUSETALK_IPEX_DTYPE", "fp32")
+    ).lower()
     if choice in ("bf16", "bfloat16"):
         return torch.bfloat16
+    if choice in ("fp16", "float16", "half"):
+        return torch.float16
     return torch.float32
 
 
@@ -388,26 +416,35 @@ _load_lock = Lock()
 def _load(paths: WeightPaths) -> _Loaded:
     from transformers import WhisperModel
 
-    device = torch.device("cpu")
+    device = _resolve_device()
     # `weight_dtype` drives tensor casting in the AudioProcessor + UNet path.
     # IPEX's optimize() can still run fp32 kernels underneath while our own
     # tensors stay in this dtype — they're independent knobs.
     dtype = _ipex_dtype()
+    log.info("MuseTalk compute device=%s dtype=%s", device, str(dtype).rsplit(".", 1)[-1])
+
+    # IPEX is a CPU-only accelerator; on CUDA the vanilla modules are used.
+    optimize = _ipex_optimize if device.type == "cpu" else (lambda m, name: m)
 
     log.info("Loading Whisper encoder from %s", paths.whisper_dir)
-    whisper = WhisperModel.from_pretrained(str(paths.whisper_dir)).to(device)
+    whisper = WhisperModel.from_pretrained(str(paths.whisper_dir)).to(device=device, dtype=dtype if device.type == "cuda" else torch.float32)
     whisper.eval()
-    whisper = _ipex_optimize(whisper, name="whisper")
+    whisper.requires_grad_(False)
+    whisper = optimize(whisper, name="whisper")
 
     audio_processor = AudioProcessor(paths.whisper_dir)
 
     log.info("Loading VAE from %s", paths.vae_dir)
     vae = VAE(paths.vae_dir, device=device)
-    vae.vae = _ipex_optimize(vae.vae, name="sd-vae")
+    if device.type == "cuda":
+        vae.vae.to(dtype=dtype)
+    vae.vae = optimize(vae.vae, name="sd-vae")
 
     log.info("Loading UNet from %s", paths.unet_weights)
     unet = UNet(str(paths.unet_config), str(paths.unet_weights), device=device)
-    unet.model = _ipex_optimize(unet.model, name="musetalk-unet")
+    if device.type == "cuda":
+        unet.model.to(dtype=dtype)
+    unet.model = optimize(unet.model, name="musetalk-unet")
 
     log.info("Loading BiSeNet face parser")
     face_parsing = FaceParsing(
@@ -420,7 +457,7 @@ def _load(paths: WeightPaths) -> _Loaded:
     # Leaving it vanilla.
 
     log.info("Loading SCRFD face detector")
-    aligner = build_aligner(device="cpu")
+    aligner = build_aligner(device=device.type)
 
     return _Loaded(
         audio_processor=audio_processor,
@@ -456,6 +493,7 @@ class InferenceResult:
     frames_processed: int
 
 
+@torch.inference_mode()
 def run(
     video_path: str | Path,
     audio_path: str | Path,
@@ -463,7 +501,7 @@ def run(
     weight_paths: WeightPaths,
     progress: ProgressCallback | None = None,
     extra_margin: int = 10,
-    batch_size: int = 4,
+    batch_size: int | None = None,
     # Per-request quality knobs. `None` means "use the module-level default
     # resolved from env at import time". The Makefile's QUALITY ladder is
     # the intended producer.
@@ -477,11 +515,17 @@ def run(
 
     Parameters mirror the upstream script:
         extra_margin: pixels added to the bottom of each face crop (V1.5 default 10)
-        batch_size: frames per UNet forward pass. CPU memory bound.
+        batch_size: frames per UNet forward pass. None -> MUSETALK_BATCH_SIZE
+            env, else 4 on CPU (memory bound) / 32 on CUDA.
     """
     video_path = Path(video_path)
     audio_path = Path(audio_path)
     output_path = Path(output_path)
+
+    on_cuda = _resolve_device().type == "cuda"
+    if batch_size is None:
+        batch_size = int(os.environ.get("MUSETALK_BATCH_SIZE", "32" if on_cuda else "4"))
+    vae_batch_size = int(os.environ.get("MUSETALK_VAE_BATCH_SIZE", "32" if on_cuda else "4"))
 
     # Resolve per-request knobs. Fall through to module-level defaults.
     effective_blend_mode = (blend_mode or _blend_mode).strip().lower()
@@ -520,15 +564,27 @@ def run(
 
     # --- 2. Read frames ----------------------------------------------------
     log.info("Reading video frames")
-    cap = cv2.VideoCapture(str(video_path))
-    fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
-    frames: list[np.ndarray] = []
-    while True:
-        ok, frame = cap.read()
-        if not ok:
-            break
-        frames.append(frame)
-    cap.release()
+    if on_cuda:
+        from gpu_runtime.media import read_frames
+        frames, fps = read_frames(video_path,
+            int(os.environ.get("MUSETALK_FRAME_BUDGET_MB", "4096"))*1024*1024,
+            pixel_format="bgr24")
+    else:
+        cap = cv2.VideoCapture(str(video_path))
+        fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+        frames: list[np.ndarray] = []
+        frame_bytes = 0
+        max_frame_bytes = int(os.environ.get("MUSETALK_FRAME_BUDGET_MB", "4096")) * 1024 * 1024
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                break
+            frame_bytes += frame.nbytes
+            if frame_bytes > max_frame_bytes:
+                cap.release()
+                raise RuntimeError("video exceeds decoded-frame budget; use a shorter clip or lower resolution")
+            frames.append(frame)
+        cap.release()
     if not frames:
         raise RuntimeError("no frames in input video")
 
@@ -581,26 +637,32 @@ def run(
     face_boxes_filled = _smooth_boxes(face_boxes_filled, window=5)
 
     # --- 4. Per-frame VAE latents -----------------------------------------
-    log.info("Encoding face crops via VAE")
-    input_latents: list[torch.Tensor | None] = []
-    face_boxes: list[tuple[int, int, int, int] | None] = []
-    for frame, box in zip(frames, face_boxes_filled):
+    # Crops are gathered first, then encoded in batches: per-frame encode
+    # was ~270 ms on the GPU box (CPU-side preprocessing dominated), the
+    # batched path is ~25 ms/frame at B=32.
+    log.info("Encoding face crops via VAE (batch=%d)", vae_batch_size)
+    input_latents: list[torch.Tensor | None] = [None] * len(frames)
+    face_boxes: list[tuple[int, int, int, int] | None] = [None] * len(frames)
+    crop_idx: list[int] = []
+    crops: list[np.ndarray] = []
+    for i, (frame, box) in enumerate(zip(frames, face_boxes_filled)):
         if box is None:
-            input_latents.append(None)
-            face_boxes.append(None)
             continue
         x1, y1, x2, y2 = box
         # V1.5 adds a bottom margin so the chin is fully included.
         y2 = min(y2 + extra_margin, frame.shape[0])
         crop = frame[y1:y2, x1:x2]
         if crop.size == 0:
-            input_latents.append(None)
-            face_boxes.append(None)
             continue
-        crop_256 = cv2.resize(crop, (256, 256), interpolation=cv2.INTER_LANCZOS4)
-        latents = state.vae.get_latents_for_unet(crop_256)
-        input_latents.append(latents)
-        face_boxes.append((x1, y1, x2, y2))
+        crops.append(cv2.resize(crop, (256, 256), interpolation=cv2.INTER_LANCZOS4))
+        crop_idx.append(i)
+        face_boxes[i] = (x1, y1, x2, y2)
+    with torch.no_grad():
+        for start in range(0, len(crops), vae_batch_size):
+            batch = crops[start:start + vae_batch_size]
+            lat = state.vae.get_latents_for_unet_batch(batch)  # (B, 8, 32, 32)
+            for local, i in enumerate(crop_idx[start:start + vae_batch_size]):
+                input_latents[i] = lat[local:local + 1]
 
     # --- 5. Pair audio ↔ frames and run UNet -----------------------------
     n_video = len(frames)
@@ -611,12 +673,15 @@ def run(
     predicted_faces: list[np.ndarray | None] = [None] * n
     timesteps = torch.tensor([0], device=state.device)
 
-    # When running under bf16, wrap the forward in CPU autocast so the mixed
-    # math happens safely (BatchNorm/LayerNorm stays fp32 via autocast's
-    # allowlist). fp32 path is unchanged — autocast becomes a no-op below.
-    autocast_enabled = state.weight_dtype == torch.bfloat16
-    autocast_ctx = (
-        torch.autocast(device_type="cpu", dtype=torch.bfloat16, enabled=autocast_enabled)
+    # When running under a reduced-precision dtype, wrap the forward in
+    # autocast for the active device so the mixed math happens safely
+    # (BatchNorm/LayerNorm stays fp32 via autocast's allowlist). fp32 path
+    # is unchanged — autocast becomes a no-op below.
+    autocast_enabled = state.weight_dtype in (torch.bfloat16, torch.float16)
+    autocast_ctx = torch.autocast(
+        device_type=state.device.type,
+        dtype=state.weight_dtype if autocast_enabled else torch.float32,
+        enabled=autocast_enabled,
     )
 
     with torch.no_grad(), autocast_ctx:
@@ -649,29 +714,44 @@ def run(
                 progress(min(1.0, end / n))
 
     # --- 6. Paste predicted faces back with BiSeNet-aware blending --------
-    log.info("Compositing predicted faces back into frames")
-    output_frames: list[np.ndarray] = []
-    for i in range(n):
-        frame = frames[i].copy()
+    # Two passes. First, BiSeNet runs on every frame's expanded face crop in
+    # one batched sweep on the device (the per-frame call was ~110 ms, most
+    # of it launch overhead and a host-side argmax). Then the PIL/cv2
+    # blend, which releases the GIL, runs across a thread pool. Together
+    # this took the 52 s clip's compositing from ~105 s to well under 20 s
+    # on the GPU box. Output order is preserved.
+    composite_threads = int(os.environ.get("MUSETALK_COMPOSITE_THREADS", "16"))
+    active_idx = [i for i in range(n) if predicted_faces[i] is not None and face_boxes[i] is not None]
+    log.info(
+        "Compositing predicted faces back into frames (%d faces, batched BiSeNet, %d threads)",
+        len(active_idx), composite_threads,
+    )
+    t_parse = time.perf_counter()
+    crops = [face_large_crop_rgb(frames[i], face_boxes[i]) for i in active_idx]
+    parse_masks = state.face_parsing.parse_batch_np(crops, mode=effective_blend_mode)
+    mask_for: dict[int, np.ndarray] = dict(zip(active_idx, parse_masks))
+    del crops
+    log.info("BiSeNet batch parse: %d crops in %.1fs", len(active_idx), time.perf_counter() - t_parse)
+
+    def _composite(i: int) -> np.ndarray:
         face = predicted_faces[i]
         box = face_boxes[i]
         if face is None or box is None:
-            output_frames.append(frame)
-            continue
+            return frames[i]
         x1, y1, x2, y2 = box
         face_resized = cv2.resize(face, (x2 - x1, y2 - y1), interpolation=cv2.INTER_LANCZOS4)
-        blended = get_image(
-            image=frame,
-            face=face_resized,
-            face_box=(x1, y1, x2, y2),
-            fp=state.face_parsing,
-            # Blend mode / feather are env-tunable.
-            #   MUSETALK_BLEND_MODE  = raw | jaw | mouth | neck  (default: jaw)
-            #   MUSETALK_BLEND_FEATHER = kernel ratio           (default: 0.04)
-            mode=effective_blend_mode,
+        # Blend mode / feather are env-tunable.
+        #   MUSETALK_BLEND_MODE  = raw | jaw | mouth | neck  (default: jaw)
+        #   MUSETALK_BLEND_FEATHER = kernel ratio           (default: 0.04)
+        return composite_np(
+            frames[i], face_resized, (x1, y1, x2, y2), mask_for[i],
             feather_ratio=effective_blend_feather,
         )
-        output_frames.append(blended)
+
+    t_blend = time.perf_counter()
+    with ThreadPoolExecutor(max_workers=max(1, composite_threads)) as pool:
+        output_frames: list[np.ndarray] = list(pool.map(_composite, range(n)))
+    log.info("Blend: %d frames in %.1fs", n, time.perf_counter() - t_blend)
 
     # --- 6b. Optional face restoration (CodeFormer) -----------------------
     # Applied after the MuseTalk blend so the restored skin detail covers
@@ -714,51 +794,61 @@ def run(
             )
 
     # --- 7. Write video + mux audio ---------------------------------------
-    log.info("Writing output video")
-    tmp_video = Path(tempfile.mkstemp(suffix=".mp4")[1])
+    # One ffmpeg process: raw BGR frames over stdin, audio as the second
+    # input, encode + mux in a single pass. Replaces cv2's mp4v writer plus
+    # a second ffmpeg re-encode (27 s + 7 s for the 52 s clip). NVENC is
+    # used when the container has the `video` driver capability and the
+    # encoder is available; failures are reported without software fallback.
     height, width = output_frames[0].shape[:2]
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    writer = cv2.VideoWriter(str(tmp_video), fourcc, fps, (width, height))
-    try:
-        for f in output_frames:
-            writer.write(f)
-    finally:
-        writer.release()
-
-    # Mux new audio onto the silent MP4. If audio is longer than the
-    # lipsynced video (common — XTTS output often runs past the source clip),
-    # freeze the last frame rather than truncating speech with `-shortest`.
     audio_dur = _probe_duration(audio_path)
-    video_dur = _probe_duration(tmp_video)
+    video_dur = n / float(fps) if fps else None
     pad_seconds = 0.0
     if audio_dur is not None and video_dur is not None and audio_dur > video_dur:
+        # Freeze the last frame rather than truncating speech with `-shortest`
+        # (XTTS output often runs past the source clip).
         pad_seconds = audio_dur - video_dur
 
-    cmd: list[str] = [
-        "ffmpeg", "-y",
-        "-i", str(tmp_video),
-        "-i", str(audio_path),
-    ]
-    if pad_seconds > 0.0:
-        cmd.extend([
-            "-vf", f"tpad=stop_mode=clone:stop_duration={pad_seconds:.3f}",
-        ])
-    cmd.extend([
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
-        "-c:a", "aac",
-        # Deliberately no `-shortest`: we padded video above when needed.
-        str(output_path),
-    ])
+    encoder = os.environ.get(
+        "MUSETALK_VIDEO_ENCODER", "h264_nvenc" if on_cuda else "libx264"
+    ).lower()
+
+    from gpu_runtime import require_encoder
+    require_encoder(encoder)
+
+    def _encode(enc: str) -> tuple[int, str]:
+        cmd: list[str] = [
+            "ffmpeg", "-y", "-loglevel", "error",
+            "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{width}x{height}",
+            "-r", f"{fps:.6f}", "-i", "pipe:0",
+            "-i", str(audio_path),
+            "-map", "0:v:0", "-map", "1:a:0",
+        ]
+        if pad_seconds > 0.0:
+            cmd.extend(["-vf", f"tpad=stop_mode=clone:stop_duration={pad_seconds:.3f}"])
+        if enc == "h264_nvenc":
+            cmd.extend(["-c:v", "h264_nvenc", "-preset", "p4", "-rc", "vbr", "-cq", "20", "-b:v", "0"])
+        else:
+            cmd.extend(["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"])
+        cmd.extend(["-pix_fmt", "yuv420p", "-c:a", "aac", str(output_path)])
+        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            assert proc.stdin is not None
+            for f in output_frames:
+                proc.stdin.write(np.ascontiguousarray(f).tobytes())
+        except BrokenPipeError:
+            pass  # encoder died early; stderr below says why
+        # communicate() closes stdin itself; closing it first made the
+        # flush inside communicate() raise "flush of closed file".
+        _, err = proc.communicate(timeout=1800)
+        return proc.returncode, err.decode(errors="replace")[-1000:]
+
     log.info(
-        "musetalk mux: video=%.2fs audio=%.2fs pad=%.2fs",
-        video_dur or -1.0, audio_dur or -1.0, pad_seconds,
+        "Writing output video (%s): %dx%d @ %.2f fps, %d frames, audio=%.2fs pad=%.2fs",
+        encoder, width, height, fps, n, audio_dur or -1.0, pad_seconds,
     )
-    proc = subprocess.run(cmd, capture_output=True, timeout=1800)
-    tmp_video.unlink(missing_ok=True)
-    if proc.returncode != 0:
-        raise RuntimeError(
-            f"ffmpeg mux failed: {proc.stderr.decode(errors='replace')[-1000:]}"
-        )
+    rc, err = _encode(encoder)
+    if rc != 0:
+        raise RuntimeError(f"ffmpeg encode/mux failed: {err}")
 
     if progress is not None:
         progress(1.0)

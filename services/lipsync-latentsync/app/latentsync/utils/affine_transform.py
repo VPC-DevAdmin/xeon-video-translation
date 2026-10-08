@@ -74,7 +74,30 @@ class AlignRestore(object):
         return cropped_face, affine_matrix
 
     def restore_img(self, input_img, face, affine_matrix):
-        h, w, _ = input_img.shape
+        """Paste `face` back into `input_img` (numpy HWC uint8); returns numpy HWC uint8."""
+        img_t = rearrange(torch.from_numpy(input_img).to(device=self.device, dtype=self.dtype), "h w c -> c h w")
+        img_back = self.restore_on_device(img_t, face, affine_matrix, debug=True)
+        img_back = rearrange(img_back, "c h w -> h w c").contiguous().to(dtype=torch.uint8)
+        img_back = img_back.cpu().numpy()
+
+        # Final dump is the composited frame — what actually lands in
+        # the output mp4. Comparing this to the earlier stages tells
+        # us where the artifact we see on screen entered the pipeline.
+        try:
+            from . import _debug
+            _debug.dump("06_restore_img_back", img_back)
+        except Exception:
+            pass
+
+        return img_back
+
+    def restore_on_device(self, input_img, face, affine_matrix, debug=False, face_mask=None, alpha=1.0):
+        """Same math as the historical restore_img, but the frame arrives as a
+        device tensor (C,H,W) and the composite stays on the device. restore_video
+        uploads and downloads frames in batches instead of once per frame, which
+        removed the per-frame host<->device synchronisation that dominated the
+        restore stage in the 4 Oct 2026 profile."""
+        _, h, w = input_img.shape
 
         if isinstance(affine_matrix, np.ndarray):
             affine_matrix = torch.from_numpy(affine_matrix).to(device=self.device, dtype=self.dtype).unsqueeze(0)
@@ -87,7 +110,6 @@ class AlignRestore(object):
         ).squeeze(0)
         inv_face = (inv_face / 2 + 0.5).clamp(0, 1) * 255
 
-        input_img = rearrange(torch.from_numpy(input_img).to(device=self.device, dtype=self.dtype), "h w c -> c h w")
         inv_mask = kornia.geometry.transform.warp_affine(
             self.mask, inv_affine_matrix, (h, w), padding_mode="zeros"
         )  # (1, 1, h_up, w_up)
@@ -135,6 +157,17 @@ class AlignRestore(object):
         if os.environ.get("LATENTSYNC_BYPASS_MASK", "0") == "1":
             inv_soft_mask_3d = inv_mask_erosion_t
 
+        # Occlusion handling (latentsync_driver.face_parse): only source pixels
+        # that are face receive the generated face, and frames whose face was
+        # not located fade the paste out entirely.
+        if face_mask is not None:
+            inv_face_mask = kornia.geometry.transform.warp_affine(
+                face_mask, inv_affine_matrix, (h, w), mode="bilinear", padding_mode="zeros"
+            ).squeeze(0)
+            inv_soft_mask_3d = inv_soft_mask_3d * inv_face_mask.expand_as(inv_face)
+        if alpha < 1.0:
+            inv_soft_mask_3d = inv_soft_mask_3d * max(0.0, float(alpha))
+
         img_back = inv_soft_mask_3d * pasted_face + (1 - inv_soft_mask_3d) * input_img
 
         # Debug dump: four critical intermediates from the restore step.
@@ -143,26 +176,14 @@ class AlignRestore(object):
         # the warp is off; if inv_mask is a rectangle (not face-shaped)
         # you know affine is failing; if inv_soft_mask lacks a proper
         # feather you know the mask ops are broken.
-        try:
-            from . import _debug
-            _debug.dump("03_restore_inv_face", inv_face)
-            _debug.dump("04_restore_inv_mask", inv_mask)
-            _debug.dump("05_restore_inv_soft_mask", inv_soft_mask)
-        except Exception:
-            pass
-
-        img_back = rearrange(img_back, "c h w -> h w c").contiguous().to(dtype=torch.uint8)
-        img_back = img_back.cpu().numpy()
-
-        # Final dump is the composited frame — what actually lands in
-        # the output mp4. Comparing this to the earlier stages tells
-        # us where the artifact we see on screen entered the pipeline.
-        try:
-            from . import _debug
-            _debug.dump("06_restore_img_back", img_back)
-        except Exception:
-            pass
-
+        if debug:
+            try:
+                from . import _debug
+                _debug.dump("03_restore_inv_face", inv_face)
+                _debug.dump("04_restore_inv_mask", inv_mask)
+                _debug.dump("05_restore_inv_soft_mask", inv_soft_mask)
+            except Exception:
+                pass
         return img_back
 
     def transformation_from_points(self, points1: torch.Tensor, points0: torch.Tensor, smooth=True, p_bias=None):

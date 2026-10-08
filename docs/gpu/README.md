@@ -1,0 +1,180 @@
+# GPU track
+
+> Hardware update: the project has now been deployed and tested on XE7740. See the [measured results and remaining acceptance gates](xe7740-validation-2026-10-03.md). Earlier local-only status below describes the pre-deployment snapshot.
+
+Latest evidence and trials: [quality/performance research review](research-and-experiments.md) and [experiment lab](../../experiments/README.md). Historical hardware results below do not qualify the current local changes or new candidate models.
+
+Next optimization work: [eight-GPU upgrade plan](eight-gpu-upgrade-plan.md), including dedicated/shared GPU layouts, implementation phases, local work and hardware acceptance gates.
+
+> Current implementation and setup: [three-mode local updates](local-updates.md). This includes the new avatar path and supersedes historical status notes below.
+
+The CPU build was optimised as far as it goes and still missed the minimum
+bar for quality and turnaround. This track targets a **Dell PowerEdge
+XE7740 with 8x RTX PRO 6000 Blackwell (96 GB each)** and three user-facing
+modes. The CPU stack stays runnable from the same repo; everything here is
+additive and opt-in via `docker-compose.gpu.yml`.
+
+| Mode | Doc | Input | Target | Lipsync | Status |
+|---|---|---|---|---|---|
+| 1. Real-time translation | [mode1-realtime.md](mode1-realtime.md) | webcam (WebRTC) | result within a few minutes of stopping; quality traded for speed | MuseTalk | **running on the XE7740**: 52 s clip in ~2 min; lower-face quality is the open issue |
+| 2. Batch translation | [mode2-batch.md](mode2-batch.md) | webcam or upload | best achievable quality; time unconstrained | LatentSync 512, sharded over GPUs | **running on the XE7740**: 52 s clip in ~4.5 min on 4 GPUs (G5 done); quality is good |
+| 3. Real-time voice avatar | [mode3-avatar.md](mode3-avatar.md) | mic + one still image | conversational latency, continuous | image-driven talking head | design only |
+
+Measured numbers, quality notes and the bug list from the first run on
+the hardware are in [bring-up-2026-10.md](bring-up-2026-10.md).
+
+## What is on this branch
+
+- `backend/app/config.py` — `DEVICE=cpu|cuda|auto`, resolved once and used
+  by whisper, NLLB, XTTS, F5-TTS, IndicF5 and Wav2Lip. CPU remains the
+  default so the existing stack is unchanged. NLLB loads fp16 on CUDA.
+- `backend/Dockerfile.gpu` — CUDA 12.8 + torch cu128. Blackwell needs this;
+  the CPU image's torch 2.6 has no sm_120 kernels.
+- `docker-compose.gpu.yml` — overlay with per-service GPU assignment, GPU
+  model defaults (whisper large-v3 fp16, NLLB 3.3B), and the ingest service.
+- `services/ingest-webrtc/` — aiortc service: browser offer → recording →
+  job submission with the mode's parameters.
+- `frontend/app/live/page.tsx` — webcam capture page with a mode selector.
+- `make up-gpu`, `make health-gpu`.
+
+## Hardware assumptions
+
+- 8 GPUs, 96 GB each, CUDA 12.8+ driver, NVIDIA Container Toolkit.
+- Verify before anything else:
+
+```bash
+docker run --rm --gpus all nvidia/cuda:12.8.1-base-ubuntu24.04 nvidia-smi
+```
+
+## Hugging Face access
+
+Model downloads go through Hugging Face. Some egress IPs (the XE7740's
+included) get anonymous `429 Too Many Requests` on every call, and IndicF5
+is a gated repo, so the GPU stack expects a token. It is read from a file
+mounted at `/run/secrets/hf_token`, never from an env value:
+
+```bash
+# in .env on the GPU host
+HF_TOKEN_FILE=/home/<you>/.cache/huggingface/token
+```
+
+That is where `huggingface-cli login` stores it. Leave it unset for
+anonymous access.
+
+## GPU assignment
+
+| GPU | Service | Why |
+|---|---|---|
+| 0 | backend (whisper large-v3, NLLB 3.3B, TTS) | all three fit in <40 GB; keeps the chatty stages co-located |
+| 1 | lipsync-musetalk | mode 1 needs it warm and alone |
+| 2–7 | lipsync-latentsync workers | mode 2 shards 16-frame chunks across them |
+
+Until chunk sharding lands (PR-G5) only GPU 2 runs LatentSync. Mode 3 will
+take a GPU from the LatentSync pool when it exists.
+
+## Roadmap (PR series)
+
+Each PR is independently mergeable. Order matters for the first four.
+
+| PR | Scope | Unblocks |
+|---|---|---|
+| **G0** ✅ | device plumbing, GPU Dockerfile, compose overlay, ingest service, live page, docs | everything |
+| **G1** ✅ | Backend on GPU: XTTS runs on torch 2.8 cu128, whisper large-v3 fp16, NLLB 3.3B fp16, measured ETA table, startup warmup, NVENC mux. | modes 1, 2 |
+| **G2** ✅ (perf follow-ups open) | MuseTalk CUDA port: Dockerfile.gpu, `DEVICE`, CUDA SCRFD, batched VAE encode, device-sized UNet batch. 168 s for 52 s; compositing + write path still CPU. | mode 1 |
+| **G3** ✅ (metric run owed) | LatentSync CUDA port: fp16 weights, no autocast, CUDA SCRFD. 422 s for 52 s on one GPU. Still rebuilds models per request. | mode 2 |
+| **G4** | Job queue: replace the in-memory registry and `MAX_CONCURRENT_JOBS` semaphore with Redis + per-stage workers so modes 1 and 2 run concurrently without starving each other. | throughput |
+| **G5** ✅ (threads; ~2x on 4 GPUs) | LatentSync chunk sharding: one UNet + VAE replica per visible GPU, overlapped phases. Interpreter-lock bound; process workers next. | mode 2 turnaround |
+| **G6** | Per-utterance duration fitting: length-aware translation prompt (LLM backend) + TTS speed parameter, replacing the whole-file rubberband stretch. Biggest remaining quality lever for all modes. | modes 1, 3 |
+| **G7** | Mode 3 avatar: live consumer on the ingest track, streaming ASR, LLM turn, streaming TTS, image-driven talking head, WebRTC return path. See mode3-avatar.md. | mode 3 |
+| **G8** | Translation backend upgrade: LLM (70B class fits one card) with context window across segments and length control; keep NLLB as the fast fallback. | quality |
+
+## Decisions already made
+
+- **Separate Dockerfiles, not build args.** Base image, torch index and
+  optional deps all differ; a branchy single Dockerfile was more fragile.
+- **Record-then-submit for modes 1 and 2.** The existing job model is "a
+  file appeared". Sub-utterance streaming is only needed for mode 3 and
+  gets its own consumer on the same WebRTC track.
+- **Ingest re-uploads over loopback** instead of adding a path-adopt
+  endpoint to the backend. Simpler; revisit if clips exceed a few minutes.
+- **CPU stack stays green.** `DEVICE` defaults to `cpu`; the CPU compose
+  file is untouched.
+
+## Confirmed by the owner (2026-10-01)
+
+- **Hardware:** RTX PRO 6000 Blackwell. sm_120, so CUDA 12.8+ and torch
+  2.7+ are required; the Dockerfile assumptions hold.
+- **Licensing:** this is a demo. Open-source models are the requirement;
+  non-commercial weights (XTTS CPML, F5-TTS and Wav2Lip CC-BY-NC) and
+  gated repos (IndicF5) are acceptable. No need to swap TTS for licensing
+  reasons; model choice is on quality and speed alone.
+
+## GPU-native component policy
+
+The CPU track made several choices purely so the pipeline would fit and run on
+a Xeon. None of those survive on the GPU track; the table is the checklist a
+reviewer should hold new changes against.
+
+| Stage | CPU-era choice | GPU track |
+| --- | --- | --- |
+| ASR | `base` whisper, int8 CTranslate2, sequential decode | `large-v3` fp16 on CUDA through faster-whisper's `BatchedInferencePipeline` (`WHISPER_BATCH_SIZE`, default 16) |
+| Translation | NLLB-200 distilled 600M (fits in RAM) / Ollama 8B | `TRANSLATE_BACKEND=llm`: OpenAI-compatible chat server (vLLM, Qwen3-30B-A3B on the host). NLLB-200 3.3B fp16 remains selectable. Ollama-specific code is gone; `LLM_BASE_URL` takes any `/v1` server |
+| Overrun handling | hard truncation / time-stretch | per-segment resynthesis, then LLM rewrite (`REWRITE_OVERRUNS=true`), then fail loudly |
+| TTS | XTTS-v2 fp32 on CPU | XTTS-v2 / F5-TTS / IndicF5 on CUDA, warmed at startup |
+| MuseTalk | IPEX bf16, fp32 weights, per-frame VAE, libx264 | native CUDA fp16 (`MUSETALK_DTYPE=fp16`), batched VAE + BiSeNet, SCRFD on the CUDA ORT provider, NVENC write, TF32 + cuDNN autotune. IPEX is not installed and `/ready` does not look for it |
+| LatentSync | IPEX bf16 autocast, DeepCache, single process | fp16 UNet sharded one process per GPU (`LATENTSYNC_SHARD_MODE=process`), NVDEC/NVENC read and write, DeepCache disabled when sharded, TF32 + cuDNN autotune. IPEX and DeepCache are CPU-only extras |
+| Wav2Lip | CPU-feasible lipsync | not part of any GPU mode preset (fast = MuseTalk, quality = LatentSync); still callable for A/B |
+| Window cuts / mux / watermark | libx264 | `h264_nvenc` via `VIDEO_ENCODER`, with automatic libx264 fallback if the encoder session fails |
+| Image decode | `cv2.imread` | Pillow for PNG/JPEG files. The OpenCV wheel's bundled libpng fails ("bad parameters to zlib") once torch, torchvision, onnxruntime and decord have loaded their own zlib copies into the server; video frames still go through OpenCV/NVDEC |
+
+Residual CPU work on the GPU track is limited to ffmpeg audio filters,
+silence detection and the numpy compositing in MuseTalk (which runs in a
+thread pool and finished faster than a GPU round trip at 1080p).
+
+## October GPU implementation update
+
+See [implementation and qualification](upgrade-implementation.md) for strict CUDA execution, hardware WebRTC codecs, bounded NVDEC decoding, avatar tensor blending, allocation overlays and the remaining hardware gates.
+
+## Shared face track (LatentSync) and where fast-mode time goes
+
+Since `1db2189` the LatentSync service builds one landmark track per source
+clip (`latentsync_driver/face_track.py`, cached under
+`MODEL_CACHE_DIR/cache/latentsync_tracks` by content hash, smoothed over the
+whole clip) and every render window slices it instead of re-detecting. On the
+52 s 1080x1920 fixture the track builds in 67 s and every later run hits the
+cache; fast-mode lipsync went from 502 s to 399 s on a cache hit, and window
+seams share one landmark trajectory.
+
+Per 16 s window at 10 steps on one GPU (measured 4 Oct 2026, `lipsync-fast`):
+
+| Stage | Seconds | Share |
+| --- | ---: | ---: |
+| waiting on the denoise worker | 77 | 65% |
+| NVDEC decode + warp + audio features | 13 | 11% |
+| restore (paste faces back, CPU) | 10 | 8% |
+| collect + paste chunks | 10 | 8% |
+| conditioning | 5 | 5% |
+| NVENC write | 3 | 2% |
+
+Detection is gone from the per-window path; the next lever for fast mode is
+the denoise itself: more GPUs for `lipsync-fast` (batch already shards over
+three), fewer steps, or a compiled/fp8 UNet. Restore and paste are the first
+CPU stages worth moving to the GPU after that.
+
+### Fast renderer on two GPUs (`a53c577`)
+
+`lipsync-fast` now shards the 10-step UNet over `LATENTSYNC_FAST_GPUS`
+(default `3,5`) with one worker process per GPU. Same 52 s fixture, warm,
+face track cached:
+
+| Per 16 s window | 1 GPU | 2 GPUs |
+| --- | ---: | ---: |
+| waiting on denoise workers | 77 s | 37 s |
+| conditioning (coordinator) | 5 s | 15 s |
+| collect + paste | 10 s | 0.3 s |
+| window total | 118 s | 78 s |
+| fast-mode lipsync stage, 52 s clip | 399 s | 339 s |
+
+Conditioning on the coordinator is now the visible serial cost; moving the
+VAE encode of the reference/masked frames onto the workers is the next step
+if fast mode needs to go below ~1 min per 16 s window.

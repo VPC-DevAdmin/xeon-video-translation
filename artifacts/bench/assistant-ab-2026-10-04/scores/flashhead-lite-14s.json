@@ -1,0 +1,130 @@
+{
+ "label": "flashhead-lite-14s",
+ "video": "/jobs/ab/out/flashhead-lite-14s.mp4",
+ "audio": "/jobs/ab/inputs/reply14-16k.wav",
+ "reference": "/jobs/ab/inputs/portrait.png",
+ "frames": 339,
+ "fps": 25.0,
+ "width": 512,
+ "height": 512,
+ "faces_detected": 339,
+ "face_box_mean_px": [
+  236.0,
+  383.3
+ ],
+ "identity_vs_portrait": {
+  "mean": 0.9367,
+  "min": 0.7976,
+  "p05": 0.8922,
+  "p95": 0.966,
+  "std": 0.0268
+ },
+ "identity_vs_source_video": {
+  "mean": 0.929,
+  "min": 0.8172,
+  "p05": 0.8775,
+  "p95": 0.9542,
+  "std": 0.0252
+ },
+ "identity_drift_first_to_last_quarter": 0.0115,
+ "sharpness_face_laplacian_var": {
+  "mean": 201.7954,
+  "min": 136.4587,
+  "p05": 158.3982,
+  "p95": 241.4971,
+  "std": 25.8483
+ },
+ "sharpness_mouth_laplacian_var": {
+  "mean": 127.4771,
+  "min": 47.5688,
+  "p05": 74.0457,
+  "p95": 183.8411,
+  "std": 34.7754
+ },
+ "temporal_face_mean_abs_diff": {
+  "mean": 3.2024,
+  "min": 0.8665,
+  "p05": 1.7985,
+  "p95": 5.1249,
+  "std": 1.1238
+ },
+ "mouth_flicker_std": 0.5543,
+ "mouth_openness": {
+  "mean": 0.021,
+  "min": 0.0,
+  "p05": 0.0007,
+  "p95": 0.0542,
+  "std": 0.0187
+ },
+ "sync_proxy": {
+  "peak_correlation": 0.251,
+  "lag_frames": -1,
+  "lag_ms": -40.0,
+  "frames_with_landmarks": 339
+ },
+ "syncnet": {
+  "windows": 20,
+  "cosine_at_zero": 0.672,
+  "best_offset_frames": 1,
+  "cosine_at_best": 0.7828,
+  "margin_over_shifted": 0.5251,
+  "per_offset": {
+   "-15": 0.0953,
+   "-14": 0.0779,
+   "-13": 0.0881,
+   "-12": 0.0965,
+   "-11": 0.0979,
+   "-10": 0.0977,
+   "-9": 0.1163,
+   "-8": 0.1462,
+   "-7": 0.1566,
+   "-6": 0.133,
+   "-5": 0.1258,
+   "-4": 0.1476,
+   "-3": 0.1975,
+   "-2": 0.3,
+   "-1": 0.4682,
+   "0": 0.672,
+   "1": 0.7828,
+   "2": 0.6742,
+   "3": 0.4443,
+   "4": 0.2904,
+   "5": 0.2209,
+   "6": 0.2063,
+   "7": 0.2022,
+   "8": 0.2009,
+   "9": 0.1775,
+   "10": 0.1584,
+   "11": 0.1618,
+   "12": 0.1542,
+   "13": 0.1451,
+   "14": 0.1351,
+   "15": 0.1136
+  },
+  "state_dict_missing": 0,
+  "state_dict_unexpected": 0
+ },
+ "av": {
+  "programs": [],
+  "streams": [
+   {
+    "codec_type": "video",
+    "width": 512,
+    "height": 512,
+    "r_frame_rate": "25/1",
+    "duration": "13.560000",
+    "nb_frames": "339"
+   },
+   {
+    "codec_type": "audio",
+    "r_frame_rate": "0/0",
+    "duration": "13.520542",
+    "nb_frames": "318"
+   }
+  ],
+  "format": {
+   "duration": "13.560000"
+  }
+ },
+ "contact_sheet": "/jobs/ab/out/scores/flashhead-lite-14s.sheet.png"
+}

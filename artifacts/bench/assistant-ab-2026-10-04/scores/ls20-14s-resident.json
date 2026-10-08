@@ -1,0 +1,130 @@
+{
+ "label": "ls20-14s-resident",
+ "video": "/jobs/ab/out/ls20-14s-resident.mp4",
+ "audio": "/jobs/ab/inputs/reply14-16k.wav",
+ "reference": "/jobs/ab/inputs/portrait.png",
+ "frames": 340,
+ "fps": 25.0,
+ "width": 1080,
+ "height": 1920,
+ "faces_detected": 340,
+ "face_box_mean_px": [
+  501.8,
+  779.9
+ ],
+ "identity_vs_portrait": {
+  "mean": 0.9275,
+  "min": 0.888,
+  "p05": 0.9031,
+  "p95": 0.9511,
+  "std": 0.015
+ },
+ "identity_vs_source_video": {
+  "mean": 0.9597,
+  "min": 0.9415,
+  "p05": 0.9474,
+  "p95": 0.9702,
+  "std": 0.0068
+ },
+ "identity_drift_first_to_last_quarter": 0.0008,
+ "sharpness_face_laplacian_var": {
+  "mean": 294.0578,
+  "min": 230.5592,
+  "p05": 253.814,
+  "p95": 323.3803,
+  "std": 19.6662
+ },
+ "sharpness_mouth_laplacian_var": {
+  "mean": 156.8144,
+  "min": 59.8555,
+  "p05": 110.358,
+  "p95": 197.2679,
+  "std": 26.9968
+ },
+ "temporal_face_mean_abs_diff": {
+  "mean": 3.3619,
+  "min": 1.0936,
+  "p05": 1.8,
+  "p95": 5.8561,
+  "std": 1.3777
+ },
+ "mouth_flicker_std": 0.7592,
+ "mouth_openness": {
+  "mean": 0.0087,
+  "min": 0.0,
+  "p05": 0.0003,
+  "p95": 0.0316,
+  "std": 0.0103
+ },
+ "sync_proxy": {
+  "peak_correlation": 0.588,
+  "lag_frames": 1,
+  "lag_ms": 40.0,
+  "frames_with_landmarks": 340
+ },
+ "syncnet": {
+  "windows": 20,
+  "cosine_at_zero": 0.8726,
+  "best_offset_frames": 0,
+  "cosine_at_best": 0.8726,
+  "margin_over_shifted": 0.7333,
+  "per_offset": {
+   "-15": 0.0851,
+   "-14": 0.0851,
+   "-13": 0.1038,
+   "-12": 0.1131,
+   "-11": 0.1244,
+   "-10": 0.1358,
+   "-9": 0.1665,
+   "-8": 0.1738,
+   "-7": 0.1717,
+   "-6": 0.1609,
+   "-5": 0.189,
+   "-4": 0.2576,
+   "-3": 0.3466,
+   "-2": 0.5442,
+   "-1": 0.7661,
+   "0": 0.8726,
+   "1": 0.707,
+   "2": 0.4231,
+   "3": 0.2435,
+   "4": 0.1779,
+   "5": 0.1427,
+   "6": 0.1348,
+   "7": 0.147,
+   "8": 0.1594,
+   "9": 0.147,
+   "10": 0.1262,
+   "11": 0.1262,
+   "12": 0.104,
+   "13": 0.087,
+   "14": 0.0839,
+   "15": 0.0837
+  },
+  "state_dict_missing": 0,
+  "state_dict_unexpected": 0
+ },
+ "av": {
+  "programs": [],
+  "streams": [
+   {
+    "codec_type": "video",
+    "width": 1080,
+    "height": 1920,
+    "r_frame_rate": "25/1",
+    "duration": "13.600000",
+    "nb_frames": "340"
+   },
+   {
+    "codec_type": "audio",
+    "r_frame_rate": "0/0",
+    "duration": "13.520563",
+    "nb_frames": "213"
+   }
+  ],
+  "format": {
+   "duration": "13.600000"
+  }
+ },
+ "contact_sheet": "/jobs/ab/out/scores/ls20-14s-resident.sheet.png"
+}

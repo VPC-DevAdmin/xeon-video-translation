@@ -1,0 +1,23 @@
+[
+  {
+    "file": "xtts-conversational-065.wav",
+    "expected": "Good morning! I'm glad you're here. I've been working on something pretty useful. Imagine sharing a video in another language, while still sounding like yourself. That's what we're trying to get right.",
+    "recognized": "Good morning. I'm glad you're here. I've been working on something pretty useful. Imagine sharing a video in another language while still sounding like yourself. That's what we're trying to get right.",
+    "word_errors": 0,
+    "reference_words": 37
+  },
+  {
+    "file": "qwen-conversational.wav",
+    "expected": "Good morning! I'm glad you're here. I've been working on something pretty useful. Imagine sharing a video in another language, while still sounding like yourself. That's what we're trying to get right.",
+    "recognized": "Good morning. I'm glad you're here. I've been working on something pretty useful. Imagine sharing a video in another language while still sounding like yourself. That's what we're trying to get right.",
+    "word_errors": 0,
+    "reference_words": 37
+  },
+  {
+    "file": "xtts-conversational-085.wav",
+    "expected": "Good morning! I'm glad you're here. I've been working on something pretty useful. Imagine sharing a video in another language, while still sounding like yourself. That's what we're trying to get right.",
+    "recognized": "Good morning. I'm glad you're here. I've been working on something pretty useful. Imagine sharing a video in another language while still sounding like yourself. That's what we're trying to get right.",
+    "word_errors": 0,
+    "reference_words": 37
+  }
+]

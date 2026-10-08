@@ -1,0 +1,9 @@
+# Optional tuning on top of docker-compose.gpu.yml. Apply after gpu, llm and
+# avatar overlays. Modes are exclusive; see scripts/mode.sh.
+services:
+  backend:
+    environment:
+      TTS_SEGMENT_RETRIES: "3"
+  lipsync-latentsync:
+    environment:
+      LATENTSYNC_PREFETCH_PER_WORKER: ${LATENTSYNC_PREFETCH_PER_WORKER:-1}

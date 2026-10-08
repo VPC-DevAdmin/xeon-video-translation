@@ -43,3 +43,13 @@ Thumbs.db
 # Logs
 *.log
 repomix-output.xml
+
+# Stray root-level outputs (the documented layout is artifacts/{inputs,jobs,review}/)
+/artifacts/*.mp4
+
+# Browser test output
+frontend/test-results/
+frontend/playwright-report/
+
+# Local GPU assignment overlay
+/gpu-layout.env

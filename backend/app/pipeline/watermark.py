@@ -62,6 +62,19 @@ def _drawtext_filter(text: str) -> str:
     )
 
 
+def _encoder_args(encoder: str) -> list[str]:
+    """ffmpeg video-encoder flags, roughly matched for visual quality.
+
+    libx264 crf 20 / veryfast is the long-standing default. NVENC has no
+    crf; `-cq 20` under VBR with preset p4 lands in the same quality band
+    and encodes 1080p at several hundred fps on a data-centre GPU.
+    """
+    if encoder == "h264_nvenc":
+        return ["-c:v", "h264_nvenc", "-preset", "p4", "-rc", "vbr", "-cq", "20",
+                "-b:v", "0", "-pix_fmt", "yuv420p"]
+    return ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"]
+
+
 def _probe_duration(path: Path) -> float | None:
     try:
         out = subprocess.check_output(
@@ -120,33 +133,44 @@ def mux_and_watermark(
     if wm:
         video_filters.append(_drawtext_filter(settings.watermark_text))
 
-    cmd: list[str] = [
-        "ffmpeg", "-y",
-        "-i", str(video_path),
-        "-i", str(audio_path),
-        "-map", "0:v:0",
-        "-map", "1:a:0",
-    ]
-    if video_filters:
-        cmd.extend(["-vf", ",".join(video_filters)])
-        cmd.extend(["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"])
-    else:
-        # No filter → we can stream-copy the video track.
-        cmd.extend(["-c:v", "copy"])
-    cmd.extend([
-        "-c:a", "aac", "-b:a", "128k",
-        "-metadata", f"comment={comment}",
-        "-movflags", "+faststart",
-        # No `-shortest` — we want to keep the full audio. Video is already
-        # padded via tpad when needed.
-        str(output_path),
-    ])
+    gpu_input_flags = []
+    if video_filters and settings.resolved_device == "cuda":
+        from gpu_runtime.media import cuda_filter_input
+        gpu_input_flags, prefix = cuda_filter_input(video_path)
+        video_filters.insert(0, prefix)
+
+    def _build_cmd(encoder: str) -> list[str]:
+        cmd: list[str] = [
+            "ffmpeg", "-y",
+            *gpu_input_flags, "-i", str(video_path),
+            "-i", str(audio_path),
+            "-map", "0:v:0",
+            "-map", "1:a:0",
+        ]
+        if video_filters:
+            cmd.extend(["-vf", ",".join(video_filters)])
+            cmd.extend(_encoder_args(encoder))
+        else:
+            # No filter → we can stream-copy the video track.
+            cmd.extend(["-c:v", "copy"])
+        cmd.extend([
+            "-c:a", "aac", "-b:a", "128k",
+            "-metadata", f"comment={comment}",
+            "-movflags", "+faststart",
+            # No `-shortest` — we want to keep the full audio. Video is already
+            # padded via tpad when needed.
+            str(output_path),
+        ])
+        return cmd
 
     log.info(
-        "mux: video=%.2fs audio=%.2fs pad=%.2fs wm=%s",
-        video_dur or -1, audio_dur or -1, pad_seconds, wm,
+        "mux: video=%.2fs audio=%.2fs pad=%.2fs wm=%s encoder=%s",
+        video_dur or -1, audio_dur or -1, pad_seconds, wm, settings.video_encoder,
     )
 
+    if video_filters and settings.resolved_device == "cuda" and settings.video_encoder != "h264_nvenc":
+        raise MuxError("CUDA mux encoding requires h264_nvenc")
+    cmd = _build_cmd(settings.video_encoder)
     proc = subprocess.run(cmd, capture_output=True, timeout=600)
     if proc.returncode != 0:
         raise MuxError(
