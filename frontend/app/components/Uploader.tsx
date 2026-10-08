@@ -6,7 +6,7 @@ import { useDropzone, type FileRejection } from "react-dropzone";
 // Mirrors MAX_VIDEO_SIZE_MB / MAX_VIDEO_DURATION_SECONDS on the backend, which
 // stays authoritative (it rejects oversize uploads and over-long clips).
 export const MAX_UPLOAD_MB = 4096;
-export const MAX_UPLOAD_MINUTES = 15;
+export const MAX_UPLOAD_MINUTES = 30;
 
 export function Uploader({
   file,
